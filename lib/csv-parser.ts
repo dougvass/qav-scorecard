@@ -1,5 +1,4 @@
-"use client";
-
+// Client-only utility: uses TextDecoder (browser / Edge runtime)
 import { StockRow } from "./types";
 
 /**
