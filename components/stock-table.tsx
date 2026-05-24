@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
 import { qavColor, scoreColor } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
@@ -213,9 +213,8 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
               const msRating = (stock as Record<string, unknown>)._msStarRating as number | undefined;
 
               return (
-                <>
+                <React.Fragment key={stock.Code}>
                   <tr
-                    key={stock.Code}
                     className={`transition-colors ${
                       isExpanded ? "bg-indigo-50" : "hover:bg-gray-50"
                     }`}
@@ -266,7 +265,7 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               );
             })}
           </tbody>

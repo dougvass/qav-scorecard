@@ -15,6 +15,44 @@ import {
   BarChart2,
 } from "lucide-react";
 
+// Score column keys used when recomputing totals after MS data is applied
+const SCORE_KEYS = [
+  "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
+  "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
+  "S_sp_lt_1.3neps", "S_geps_pe", "S_sp_lt_iv1", "S_sp_lt_iv2",
+  "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
+  "S_fh_rating", "S_fh_trend", "S_ownership",
+] as const;
+
+/** Inject MS star ratings into already-scored stocks, recompute QAV. */
+function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredStock[] {
+  const ratingMap: Record<string, number | null> = {};
+  for (const [ticker, entry] of Object.entries(ratings)) {
+    ratingMap[ticker] = entry.starRating ?? null;
+  }
+
+  return stocks.map((stock) => {
+    const rawStar = ratingMap[stock.Code] ?? null;
+    const iv3 = starToIv3Score(rawStar);
+    const enriched = { ...stock, S_sp_lt_iv3: iv3, _msStarRating: rawStar } as ScoredStock & { _msStarRating: number | null };
+
+    // Recompute count / total / quality / QAV with the new iv3 value
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+
+    return enriched;
+  });
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [allStocks, setAllStocks] = useState<ScoredStock[] | null>(null);
@@ -22,75 +60,33 @@ export default function HomePage() {
   const [showAll, setShowAll] = useState(false);
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
+  const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
-  const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
 
-  const handleFile = useCallback(async (file: File) => {
-    setLoading(true);
-    setError(null);
-    setFileName(file.name);
-    try {
-      const rows = await parseStockDoctorCSV(file);
-      if (rows.length === 0) throw new Error("No stock rows found in CSV.");
+  const handleFile = useCallback(
+    async (file: File) => {
+      setLoading(true);
+      setError(null);
+      setFileName(file.name);
+      try {
+        const rows = await parseStockDoctorCSV(file);
+        if (rows.length === 0) throw new Error("No stock rows found in CSV.");
 
-      // Score without MS data first (instant)
-      const scored = scoreStocks(rows);
-      const bl = makeBuyList(scored);
-      setAllStocks(scored);
-      setBuyList(bl);
+        let scored = scoreStocks(rows);
+        // If MS ratings were already loaded, enrich immediately
+        if (msRatings) scored = enrichWithMsRatings(scored, msRatings);
 
-      // If MS ratings are already loaded, apply them
-      if (msRatings) {
-        applyMsRatings(scored, msRatings);
+        setAllStocks(scored);
+        setBuyList(makeBuyList(scored));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to parse CSV.");
+      } finally {
+        setLoading(false);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to parse CSV.");
-    } finally {
-      setLoading(false);
-    }
-  }, [msRatings]);
-
-  function applyMsRatings(stocks: ScoredStock[], ratings: MSRatings): void {
-    // Build a Code → starRating map
-    const ratingMap: Record<string, number | null> = {};
-    for (const [ticker, entry] of Object.entries(ratings)) {
-      ratingMap[ticker] = entry.starRating ?? null;
-    }
-
-    // Re-score with MS data injected
-    // We mutate in-place for performance (table re-renders via state)
-    for (const stock of stocks) {
-      const rawStar = ratingMap[stock.Code] ?? null;
-      stock.S_sp_lt_iv3 = starToIv3Score(rawStar);
-      // Attach raw star rating for display (not in ScoreColumns but useful for UI)
-      (stock as Record<string, unknown>)._msStarRating = rawStar;
-
-      // Recompute count, total, quality, qav with the new S_sp_lt_iv3
-      const scoreKeys: (keyof typeof stock)[] = [
-        "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
-        "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
-        "S_sp_lt_1.3neps", "S_geps_pe", "S_sp_lt_iv1", "S_sp_lt_iv2",
-        "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
-        "S_fh_rating", "S_fh_trend", "S_ownership",
-      ];
-      const vals = scoreKeys
-        .map((k) => (stock as Record<string, unknown>)[k as string] as number | null)
-        .filter((v): v is number => v !== null);
-
-      stock.Count = vals.length;
-      stock.TotalScore = vals.reduce((a, b) => a + b, 0);
-      stock.Quality = vals.length > 0 ? stock.TotalScore / vals.length : null;
-      stock.QAV =
-        stock.Quality !== null && stock.PCF !== null && stock.PCF !== 0
-          ? Math.round((stock.Quality / stock.PCF) * 100 * 100) / 100
-          : null;
-    }
-
-    const bl = makeBuyList(stocks);
-    setAllStocks([...stocks]); // trigger re-render
-    setBuyList(bl);
-  }
+    },
+    [msRatings]
+  );
 
   const loadMorningstar = useCallback(async () => {
     if (!allStocks) return;
@@ -102,7 +98,10 @@ export default function HomePage() {
       const ratings: MSRatings = await res.json();
       setMsRatings(ratings);
       setMsLoaded(true);
-      applyMsRatings(allStocks, ratings);
+
+      const enriched = enrichWithMsRatings(allStocks, ratings);
+      setAllStocks(enriched);
+      setBuyList(makeBuyList(enriched));
     } catch (e) {
       setError(
         e instanceof Error
@@ -114,7 +113,7 @@ export default function HomePage() {
     }
   }, [allStocks]);
 
-  const reset = () => {
+  const reset = useCallback(() => {
     setAllStocks(null);
     setBuyList([]);
     setShowAll(false);
@@ -122,7 +121,7 @@ export default function HomePage() {
     setMsRatings(null);
     setFileName(null);
     setError(null);
-  };
+  }, []);
 
   const displayedStocks = showAll ? (allStocks ?? []) : buyList;
 
@@ -252,7 +251,7 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* Score key */}
+            {/* Score colour key */}
             <div className="flex flex-wrap gap-3 text-xs text-gray-500">
               <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full font-medium">QAV ≥ 20 — Strong buy</span>
               <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-full font-medium">QAV 10–20 — Buy list</span>
@@ -269,11 +268,11 @@ export default function HomePage() {
             <div className="bg-white border border-gray-200 rounded-xl p-5 text-sm text-gray-500 space-y-2">
               <p className="font-semibold text-gray-700">Scoring notes</p>
               <ul className="list-disc list-inside space-y-1">
-                <li><strong>QAV</strong> = (TotalScore / ScoredCount) / PCF × 100 — higher is cheaper relative to quality</li>
-                <li><strong>PCF</strong> = Share Price / (Operating Cash Flow per Share) — calculated from raw data</li>
-                <li><strong>IV1</strong> = EPS / RRR (19.5%) — intrinsic value based on earnings and hurdle rate</li>
-                <li><strong>IV2</strong> = Forecast EPS / Market Hurdle (10.1%) — forward-looking intrinsic value</li>
-                <li>Phase 1 (3PTL) and Phase 2 (historical PE/equity) scores are blank on web — run the Python pipeline for those</li>
+                <li><strong>QAV</strong> = (TotalScore / ScoredCount) / PCF × 100 — higher means cheaper relative to quality</li>
+                <li><strong>PCF</strong> = Share Price ÷ (Operating Cash Flow per Share) — computed from raw CSV data</li>
+                <li><strong>IV1</strong> = EPS ÷ RRR (19.5%) — intrinsic value based on earnings and Tony&apos;s hurdle rate</li>
+                <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle (10.1%) — forward-looking intrinsic value</li>
+                <li>Phase 1 (3PTL) and Phase 2 (historical PE/equity) require the Python pipeline</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>
