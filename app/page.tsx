@@ -72,10 +72,12 @@ export default function HomePage() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
+  const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "bearish">("all");
 
-  // Rate inputs — cash rate drives IV2 market hurdle; iv1Rate drives IV1
+  // Rate inputs — cash rate drives IV2 market hurdle; iv1Rate drives IV1; borrowingRate for div-yield comparison
   const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);         // %
   const [iv1Rate, setIv1Rate] = useState(DEFAULT_RRR * 100);           // %
+  const [borrowingRate, setBorrowingRate] = useState(6.5);              // % personal borrowing cost
 
   const rates: ScoringRates = {
     rrr: iv1Rate / 100,
@@ -147,9 +149,16 @@ export default function HomePage() {
 
   const displayedStocks = showAll ? (allStocks ?? []) : buyList;
 
-  // When ETF filter is active, summary stats reflect the filtered view
-  const statsAll = hideEtfs ? (allStocks ?? []).filter((s) => !isEtfOrFund(s)) : (allStocks ?? []);
-  const statsBuyList = hideEtfs ? buyList.filter((s) => !isEtfOrFund(s)) : buyList;
+  // Summary stats mirror the active table filters (ETF toggle + sentiment)
+  function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
+    let result = arr;
+    if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
+    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 1);
+    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long !== 1);
+    return result;
+  }
+  const statsAll = applyTableFilters(allStocks ?? []);
+  const statsBuyList = applyTableFilters(buyList);
 
   const marketHurdle = (6 + cashRate) / 100;
 
@@ -257,8 +266,29 @@ export default function HomePage() {
                 </div>
               </div>
 
+              {/* Borrowing Cost Rate */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+                  Borrowing Cost (%)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    step={0.05}
+                    value={borrowingRate}
+                    onChange={(e) => setBorrowingRate(parseFloat(e.target.value) || 0)}
+                    className="w-24 text-sm border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono"
+                  />
+                  <span className="text-xs text-indigo-500">
+                    Div yield above this → income covers borrowing cost (shown in breakdown)
+                  </span>
+                </div>
+              </div>
+
               <button
-                onClick={() => { setCashRate(DEFAULT_CASH_RATE); setIv1Rate(DEFAULT_RRR * 100); }}
+                onClick={() => { setCashRate(DEFAULT_CASH_RATE); setIv1Rate(DEFAULT_RRR * 100); setBorrowingRate(6.5); }}
                 className="text-xs text-indigo-500 hover:text-indigo-700 underline pb-1.5"
               >
                 Reset to defaults
@@ -364,6 +394,9 @@ export default function HomePage() {
               showAll={showAll}
               hideEtfs={hideEtfs}
               onToggleEtfs={() => setHideEtfs((v) => !v)}
+              filterSentiment={filterSentiment}
+              onChangeFilterSentiment={setFilterSentiment}
+              borrowingRate={borrowingRate}
             />
 
             {/* Scoring notes */}

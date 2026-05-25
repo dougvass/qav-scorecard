@@ -10,9 +10,12 @@ interface StockTableProps {
   showAll: boolean;
   hideEtfs: boolean;
   onToggleEtfs: () => void;
+  filterSentiment: "all" | "bullish" | "bearish";
+  onChangeFilterSentiment: (v: "all" | "bullish" | "bearish") => void;
+  borrowingRate: number; // % — compared against div yield in breakdown
 }
 
-type SortKey = "QAV" | "TotalScore" | "Count" | "Code" | keyof ScoreColumns | "adt";
+type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt";
 type SortDir = "asc" | "desc";
 
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -70,12 +73,11 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [minAdt, setMinAdt] = useState(0);
-  const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "bearish">("all");
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -170,7 +172,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTab
           <label className="text-sm font-medium text-gray-600">Sentiment</label>
           <select
             value={filterSentiment}
-            onChange={(e) => setFilterSentiment(e.target.value as typeof filterSentiment)}
+            onChange={(e) => onChangeFilterSentiment(e.target.value as "all" | "bullish" | "bearish")}
             className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
           >
             <option value="all">All</option>
@@ -209,8 +211,8 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTab
               <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 2 — Forecast EPS ÷ 10.1% (market hurdle)">IV2</th>
               <Th label="ADT $k" col="adt" title="Average Daily Traded (3 month, $000)" className="text-right" />
               <Th label="QAV" col="QAV" title="Quality / PCF × 100 — the main ranking score" className="text-center" />
-              <Th label="Score" col="TotalScore" title="Sum of all score columns" className="text-center" />
-              <Th label="N" col="Count" title="Number of scored columns" className="text-center" />
+              <Th label="Quality" col="Quality" title="Average score per column (TotalScore ÷ Count) — green ≥ 75%" className="text-center" />
+              <Th label="PCF" col="PCF" title="Price to Cash Flow — lower is cheaper" className="text-center" />
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Sentiment</th>
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">MS ★</th>
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Breakdown</th>
@@ -262,10 +264,24 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTab
                         {stock.QAV !== null ? stock.QAV.toFixed(1) : "—"}
                       </span>
                     </td>
-                    <td className="px-3 py-3 text-center font-semibold text-gray-700">
-                      {stock.TotalScore.toFixed(1)}
+                    <td className="px-3 py-3 text-center">
+                      {stock.Quality !== null ? (
+                        <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2 py-0.5 text-xs font-bold ${
+                          stock.Quality >= 0.75
+                            ? "bg-emerald-100 text-emerald-800"
+                            : stock.Quality > 0
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-gray-100 text-gray-500"
+                        }`}>
+                          {(stock.Quality * 100).toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
                     </td>
-                    <td className="px-3 py-3 text-center text-gray-400">{stock.Count}</td>
+                    <td className="px-3 py-3 text-center font-mono text-xs text-gray-600">
+                      {stock.PCF !== null ? stock.PCF.toFixed(1) : "—"}
+                    </td>
                     <td className="px-3 py-3 text-center">
                       <SentimentBadge stock={stock} />
                     </td>
@@ -285,7 +301,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTab
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
                       <td colSpan={14} className="px-6 py-4">
-                        <ScoreBreakdown stock={stock} />
+                        <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} />
                       </td>
                     </tr>
                   )}
@@ -305,9 +321,11 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTab
   );
 }
 
-function ScoreBreakdown({ stock }: { stock: ScoredStock }) {
+function ScoreBreakdown({ stock, borrowingRate }: { stock: ScoredStock; borrowingRate: number }) {
   const adt = stock["Avg Trade 3M ($000)"];
   const price = stock["Share Price ($)"];
+  const divYield = stock["Div Yield (%)"];
+  const divCoversDebt = divYield !== null && divYield > borrowingRate;
 
   return (
     <div className="space-y-4">
@@ -318,7 +336,23 @@ function ScoreBreakdown({ stock }: { stock: ScoredStock }) {
         <span><strong className="text-gray-800">IV1:</strong> {stock.IV1 !== null ? `$${stock.IV1.toFixed(2)}` : "—"}</span>
         <span><strong className="text-gray-800">IV2:</strong> {stock.IV2 !== null ? `$${stock.IV2.toFixed(2)}` : "—"}</span>
         <span><strong className="text-gray-800">PE:</strong> {stock.PE !== null ? stock.PE.toFixed(1) : "—"}</span>
-        <span><strong className="text-gray-800">Div Yield:</strong> {stock["Div Yield (%)"] !== null ? `${stock["Div Yield (%)"]?.toFixed(1)}%` : "—"}</span>
+        <span>
+          <strong className="text-gray-800">Div Yield:</strong>{" "}
+          {divYield !== null ? (
+            <span className={divCoversDebt ? "text-emerald-700 font-semibold" : ""}>
+              {divYield.toFixed(1)}%
+              {divCoversDebt ? (
+                <span className="ml-1.5 text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">
+                  &gt; {borrowingRate}% ✓
+                </span>
+              ) : (
+                <span className="ml-1.5 text-xs text-gray-400">
+                  &lt; {borrowingRate}% borrow cost
+                </span>
+              )}
+            </span>
+          ) : "—"}
+        </span>
         <span><strong className="text-gray-800">FH Rating:</strong> {stock["Financial Health Rating"] || "—"}</span>
         <span><strong className="text-gray-800">FH Trend:</strong> {stock["Financial Health Trend"] || "—"}</span>
         <span><strong className="text-gray-800">Star Status:</strong> {stock["Star Stock Status"] || "—"}</span>
