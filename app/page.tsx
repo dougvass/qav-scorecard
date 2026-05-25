@@ -1,9 +1,16 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
-import { scoreStocks, makeBuyList, starToIv3Score } from "@/lib/qav-scoring";
-import { ScoredStock, MSRatings } from "@/lib/types";
+import {
+  scoreStocks,
+  makeBuyList,
+  starToIv3Score,
+  DEFAULT_CASH_RATE,
+  DEFAULT_RRR,
+  ScoringRates,
+} from "@/lib/qav-scoring";
+import { StockRow, ScoredStock, MSRatings } from "@/lib/types";
 import { UploadZone } from "@/components/upload-zone";
 import { SummaryStats } from "@/components/summary-stats";
 import { StockTable } from "@/components/stock-table";
@@ -13,9 +20,9 @@ import {
   Star,
   ListFilter,
   BarChart2,
+  Settings2,
 } from "lucide-react";
 
-// Score column keys used when recomputing totals after MS data is applied
 const SCORE_KEYS = [
   "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
   "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
@@ -24,7 +31,6 @@ const SCORE_KEYS = [
   "S_fh_rating", "S_fh_trend", "S_ownership",
 ] as const;
 
-/** Inject MS star ratings into already-scored stocks, recompute QAV. */
 function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredStock[] {
   const ratingMap: Record<string, number | null> = {};
   for (const [ticker, entry] of Object.entries(ratings)) {
@@ -36,7 +42,6 @@ function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredS
     const iv3 = starToIv3Score(rawStar);
     const enriched = { ...stock, S_sp_lt_iv3: iv3, _msStarRating: rawStar } as ScoredStock & { _msStarRating: number | null };
 
-    // Recompute count / total / quality / QAV with the new iv3 value
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -55,6 +60,7 @@ function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredS
 
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
+  const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
   const [allStocks, setAllStocks] = useState<ScoredStock[] | null>(null);
   const [buyList, setBuyList] = useState<ScoredStock[]>([]);
   const [showAll, setShowAll] = useState(false);
@@ -63,33 +69,49 @@ export default function HomePage() {
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [showRateSettings, setShowRateSettings] = useState(false);
 
-  const handleFile = useCallback(
-    async (file: File) => {
-      setLoading(true);
-      setError(null);
-      setFileName(file.name);
-      try {
-        const rows = await parseStockDoctorCSV(file);
-        if (rows.length === 0) throw new Error("No stock rows found in CSV.");
+  // Rate inputs — cash rate drives IV2 market hurdle; iv1Rate drives IV1
+  const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);         // %
+  const [iv1Rate, setIv1Rate] = useState(DEFAULT_RRR * 100);           // %
 
-        let scored = scoreStocks(rows);
-        // If MS ratings were already loaded, enrich immediately
-        if (msRatings) scored = enrichWithMsRatings(scored, msRatings);
+  const rates: ScoringRates = {
+    rrr: iv1Rate / 100,
+    marketHurdle: (6 + cashRate) / 100,
+  };
 
-        setAllStocks(scored);
-        setBuyList(makeBuyList(scored));
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to parse CSV.");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [msRatings]
-  );
+  // Re-score whenever raw rows or rates change
+  useEffect(() => {
+    if (!rawRows) return;
+    const msMap = msRatings
+      ? Object.fromEntries(
+          Object.entries(msRatings).map(([k, v]) => [k, v.starRating ?? null])
+        )
+      : undefined;
+    let scored = scoreStocks(rawRows, msMap, rates);
+    if (msRatings) scored = enrichWithMsRatings(scored, msRatings);
+    setAllStocks(scored);
+    setBuyList(makeBuyList(scored));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawRows, cashRate, iv1Rate, msRatings]);
+
+  const handleFile = useCallback(async (file: File) => {
+    setLoading(true);
+    setError(null);
+    setFileName(file.name);
+    try {
+      const rows = await parseStockDoctorCSV(file);
+      if (rows.length === 0) throw new Error("No stock rows found in CSV.");
+      setRawRows(rows);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to parse CSV.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const loadMorningstar = useCallback(async () => {
-    if (!allStocks) return;
+    if (!rawRows) return;
     setMsLoading(true);
     setError(null);
     try {
@@ -98,10 +120,7 @@ export default function HomePage() {
       const ratings: MSRatings = await res.json();
       setMsRatings(ratings);
       setMsLoaded(true);
-
-      const enriched = enrichWithMsRatings(allStocks, ratings);
-      setAllStocks(enriched);
-      setBuyList(makeBuyList(enriched));
+      // useEffect will re-score with MS ratings included
     } catch (e) {
       setError(
         e instanceof Error
@@ -111,9 +130,10 @@ export default function HomePage() {
     } finally {
       setMsLoading(false);
     }
-  }, [allStocks]);
+  }, [rawRows]);
 
   const reset = useCallback(() => {
+    setRawRows(null);
     setAllStocks(null);
     setBuyList([]);
     setShowAll(false);
@@ -124,6 +144,8 @@ export default function HomePage() {
   }, []);
 
   const displayedStocks = showAll ? (allStocks ?? []) : buyList;
+
+  const marketHurdle = (6 + cashRate) / 100;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -142,6 +164,18 @@ export default function HomePage() {
           <div className="flex items-center gap-3">
             {allStocks && (
               <>
+                <button
+                  onClick={() => setShowRateSettings((v) => !v)}
+                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                    showRateSettings
+                      ? "bg-indigo-50 border-indigo-300 text-indigo-700"
+                      : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                  }`}
+                  title="Adjust hurdle rates"
+                >
+                  <Settings2 className="w-4 h-4" />
+                  Rates
+                </button>
                 {!msLoaded && (
                   <button
                     onClick={loadMorningstar}
@@ -169,6 +203,63 @@ export default function HomePage() {
             )}
           </div>
         </div>
+
+        {/* Rate settings panel — slides in under header */}
+        {showRateSettings && (
+          <div className="border-t border-indigo-100 bg-indigo-50 px-6 py-4">
+            <div className="max-w-screen-2xl mx-auto flex flex-wrap items-end gap-8">
+              {/* Cash Rate */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+                  RBA Cash Rate (%)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={0.05}
+                    value={cashRate}
+                    onChange={(e) => setCashRate(parseFloat(e.target.value) || 0)}
+                    className="w-24 text-sm border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono"
+                  />
+                  <span className="text-xs text-indigo-500">
+                    → IV2 hurdle = {(marketHurdle * 100).toFixed(2)}%
+                    <span className="ml-1 text-indigo-400">(6% + {cashRate}%)</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* IV1 Personal Hurdle */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+                  IV1 Hurdle Rate (%)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    step={0.05}
+                    value={iv1Rate}
+                    onChange={(e) => setIv1Rate(parseFloat(e.target.value) || DEFAULT_RRR * 100)}
+                    className="w-24 text-sm border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono"
+                  />
+                  <span className="text-xs text-indigo-500">
+                    Tony&apos;s default: {DEFAULT_RRR * 100}% — set to your mortgage rate to use as personal benchmark
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => { setCashRate(DEFAULT_CASH_RATE); setIv1Rate(DEFAULT_RRR * 100); }}
+                className="text-xs text-indigo-500 hover:text-indigo-700 underline pb-1.5"
+              >
+                Reset to defaults
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="max-w-screen-2xl mx-auto px-6 py-8 space-y-8">
@@ -270,8 +361,8 @@ export default function HomePage() {
               <ul className="list-disc list-inside space-y-1">
                 <li><strong>QAV</strong> = (TotalScore / ScoredCount) / PCF × 100 — higher means cheaper relative to quality</li>
                 <li><strong>PCF</strong> = Share Price ÷ (Operating Cash Flow per Share) — computed from raw CSV data</li>
-                <li><strong>IV1</strong> = EPS ÷ RRR (19.5%) — intrinsic value based on earnings and Tony&apos;s hurdle rate</li>
-                <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle (10.1%) — forward-looking intrinsic value</li>
+                <li><strong>IV1</strong> = EPS ÷ IV1 Hurdle ({iv1Rate.toFixed(2)}%) — intrinsic value; use your mortgage rate as a personal benchmark</li>
+                <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — forward-looking; driven by RBA cash rate ({cashRate}%) + 6%</li>
                 <li>Phase 1 (3PTL) and Phase 2 (historical PE/equity) require the Python pipeline</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>

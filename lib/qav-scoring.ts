@@ -2,16 +2,22 @@
  * QAV Phase 0 scoring — TypeScript port of qav_pipeline.py
  *
  * Exactly replicates the 15 Phase 0 score columns (validated 100% against
- * QAV_analysis_sheet_v14pcf11.xlsx).
+ * QAV_analysis_sheet_v14pcf12.xlsx).
  */
 
 import { StockRow, ScoredStock, ScoreColumns } from "./types";
 
-// ─── Constants (match row 35 of QAV_updated) ───────────────────────────────
+// ─── Defaults (match row 35 of QAV_updated) ────────────────────────────────
 
-const RRR = 0.195;           // Tony's hurdle rate (AV35)
-const MARKET_HURDLE = 0.101; // 6% + RBA cash rate 4.1% (AW35)
-const DIV_YIELD_THRESHOLD_PCT = 9.3; // AM35 threshold (compared as %)
+export const DEFAULT_RRR = 0.195;           // Tony's hurdle rate (AV35)
+export const DEFAULT_MARKET_HURDLE = 0.1035; // 6% + RBA cash rate 4.35% (AW35)
+export const DEFAULT_CASH_RATE = 4.35;       // RBA cash rate %
+const DIV_YIELD_THRESHOLD_PCT = 9.3;         // AM35 threshold (compared as %)
+
+export interface ScoringRates {
+  rrr: number;           // IV1 hurdle (e.g. 0.195 or personal mortgage rate)
+  marketHurdle: number;  // IV2 hurdle = 6% + cash rate
+}
 
 const STAR_STOCK_SCORES: Record<string, number> = {
   "non star stock": 0,
@@ -44,7 +50,7 @@ function num(v: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
-// ─── Individual scoring functions (mirror Python exactly) ──────────────────
+// ─── Individual scoring functions ──────────────────────────────────────────
 
 function scoreSentimentLong(row: StockRow): number {
   const p5 = num(row["Price Chg 5yr (%)"]);
@@ -113,37 +119,37 @@ function scoreGepsOverPe(row: StockRow): number | null {
   return 0;
 }
 
-function calcIv1(row: StockRow): number | null {
+function calcIv1(row: StockRow, rrr: number): number | null {
   const eps = num(row["EPS Bef Abnormals (c)"]);
   if (eps === null) return null;
-  return Math.round((eps / 100 / RRR) * 100) / 100;
+  return Math.round((eps / 100 / rrr) * 100) / 100;
 }
 
-function calcIv2(row: StockRow): number | null {
+function calcIv2(row: StockRow, marketHurdle: number): number | null {
   const feps = num(row["EPS (¢) Fcst yr1"]);
   if (feps === null) return null;
-  return Math.round((feps / 100 / MARKET_HURDLE) * 100) / 100;
+  return Math.round((feps / 100 / marketHurdle) * 100) / 100;
 }
 
-function scoreSpLtIv1(row: StockRow): number | null {
+function scoreSpLtIv1(row: StockRow, rrr: number): number | null {
   const sp = num(row["Share Price ($)"]);
-  const iv = calcIv1(row);
+  const iv = calcIv1(row, rrr);
   if (sp === null || iv === null) return null;
   return sp < iv ? 1 : 0;
 }
 
-function scoreSpLtIv2(row: StockRow): number | null {
+function scoreSpLtIv2(row: StockRow, marketHurdle: number): number | null {
   if (isBlank(row["EPS (¢) Fcst yr1"])) return null;
   const sp = num(row["Share Price ($)"]);
-  const iv = calcIv2(row);
+  const iv = calcIv2(row, marketHurdle);
   if (sp === null || iv === null) return null;
   return sp < iv ? 1 : 0;
 }
 
-function scoreSpLtHalfIv2(row: StockRow): number | null {
+function scoreSpLtHalfIv2(row: StockRow, marketHurdle: number): number | null {
   if (isBlank(row["EPS (¢) Fcst yr1"])) return null;
   const sp = num(row["Share Price ($)"]);
-  const iv = calcIv2(row);
+  const iv = calcIv2(row, marketHurdle);
   if (sp === null || iv === null) return null;
   return sp < 0.5 * iv ? 1 : 0;
 }
@@ -187,11 +193,16 @@ function scoreOwnership(row: StockRow): number {
 // ─── Main scoring pipeline ─────────────────────────────────────────────────
 
 /** Compute Phase 0 QAV scores for a list of StockRow objects.
- *  MS ratings (Phase 3) can be passed in via msRatings dict. */
+ *  MS ratings (Phase 3) can be passed in via msRatings dict.
+ *  rates overrides the default hurdle rates (RRR for IV1, marketHurdle for IV2). */
 export function scoreStocks(
   rows: StockRow[],
-  msRatings?: Record<string, number | null>
+  msRatings?: Record<string, number | null>,
+  rates: Partial<ScoringRates> = {}
 ): ScoredStock[] {
+  const rrr = rates.rrr ?? DEFAULT_RRR;
+  const mh = rates.marketHurdle ?? DEFAULT_MARKET_HURDLE;
+
   return rows.map((row) => {
     const scores: ScoreColumns = {
       S_sentiment_long: scoreSentimentLong(row),
@@ -204,9 +215,9 @@ export function scoreStocks(
       S_sp_lt_neps: scoreSpLtNeps(row),
       "S_sp_lt_1.3neps": scoreSpLt13Neps(row),
       S_geps_pe: scoreGepsOverPe(row),
-      S_sp_lt_iv1: scoreSpLtIv1(row),
-      S_sp_lt_iv2: scoreSpLtIv2(row),
-      "S_sp_lt_0.5iv2": scoreSpLtHalfIv2(row),
+      S_sp_lt_iv1: scoreSpLtIv1(row, rrr),
+      S_sp_lt_iv2: scoreSpLtIv2(row, mh),
+      "S_sp_lt_0.5iv2": scoreSpLtHalfIv2(row, mh),
       S_sp_lt_iv3: msRatings ? (msRatings[row.Code] ?? null) : null,
       S_sp_lt_iv4: scoreSpLtIv4Consensus(row),
       S_star: scoreStarStock(row),
@@ -215,13 +226,11 @@ export function scoreStocks(
       S_ownership: scoreOwnership(row),
     };
 
-    // Count and sum non-null scores
     const scoreVals = Object.values(scores).filter((v) => v !== null) as number[];
     const count = scoreVals.length;
     const totalScore = scoreVals.reduce((a, b) => a + b, 0);
     const quality = count > 0 ? totalScore / count : null;
 
-    // PCF (recomputed from raw, same as Python)
     const sp = num(row["Share Price ($)"]);
     const cf = num(row["CF: Net Operating ($)"]);
     const shares = num(row["Shares Outstanding (M)"]);
@@ -230,11 +239,9 @@ export function scoreStocks(
       pcf = Math.round((sp / (cf / (shares * 1_000_000))) * 100) / 100;
     }
 
-    // IV1 and IV2 (for display)
-    const iv1 = calcIv1(row);
-    const iv2 = calcIv2(row);
+    const iv1 = calcIv1(row, rrr);
+    const iv2 = calcIv2(row, mh);
 
-    // QAV = Quality / PCF * 100
     let qav: number | null = null;
     if (quality !== null && pcf !== null && pcf !== 0) {
       qav = Math.round((quality / pcf) * 100 * 100) / 100;

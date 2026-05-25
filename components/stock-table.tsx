@@ -68,12 +68,25 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
+/**
+ * Detect ETFs and managed funds by name keywords.
+ * Uses name matching rather than empty GICS so real companies that happen
+ * to lack a GICS code (e.g. DPM, GGP, CCL) are not incorrectly hidden.
+ */
+const ETF_FUND_RE = /\b(ETF|Fund|Managed Fund|Hedge Fund|Quoted Managed)\b/i;
+
+function isEtfOrFund(stock: ScoredStock): boolean {
+  if (stock["Industry Group"] && stock["Industry Group"].trim() !== "") return false;
+  return ETF_FUND_RE.test(stock.Name);
+}
+
 export function StockTable({ stocks, showAll }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [minAdt, setMinAdt] = useState(0);
   const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "bearish">("all");
+  const [hideEtfs, setHideEtfs] = useState(false);
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -86,6 +99,7 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
 
   const filtered = useMemo(() => {
     let result = [...stocks];
+    if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
     if (minAdt > 0) {
       result = result.filter(
         (s) => (s["Avg Trade 3M ($000)"] ?? 0) >= minAdt
@@ -94,7 +108,7 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
     if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 1);
     if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long !== 1);
     return result;
-  }, [stocks, minAdt, filterSentiment]);
+  }, [stocks, minAdt, filterSentiment, hideEtfs]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -155,6 +169,8 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
             className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
           >
             <option value={0}>Any</option>
+            <option value={100}>≥ $100k</option>
+            <option value={250}>≥ $250k</option>
             <option value={500}>≥ $500k</option>
             <option value={1000}>≥ $1M</option>
             <option value={2000}>≥ $2M</option>
@@ -173,6 +189,17 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
             <option value="bearish">Bearish only</option>
           </select>
         </div>
+        <button
+          onClick={() => setHideEtfs((v) => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+            hideEtfs
+              ? "bg-indigo-600 text-white border-indigo-600"
+              : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+          }`}
+          title="Hide ETFs, managed funds, and LICs (stocks with no GICS sector)"
+        >
+          {hideEtfs ? "ETFs hidden" : "Hide ETFs/Funds"}
+        </button>
         <span className="text-sm text-gray-400 ml-auto">
           {sorted.length} stock{sorted.length !== 1 ? "s" : ""}
           {!showAll && " in buy list"}
@@ -189,6 +216,8 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
               <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide min-w-[160px]">Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sector</th>
               <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Price</th>
+              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 1 — EPS ÷ 19.5% (Tony's hurdle)">IV1</th>
+              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 2 — Forecast EPS ÷ 10.1% (market hurdle)">IV2</th>
               <Th label="ADT $k" col="adt" title="Average Daily Traded (3 month, $000)" className="text-right" />
               <Th label="QAV" col="QAV" title="Quality / PCF × 100 — the main ranking score" className="text-center" />
               <Th label="Score" col="TotalScore" title="Sum of all score columns" className="text-center" />
@@ -232,6 +261,12 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
                         ? `$${stock["Share Price ($)"]?.toFixed(2)}`
                         : "—"}
                     </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs text-indigo-600">
+                      {stock.IV1 !== null ? `$${stock.IV1.toFixed(2)}` : "—"}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-xs text-violet-600">
+                      {stock.IV2 !== null ? `$${stock.IV2.toFixed(2)}` : "—"}
+                    </td>
                     <td className="px-3 py-3 text-right text-gray-600">{adtStr}</td>
                     <td className="px-3 py-3 text-center">
                       <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2.5 py-1 text-sm font-bold ${qavColor(stock.QAV)}`}>
@@ -260,7 +295,7 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
                   </tr>
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
-                      <td colSpan={12} className="px-6 py-4">
+                      <td colSpan={14} className="px-6 py-4">
                         <ScoreBreakdown stock={stock} />
                       </td>
                     </tr>
