@@ -50,6 +50,21 @@ function num(v: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
+// ─── ETF / fund detection ──────────────────────────────────────────────────
+
+/**
+ * Identifies ETFs and managed funds by name keywords rather than empty GICS,
+ * so real companies that happen to lack a sector code (e.g. DPM, GGP, CCL)
+ * are not incorrectly hidden.
+ */
+export const ETF_FUND_RE = /\b(ETF|Fund|Managed Fund|Hedge Fund|Quoted Managed)\b/i;
+
+export function isEtfOrFund(stock: { Name: string; "Industry Group": string | number | null }): boolean {
+  const ig = stock["Industry Group"];
+  if (ig && String(ig).trim() !== "" && String(ig) !== "nan") return false;
+  return ETF_FUND_RE.test(String(stock.Name));
+}
+
 // ─── Individual scoring functions ──────────────────────────────────────────
 
 function scoreSentimentLong(row: StockRow): number {
@@ -60,7 +75,11 @@ function scoreSentimentLong(row: StockRow): number {
   const b = p6 !== null && p6 > 0 ? 1 : 0;
   const c = isBlank(row["Price Chg 5yr (%)"]) ? 1 : 0;
   const inner = a + b + c === 2 ? 1 : 0;
-  const bullish = sdmax === "Bullish" ? 1 : 0;
+  // SDMAX=Bullish is only trusted when the 5yr trend is also positive (or absent).
+  // Stock Doctor can flip to "Bullish" when price crosses the 3PTL *buy* line —
+  // which in QAV terms is Josephine (between lines), not a confirmed uptrend above
+  // the sell line. Requiring a >= 1 or c >= 1 guards against this false positive.
+  const bullish = sdmax === "Bullish" && (a === 1 || c === 1) ? 1 : 0;
   return inner + bullish > 0 ? 1 : 0;
 }
 

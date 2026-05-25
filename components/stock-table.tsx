@@ -2,12 +2,14 @@
 
 import React, { useState, useMemo } from "react";
 import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
-import { qavColor, scoreColor } from "@/lib/qav-scoring";
+import { qavColor, scoreColor, isEtfOrFund } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
 
 interface StockTableProps {
   stocks: ScoredStock[];
   showAll: boolean;
+  hideEtfs: boolean;
+  onToggleEtfs: () => void;
 }
 
 type SortKey = "QAV" | "TotalScore" | "Count" | "Code" | keyof ScoreColumns | "adt";
@@ -68,25 +70,12 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-/**
- * Detect ETFs and managed funds by name keywords.
- * Uses name matching rather than empty GICS so real companies that happen
- * to lack a GICS code (e.g. DPM, GGP, CCL) are not incorrectly hidden.
- */
-const ETF_FUND_RE = /\b(ETF|Fund|Managed Fund|Hedge Fund|Quoted Managed)\b/i;
-
-function isEtfOrFund(stock: ScoredStock): boolean {
-  if (stock["Industry Group"] && stock["Industry Group"].trim() !== "") return false;
-  return ETF_FUND_RE.test(stock.Name);
-}
-
-export function StockTable({ stocks, showAll }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [minAdt, setMinAdt] = useState(0);
   const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "bearish">("all");
-  const [hideEtfs, setHideEtfs] = useState(false);
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -190,13 +179,13 @@ export function StockTable({ stocks, showAll }: StockTableProps) {
           </select>
         </div>
         <button
-          onClick={() => setHideEtfs((v) => !v)}
+          onClick={onToggleEtfs}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
             hideEtfs
               ? "bg-indigo-600 text-white border-indigo-600"
               : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
           }`}
-          title="Hide ETFs, managed funds, and LICs (stocks with no GICS sector)"
+          title="Hide ETFs, managed funds, and LICs — also updates summary stats"
         >
           {hideEtfs ? "ETFs hidden" : "Hide ETFs/Funds"}
         </button>

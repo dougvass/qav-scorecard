@@ -6,6 +6,7 @@ import {
   scoreStocks,
   makeBuyList,
   starToIv3Score,
+  isEtfOrFund,
   DEFAULT_CASH_RATE,
   DEFAULT_RRR,
   ScoringRates,
@@ -70,6 +71,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
+  const [hideEtfs, setHideEtfs] = useState(false);
 
   // Rate inputs — cash rate drives IV2 market hurdle; iv1Rate drives IV1
   const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);         // %
@@ -144,6 +146,10 @@ export default function HomePage() {
   }, []);
 
   const displayedStocks = showAll ? (allStocks ?? []) : buyList;
+
+  // When ETF filter is active, summary stats reflect the filtered view
+  const statsAll = hideEtfs ? (allStocks ?? []).filter((s) => !isEtfOrFund(s)) : (allStocks ?? []);
+  const statsBuyList = hideEtfs ? buyList.filter((s) => !isEtfOrFund(s)) : buyList;
 
   const marketHurdle = (6 + cashRate) / 100;
 
@@ -313,8 +319,8 @@ export default function HomePage() {
               </span>
             </div>
 
-            {/* Summary stats */}
-            <SummaryStats all={allStocks} buyList={buyList} msLoaded={msLoaded} />
+            {/* Summary stats — filtered when ETF toggle is active */}
+            <SummaryStats all={statsAll} buyList={statsBuyList} msLoaded={msLoaded} />
 
             {/* View toggle */}
             <div className="flex items-center gap-3">
@@ -353,7 +359,12 @@ export default function HomePage() {
             </div>
 
             {/* Table */}
-            <StockTable stocks={displayedStocks} showAll={showAll} />
+            <StockTable
+              stocks={displayedStocks}
+              showAll={showAll}
+              hideEtfs={hideEtfs}
+              onToggleEtfs={() => setHideEtfs((v) => !v)}
+            />
 
             {/* Scoring notes */}
             <div className="bg-white border border-gray-200 rounded-xl p-5 text-sm text-gray-500 space-y-2">
