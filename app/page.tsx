@@ -22,6 +22,7 @@ import {
   ListFilter,
   BarChart2,
   Settings2,
+  TrendingUp,
 } from "lucide-react";
 
 const SCORE_KEYS = [
@@ -31,6 +32,9 @@ const SCORE_KEYS = [
   "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
   "S_fh_rating", "S_fh_trend", "S_ownership",
 ] as const;
+
+// Yahoo Finance Phase 2 payload type
+type YFPhase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null }>;
 
 function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredStock[] {
   const ratingMap: Record<string, number | null> = {};
@@ -59,6 +63,32 @@ function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredS
   });
 }
 
+/** Apply Yahoo Finance Phase 2 scores (equity trend + PE hi-lo) and recompute derived stats. */
+function enrichWithYahooPhase2(stocks: ScoredStock[], phase2: YFPhase2Map): ScoredStock[] {
+  return stocks.map((stock) => {
+    const data = phase2[stock.Code];
+    if (!data) return stock;
+
+    const enriched = { ...stock } as ScoredStock;
+    if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
+    if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+
+    return enriched;
+  });
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
@@ -68,6 +98,10 @@ export default function HomePage() {
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
+  const [yfLoading, setYfLoading] = useState(false);
+  const [yfLoaded, setYfLoaded] = useState(false);
+  const [yfProgress, setYfProgress] = useState(0);       // 0-100
+  const [yahooPhase2, setYahooPhase2] = useState<YFPhase2Map | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -84,7 +118,7 @@ export default function HomePage() {
     marketHurdle: (6 + cashRate) / 100,
   };
 
-  // Re-score whenever raw rows or rates change
+  // Re-score whenever raw rows, rates, or enrichment data changes
   useEffect(() => {
     if (!rawRows) return;
     const msMap = msRatings
@@ -94,10 +128,11 @@ export default function HomePage() {
       : undefined;
     let scored = scoreStocks(rawRows, msMap, rates);
     if (msRatings) scored = enrichWithMsRatings(scored, msRatings);
+    if (yahooPhase2) scored = enrichWithYahooPhase2(scored, yahooPhase2);
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings]);
+  }, [rawRows, cashRate, iv1Rate, msRatings, yahooPhase2]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -136,6 +171,47 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
+  const loadYahooFinance = useCallback(async () => {
+    if (!allStocks) return;
+    setYfLoading(true);
+    setYfProgress(0);
+    setError(null);
+
+    const allResults: YFPhase2Map = {};
+    // Build PE map from current CSV data (fallback if Yahoo trailingPE is unavailable)
+    const peMap: Record<string, number | null> = {};
+    for (const s of allStocks) peMap[s.Code] = s.PE;
+
+    const codes = allStocks.map((s) => s.Code);
+    const BATCH = 12; // stocks per API call — balances speed vs Vercel timeout
+
+    try {
+      for (let i = 0; i < codes.length; i += BATCH) {
+        const batch = codes.slice(i, i + BATCH);
+        const res = await fetch("/api/yahoo-finance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: batch, pes: peMap }),
+        });
+        if (!res.ok) throw new Error(`API error ${res.status}`);
+        const data: YFPhase2Map = await res.json();
+        Object.assign(allResults, data);
+        setYfProgress(Math.min(99, Math.round(((i + BATCH) / codes.length) * 100)));
+      }
+      setYahooPhase2(allResults);
+      setYfLoaded(true);
+      setYfProgress(100);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `Yahoo Finance failed: ${e.message}`
+          : "Yahoo Finance Phase 2 fetch failed."
+      );
+    } finally {
+      setYfLoading(false);
+    }
+  }, [allStocks]);
+
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
@@ -143,6 +219,9 @@ export default function HomePage() {
     setShowAll(false);
     setMsLoaded(false);
     setMsRatings(null);
+    setYfLoaded(false);
+    setYahooPhase2(null);
+    setYfProgress(0);
     setFileName(null);
     setError(null);
   }, []);
@@ -205,6 +284,25 @@ export default function HomePage() {
                   <span className="flex items-center gap-1.5 text-sm text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
                     <Star className="w-4 h-4" />
                     MorningStar loaded
+                  </span>
+                )}
+                {!yfLoaded && (
+                  <button
+                    onClick={loadYahooFinance}
+                    disabled={yfLoading}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 disabled:opacity-60 transition-colors"
+                    title="Load Phase 2 data from Yahoo Finance — equity trend & PE hi-lo"
+                  >
+                    <TrendingUp className={`w-4 h-4 ${yfLoading ? "animate-pulse" : ""}`} />
+                    {yfLoading
+                      ? `Yahoo Finance… ${yfProgress}%`
+                      : "Load Yahoo Finance (Phase 2)"}
+                  </button>
+                )}
+                {yfLoaded && (
+                  <span className="flex items-center gap-1.5 text-sm text-teal-700 bg-teal-50 px-3 py-1.5 rounded-lg border border-teal-200">
+                    <TrendingUp className="w-4 h-4" />
+                    Phase 2 loaded
                   </span>
                 )}
                 <button
@@ -407,7 +505,8 @@ export default function HomePage() {
                 <li><strong>PCF</strong> = Share Price ÷ (Operating Cash Flow per Share) — computed from raw CSV data</li>
                 <li><strong>IV1</strong> = EPS ÷ IV1 Hurdle ({iv1Rate.toFixed(2)}%) — intrinsic value; use your mortgage rate as a personal benchmark</li>
                 <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — forward-looking; driven by RBA cash rate ({cashRate}%) + 6%</li>
-                <li>Phase 1 (3PTL) and Phase 2 (historical PE/equity) require the Python pipeline</li>
+                <li>Phase 1 (3PTL short sentiment) requires the manual Python pipeline</li>
+                <li><strong>Phase 2</strong> (equity trend + PE hi-lo) fetched from Yahoo Finance — click <em>Load Yahoo Finance</em> above. Equity scores 1 if stockholders&apos; equity increased YoY for 3 consecutive years; PE hi-lo scores 1 if current trailing PE is below the midpoint of its 3-year range</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>
@@ -418,7 +517,7 @@ export default function HomePage() {
       <footer className="border-t border-gray-200 bg-white mt-16">
         <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between text-xs text-gray-400">
           <span>QAV method by Tony Kynaston — automated scoring pipeline</span>
-          <span>Phase 0 + Phase 3 (MorningStar)</span>
+          <span>Phase 0 + Phase 2 (Yahoo Finance) + Phase 3 (MorningStar)</span>
         </div>
       </footer>
     </div>

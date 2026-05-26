@@ -240,7 +240,18 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                     }`}
                   >
                     <td className="px-3 py-3 text-xs text-gray-400">{idx + 1}</td>
-                    <td className="px-3 py-3 font-bold text-gray-900">{stock.Code}</td>
+                    <td className="px-3 py-3 font-bold">
+                      <a
+                        href={`https://finance.yahoo.com/quote/${stock.Code}.AX/`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-700 hover:text-indigo-900 hover:underline"
+                        title={`Open ${stock.Code}.AX on Yahoo Finance`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {stock.Code}
+                      </a>
+                    </td>
                     <td className="px-3 py-3 text-gray-700 max-w-[220px] truncate" title={stock.Name}>
                       {stock.Name}
                     </td>
