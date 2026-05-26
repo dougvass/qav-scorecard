@@ -194,6 +194,10 @@ export default function HomePage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ codes: batch, pes: peMap }),
         });
+        if (res.status === 503) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error ?? "FMP_API_KEY not set in Vercel environment variables");
+        }
         if (!res.ok) throw new Error(`API error ${res.status}`);
         const data: YFPhase2Map = await res.json();
         Object.assign(allResults, data);
@@ -205,8 +209,8 @@ export default function HomePage() {
     } catch (e) {
       setError(
         e instanceof Error
-          ? `Yahoo Finance failed: ${e.message}`
-          : "Yahoo Finance Phase 2 fetch failed."
+          ? `Phase 2 fetch failed: ${e.message}`
+          : "Phase 2 (FMP) fetch failed."
       );
     } finally {
       setYfLoading(false);
