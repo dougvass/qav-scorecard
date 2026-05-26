@@ -29,6 +29,10 @@ const SENTIMENT_COLORS: Record<string, string> = {
 };
 
 function ScorePill({ val }: { val: number | null }) {
+  // null  = no data at all (not scored)            → dash
+  // 0     = scored but did not pass the test       → amber "0" so it's clearly different from null
+  // > 0   = scored and passed (or bonus points)    → green
+  // < 0   = scored but negative (deteriorating)    → red
   if (val === null)
     return <span className="text-xs text-gray-300 select-none">—</span>;
   const color =
@@ -36,7 +40,7 @@ function ScorePill({ val }: { val: number | null }) {
       ? "bg-emerald-100 text-emerald-800"
       : val < 0
       ? "bg-red-100 text-red-700"
-      : "bg-gray-100 text-gray-500";
+      : "bg-amber-50 text-amber-700 border border-amber-200"; // 0 = data present, test failed
   return (
     <span className={`inline-flex items-center justify-center min-w-[28px] rounded px-1.5 py-0.5 text-xs font-semibold ${color}`}>
       {val > 0 ? `+${val}` : val}
@@ -372,6 +376,23 @@ function ScoreBreakdown({ stock, borrowingRate }: { stock: ScoredStock; borrowin
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
         {SCORE_COL_META.map((meta) => {
           const val = (stock as Record<string, unknown>)[meta.key] as number | null;
+
+          // Sub-label under the score name — phase-specific context
+          let subLabel: React.ReactNode = null;
+          if (meta.phase === 2) {
+            if (val === 1) {
+              subLabel = <span className="text-xs font-medium text-emerald-600">✓ Pass · Yahoo Finance</span>;
+            } else if (val === 0) {
+              subLabel = <span className="text-xs font-medium text-red-500">✗ Fail · Yahoo Finance</span>;
+            } else {
+              subLabel = <span className="text-xs text-teal-500">→ Load Yahoo Finance</span>;
+            }
+          } else if (meta.phase === 1) {
+            subLabel = <span className="text-xs text-indigo-400">3PTL (manual)</span>;
+          } else if (meta.phase === 3) {
+            subLabel = <span className="text-xs text-amber-500">MorningStar</span>;
+          }
+
           return (
             <div
               key={meta.key}
@@ -380,9 +401,7 @@ function ScoreBreakdown({ stock, borrowingRate }: { stock: ScoredStock; borrowin
             >
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-gray-700 truncate">{meta.label}</p>
-                {meta.phase > 0 && (
-                  <p className="text-xs text-indigo-400">Phase {meta.phase}</p>
-                )}
+                {subLabel}
               </div>
               <ScorePill val={val} />
             </div>

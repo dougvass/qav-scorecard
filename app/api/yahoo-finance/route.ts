@@ -189,9 +189,10 @@ function computePeHiLo(
 
   if (historicalPEs.length < 2) return null;
 
+  // Score 1 if current PE is at or within 10% above its 3-year minimum
+  // (i.e. the stock's PE is actually near its historical cheap end, not just below average)
   const minPE = Math.min(...historicalPEs);
-  const maxPE = Math.max(...historicalPEs);
-  return trailingPE <= (minPE + maxPE) / 2 ? 1 : 0;
+  return trailingPE <= minPE * 1.1 ? 1 : 0;
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
