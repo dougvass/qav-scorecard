@@ -135,20 +135,6 @@ export default function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawRows, cashRate, iv1Rate, msRatings, yahooPhase2]);
 
-  // Auto-load Phase 2 as soon as stocks are available (once per CSV upload)
-  useEffect(() => {
-    if (
-      allStocks && allStocks.length > 0 &&
-      !yfLoaded && !yfLoading &&
-      !yfAutoStarted.current
-    ) {
-      yfAutoStarted.current = true;
-      loadYahooFinance();
-    }
-  // loadYahooFinance is stable per allStocks reference; yfLoaded/yfLoading guard re-runs
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allStocks, yfLoaded, yfLoading, loadYahooFinance]);
-
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
     setError(null);
@@ -226,6 +212,20 @@ export default function HomePage() {
       setYfLoading(false);
     }
   }, [allStocks]);
+
+  // Auto-load Phase 2 as soon as stocks are available (once per CSV upload)
+  useEffect(() => {
+    if (
+      allStocks && allStocks.length > 0 &&
+      !yfLoaded && !yfLoading &&
+      !yfAutoStarted.current
+    ) {
+      yfAutoStarted.current = true;
+      loadYahooFinance();
+    }
+  // loadYahooFinance is stable per allStocks reference; yfLoaded/yfLoading guard re-runs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allStocks, yfLoaded, yfLoading, loadYahooFinance]);
 
   const reset = useCallback(() => {
     setRawRows(null);
