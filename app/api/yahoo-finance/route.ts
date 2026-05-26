@@ -26,21 +26,48 @@ const FMP_BASE = "https://financialmodelingprep.com/api/v3";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FMPRow = Record<string, any>;
 
-async function fmpGet(path: string, apiKey: string): Promise<FMPRow[]> {
+async function fmpGet(path: string, apiKey: string, debug = false): Promise<FMPRow[]> {
   const sep = path.includes("?") ? "&" : "?";
   const url = `${FMP_BASE}${path}${sep}apikey=${encodeURIComponent(apiKey)}`;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json" },
     });
-    if (!res.ok) return [];
+    if (debug) console.log(`[FMP] ${url.replace(apiKey, "***")} → ${res.status}`);
+    if (!res.ok) {
+      if (debug) console.log(`[FMP] non-OK response body:`, await res.text());
+      return [];
+    }
     const data = await res.json();
+    if (debug) console.log(`[FMP] response type=${Array.isArray(data) ? "array" : "object"}, keys=${Array.isArray(data) ? data.length : Object.keys(data).join(",")}`);
     if (Array.isArray(data)) return data as FMPRow[];
     // FMP returns { "Error Message": "..." } on bad ticker or plan limit
+    if (debug) console.log(`[FMP] error object:`, JSON.stringify(data));
     return [];
-  } catch {
+  } catch (e) {
+    if (debug) console.log(`[FMP] fetch threw:`, e);
     return [];
   }
+}
+
+// GET /api/yahoo-finance?ticker=BHP — test a single ticker for debugging
+export async function GET(request: Request) {
+  const apiKey = process.env.FMP_API_KEY ?? "";
+  if (!apiKey) return Response.json({ error: "FMP_API_KEY not set" }, { status: 503 });
+
+  const ticker = new URL(request.url).searchParams.get("ticker") ?? "BHP";
+  const encoded = encodeURIComponent(`${ticker}.AX`);
+
+  const [bs, ratios] = await Promise.all([
+    fmpGet(`/balance-sheet-statement/${encoded}?limit=3&period=annual`, apiKey, true),
+    fmpGet(`/ratios/${encoded}?limit=3&period=annual`, apiKey, true),
+  ]);
+
+  return Response.json({
+    ticker: `${ticker}.AX`,
+    balanceSheet: { count: bs.length, sample: bs[0] ?? null },
+    ratios: { count: ratios.length, sample: ratios[0] ?? null },
+  });
 }
 
 // ─── Score computation ────────────────────────────────────────────────────────
