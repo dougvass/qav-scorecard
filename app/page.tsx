@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import {
   scoreStocks,
@@ -102,6 +102,7 @@ export default function HomePage() {
   const [yfLoaded, setYfLoaded] = useState(false);
   const [yfProgress, setYfProgress] = useState(0);       // 0-100
   const [yahooPhase2, setYahooPhase2] = useState<YFPhase2Map | null>(null);
+  const yfAutoStarted = useRef(false);                   // guard: fire auto-load once per CSV
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -133,6 +134,20 @@ export default function HomePage() {
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawRows, cashRate, iv1Rate, msRatings, yahooPhase2]);
+
+  // Auto-load Phase 2 as soon as stocks are available (once per CSV upload)
+  useEffect(() => {
+    if (
+      allStocks && allStocks.length > 0 &&
+      !yfLoaded && !yfLoading &&
+      !yfAutoStarted.current
+    ) {
+      yfAutoStarted.current = true;
+      loadYahooFinance();
+    }
+  // loadYahooFinance is stable per allStocks reference; yfLoaded/yfLoading guard re-runs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allStocks, yfLoaded, yfLoading, loadYahooFinance]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -224,6 +239,7 @@ export default function HomePage() {
     setYfProgress(0);
     setFileName(null);
     setError(null);
+    yfAutoStarted.current = false;   // allow auto-load on the next CSV upload
   }, []);
 
   const displayedStocks = showAll ? (allStocks ?? []) : buyList;
@@ -286,20 +302,19 @@ export default function HomePage() {
                     MorningStar loaded
                   </span>
                 )}
-                {!yfLoaded && (
-                  <button
-                    onClick={loadYahooFinance}
-                    disabled={yfLoading}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 disabled:opacity-60 transition-colors"
-                    title="Load Phase 2 data from Yahoo Finance — equity trend & PE hi-lo"
-                  >
-                    <TrendingUp className={`w-4 h-4 ${yfLoading ? "animate-pulse" : ""}`} />
-                    {yfLoading
-                      ? `Yahoo Finance… ${yfProgress}%`
-                      : "Load Yahoo Finance (Phase 2)"}
-                  </button>
+                {yfLoading && (
+                  <span className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-teal-300 bg-teal-50 text-teal-800">
+                    <TrendingUp className="w-4 h-4 animate-pulse" />
+                    Yahoo Finance… {yfProgress}%
+                    <span className="w-24 h-1.5 rounded-full bg-teal-100 overflow-hidden">
+                      <span
+                        className="block h-full bg-teal-500 transition-all duration-300"
+                        style={{ width: `${yfProgress}%` }}
+                      />
+                    </span>
+                  </span>
                 )}
-                {yfLoaded && (
+                {!yfLoading && yfLoaded && (
                   <span className="flex items-center gap-1.5 text-sm text-teal-700 bg-teal-50 px-3 py-1.5 rounded-lg border border-teal-200">
                     <TrendingUp className="w-4 h-4" />
                     Phase 2 loaded
@@ -495,6 +510,7 @@ export default function HomePage() {
               filterSentiment={filterSentiment}
               onChangeFilterSentiment={setFilterSentiment}
               borrowingRate={borrowingRate}
+              yfLoaded={yfLoaded}
             />
 
             {/* Scoring notes */}
@@ -506,7 +522,7 @@ export default function HomePage() {
                 <li><strong>IV1</strong> = EPS ÷ IV1 Hurdle ({iv1Rate.toFixed(2)}%) — intrinsic value; use your mortgage rate as a personal benchmark</li>
                 <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — forward-looking; driven by RBA cash rate ({cashRate}%) + 6%</li>
                 <li>Phase 1 (3PTL short sentiment) requires the manual Python pipeline</li>
-                <li><strong>Phase 2</strong> (equity trend + PE hi-lo) fetched from Yahoo Finance — click <em>Load Yahoo Finance</em> above. Equity scores 1 if stockholders&apos; equity increased YoY for 3 consecutive years; PE hi-lo scores 1 if current trailing PE is below the midpoint of its 3-year range</li>
+                <li><strong>Phase 2</strong> (equity trend + PE hi-lo) auto-fetched from Yahoo Finance on upload. Equity scores 1 if stockholders&apos; equity increased YoY for 3 consecutive years; PE hi-lo scores 1 if current trailing PE is at or within 10% of its 3-year historical minimum</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>

@@ -13,6 +13,7 @@ interface StockTableProps {
   filterSentiment: "all" | "bullish" | "bearish";
   onChangeFilterSentiment: (v: "all" | "bullish" | "bearish") => void;
   borrowingRate: number; // % — compared against div yield in breakdown
+  yfLoaded?: boolean;   // true once Yahoo Finance Phase 2 data has been fetched
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt";
@@ -77,7 +78,7 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, yfLoaded }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -316,7 +317,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
                       <td colSpan={14} className="px-6 py-4">
-                        <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} />
+                        <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} yfLoaded={yfLoaded} />
                       </td>
                     </tr>
                   )}
@@ -336,7 +337,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
   );
 }
 
-function ScoreBreakdown({ stock, borrowingRate }: { stock: ScoredStock; borrowingRate: number }) {
+function ScoreBreakdown({ stock, borrowingRate, yfLoaded }: { stock: ScoredStock; borrowingRate: number; yfLoaded?: boolean }) {
   const adt = stock["Avg Trade 3M ($000)"];
   const price = stock["Share Price ($)"];
   const divYield = stock["Div Yield (%)"];
@@ -384,8 +385,11 @@ function ScoreBreakdown({ stock, borrowingRate }: { stock: ScoredStock; borrowin
               subLabel = <span className="text-xs font-medium text-emerald-600">✓ Pass · Yahoo Finance</span>;
             } else if (val === 0) {
               subLabel = <span className="text-xs font-medium text-red-500">✗ Fail · Yahoo Finance</span>;
+            } else if (yfLoaded) {
+              // YF was fetched but this stock had no usable data (no EPS history, no PE, etc.)
+              subLabel = <span className="text-xs text-gray-400">No data · Yahoo Finance</span>;
             } else {
-              subLabel = <span className="text-xs text-teal-500">→ Load Yahoo Finance</span>;
+              subLabel = <span className="text-xs text-teal-500 animate-pulse">Fetching Yahoo Finance…</span>;
             }
           } else if (meta.phase === 1) {
             subLabel = <span className="text-xs text-indigo-400">3PTL (manual)</span>;

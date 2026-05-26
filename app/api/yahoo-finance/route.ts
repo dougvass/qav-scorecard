@@ -1,10 +1,8 @@
 /**
- * Yahoo Finance Phase 2 data endpoint — no external packages required.
+ * Yahoo Finance Phase 2 data — native fetch, no external packages.
  *
- * Uses Yahoo Finance's raw JSON API directly (native fetch, Node 18+).
- * Gets a session crumb for authenticated access, then fetches:
- *   - quoteSummary (balance sheet + income statement + summary)
- *   - chart history (quarterly close prices)
+ * Auth: finance.yahoo.com sets a session cookie; exchange it for a crumb;
+ * use cookie + crumb on all subsequent API calls.
  *
  * POST /api/yahoo-finance
  * Body:  { codes: string[], pes: Record<string, number | null> }
@@ -13,55 +11,108 @@
 
 import { NextResponse } from "next/server";
 
-const YF1 = "https://query1.finance.yahoo.com";
-const YF2 = "https://query2.finance.yahoo.com";
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-// ─── Auth: get crumb + cookie from Yahoo Finance ──────────────────────────────
+const COMMON_HEADERS = {
+  "User-Agent": UA,
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+};
 
-interface Auth {
-  cookie: string;
-  crumb: string;
+// ─── Auth: cookie + crumb ─────────────────────────────────────────────────────
+
+interface Auth { cookie: string; crumb: string }
+
+/** Extract Name=Value pairs from all Set-Cookie headers. */
+function parseCookies(res: Response): string {
+  try {
+    // Node 18+ / Vercel — handles multiple Set-Cookie headers correctly
+    const h = res.headers as unknown as { getSetCookie?: () => string[] };
+    if (typeof h.getSetCookie === "function") {
+      return h.getSetCookie()
+        .map((c) => c.split(";")[0].trim())
+        .filter(Boolean)
+        .join("; ");
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: split comma-separated Set-Cookie (may mis-split on date commas,
+  // but good enough for Yahoo's short-lived session cookies)
+  const raw = res.headers.get("set-cookie") ?? "";
+  return raw
+    .split(/,(?=\s*\w+=)/)
+    .map((c) => c.trim().split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
 }
 
 async function getAuth(): Promise<Auth | null> {
-  try {
-    // Step 1: visit fc.yahoo.com to get a session cookie
-    const cookieRes = await fetch("https://fc.yahoo.com", {
-      headers: { "User-Agent": UA, Accept: "text/html" },
-      redirect: "follow",
-    });
+  // Yahoo Finance requires:
+  //   1. Visit finance.yahoo.com → get session cookies (A1, A3, etc.)
+  //   2. Exchange those cookies for a short-lived "crumb"
+  //   3. Pass cookie + crumb on all subsequent API calls
 
-    // Collect all Set-Cookie headers
+  const cookieSources = [
+    "https://finance.yahoo.com/",
+    "https://finance.yahoo.com/quote/BHP.AX/",
+    "https://fc.yahoo.com/",
+  ];
+
+  const crumbEndpoints = [
+    "https://query1.finance.yahoo.com/v1/test/getcrumb",
+    "https://query2.finance.yahoo.com/v1/test/getcrumb",
+  ];
+
+  for (const cookieUrl of cookieSources) {
     let cookieStr = "";
-    if (typeof (cookieRes.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie === "function") {
-      // Node 18+ native fetch
-      const cookies = (cookieRes.headers as Headers & { getSetCookie: () => string[] }).getSetCookie();
-      cookieStr = cookies.map((c) => c.split(";")[0]).join("; ");
-    } else {
-      // Fallback: get first Set-Cookie header
-      cookieStr = (cookieRes.headers.get("set-cookie") ?? "").split(";")[0];
+    try {
+      const res = await fetch(cookieUrl, {
+        headers: {
+          ...COMMON_HEADERS,
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        redirect: "follow",
+      });
+      cookieStr = parseCookies(res);
+    } catch { continue; }
+
+    if (!cookieStr) continue;
+
+    for (const crumbUrl of crumbEndpoints) {
+      try {
+        const cr = await fetch(crumbUrl, {
+          headers: {
+            ...COMMON_HEADERS,
+            Accept: "application/json, text/plain, */*",
+            Referer: "https://finance.yahoo.com/",
+            Cookie: cookieStr,
+          },
+        });
+        if (!cr.ok) continue;
+
+        const crumb = (await cr.text()).trim();
+        // A valid crumb is a short alphanumeric-ish string (not HTML, not JSON)
+        if (crumb && crumb.length > 0 && crumb.length <= 64 &&
+            !crumb.startsWith("<") && !crumb.startsWith("{")) {
+          return { cookie: cookieStr, crumb };
+        }
+      } catch { /* try next */ }
     }
-
-    // Step 2: exchange cookie for a crumb
-    const crumbRes = await fetch(`${YF2}/v1/test/getcrumb`, {
-      headers: { "User-Agent": UA, Cookie: cookieStr },
-    });
-    if (!crumbRes.ok) return null;
-    const crumb = (await crumbRes.text()).trim();
-    // crumb is a short alphanumeric string — reject HTML or empty responses
-    if (!crumb || crumb.length > 64 || crumb.startsWith("<")) return null;
-
-    return { cookie: cookieStr, crumb };
-  } catch {
-    return null;
   }
+
+  return null; // proceed without auth — chart endpoint often works anyway
 }
 
-// ─── Typed helpers for Yahoo Finance's { raw, fmt } number format ─────────────
+// ─── Yahoo Finance API helpers ────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type YFJson = Record<string, any>;
+
+// Yahoo wraps numbers as { raw: number, fmt: string } — extract the raw value
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function raw(v: any): number | null {
   if (v === null || v === undefined) return null;
@@ -71,117 +122,105 @@ function raw(v: any): number | null {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function rawDate(v: any): number | null {
-  // Returns Unix timestamp in *milliseconds*
+function rawMs(v: any): number | null {
   const r = raw(v);
-  return r !== null ? r * 1000 : null;
+  return r !== null ? r * 1000 : null; // seconds → milliseconds
 }
 
-// ─── API fetch helpers ────────────────────────────────────────────────────────
+function authQuery(auth: Auth | null): string {
+  return auth?.crumb ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
+}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchQuoteSummary(ticker: string, auth: Auth | null): Promise<any> {
+function authHeaders(auth: Auth | null): Record<string, string> {
+  const h: Record<string, string> = {
+    ...COMMON_HEADERS,
+    Accept: "application/json",
+    Referer: "https://finance.yahoo.com/",
+  };
+  if (auth?.cookie) h["Cookie"] = auth.cookie;
+  return h;
+}
+
+async function fetchQuoteSummary(ticker: string, auth: Auth | null): Promise<YFJson | null> {
   const modules = "balanceSheetHistory,incomeStatementHistory,summaryDetail";
-  const crumbQ = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
-  const url = `${YF1}/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}${crumbQ}`;
+  const url =
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/` +
+    `${encodeURIComponent(ticker)}?modules=${modules}${authQuery(auth)}`;
 
-  const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
-  if (auth?.cookie) headers["Cookie"] = auth.cookie;
-
-  const res = await fetch(url, { headers });
-  if (!res.ok) return null;
-  const json = await res.json();
-  return json?.quoteSummary?.result?.[0] ?? null;
+  try {
+    const res = await fetch(url, { headers: authHeaders(auth) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.quoteSummary?.result?.[0] ?? null;
+  } catch { return null; }
 }
 
-// Returns array of { dateMs, close } quarterly bars
 async function fetchHistory(
   ticker: string,
   auth: Auth | null
 ): Promise<Array<{ dateMs: number; close: number }>> {
-  const period2 = Math.floor(Date.now() / 1000);
-  const period1 = period2 - 4 * 365 * 24 * 60 * 60; // 4 years back
-  const crumbQ = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
-  const url = `${YF1}/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${period1}&period2=${period2}&interval=3mo${crumbQ}`;
+  const p2 = Math.floor(Date.now() / 1000);
+  const p1 = p2 - 4 * 365 * 24 * 60 * 60;
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/` +
+    `${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=3mo${authQuery(auth)}`;
 
-  const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
-  if (auth?.cookie) headers["Cookie"] = auth.cookie;
+  try {
+    const res = await fetch(url, { headers: authHeaders(auth) });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) return [];
 
-  const res = await fetch(url, { headers });
-  if (!res.ok) return [];
-  const json = await res.json();
-
-  const result = json?.chart?.result?.[0];
-  if (!result) return [];
-
-  const timestamps: number[] = result.timestamp ?? [];
-  const closes: number[] = result.indicators?.quote?.[0]?.close ?? [];
-
-  return timestamps
-    .map((ts, i) => ({ dateMs: ts * 1000, close: closes[i] }))
-    .filter((b) => typeof b.close === "number" && isFinite(b.close) && b.close > 0);
+    const ts: number[] = result.timestamp ?? [];
+    const cl: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+    return ts
+      .map((t, i) => ({ dateMs: t * 1000, close: cl[i] ?? 0 }))
+      .filter((b) => b.close > 0);
+  } catch { return []; }
 }
 
 // ─── Score computation ────────────────────────────────────────────────────────
 
-interface Phase2Result {
-  S_equity_inc: number | null;
-  S_pe_hi_lo: number | null;
-}
-
-interface RequestBody {
-  codes: string[];
-  pes: Record<string, number | null>;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function computeEquityInc(summary: any): number | null {
-  const statements: unknown[] =
-    summary?.balanceSheetHistory?.balanceSheetStatements ?? [];
-  // Statements arrive newest-first from Yahoo Finance
-  const equities = statements
+function computeEquityInc(summary: YFJson): number | null {
+  // Statements arrive newest-first; [0] = most recent fiscal year
+  const stmts: YFJson[] = summary?.balanceSheetHistory?.balanceSheetStatements ?? [];
+  const eq = stmts
     .slice(0, 4)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .map((s: any) => raw(s?.totalStockholderEquity))
+    .map((s) => raw(s?.totalStockholderEquity))
     .filter((v): v is number => v !== null);
 
-  if (equities.length < 3) return null;
-  // equities[0] = most recent year
-  return equities[0] > equities[1] && equities[1] > equities[2] ? 1 : 0;
+  if (eq.length < 3) return null;
+  // Score 1 only if each of the last 3 years increased over the prior year
+  return eq[0] > eq[1] && eq[1] > eq[2] ? 1 : 0;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function computePeHiLo(
-  summary: any,
+  summary: YFJson,
   bars: Array<{ dateMs: number; close: number }>,
   csvPE: number | null
 ): number | null {
   const trailingPE = raw(summary?.summaryDetail?.trailingPE) ?? csvPE;
   if (!trailingPE || trailingPE <= 0 || trailingPE >= 500) return null;
 
-  const isStatements: unknown[] =
-    summary?.incomeStatementHistory?.incomeStatementHistory ?? [];
+  const stmts: YFJson[] = summary?.incomeStatementHistory?.incomeStatementHistory ?? [];
+  const epsPoints = stmts
+    .slice(0, 4)
+    .map((s) => ({ dateMs: rawMs(s?.endDate), eps: raw(s?.dilutedEps) }))
+    .filter((p): p is { dateMs: number; eps: number } =>
+      p.dateMs !== null && p.eps !== null && p.eps > 0
+    );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const annualEPS = isStatements.slice(0, 4).map((s: any) => ({
-    dateMs: rawDate(s?.endDate),
-    eps: raw(s?.dilutedEps),
-  })).filter(
-    (s): s is { dateMs: number; eps: number } =>
-      s.dateMs !== null && s.eps !== null && s.eps > 0
-  );
+  if (epsPoints.length < 2 || bars.length < 4) return null;
 
-  if (annualEPS.length < 2 || bars.length < 4) return null;
-
-  const SIX_MONTHS_MS = 180 * 24 * 60 * 60 * 1000;
+  const SIX_MO = 180 * 24 * 60 * 60 * 1000;
   const historicalPEs: number[] = [];
 
-  for (const { dateMs: epsMs, eps } of annualEPS) {
-    // Find the quarterly bar whose date is closest to the EPS year-end date
-    const closest = bars.reduce((best, bar) =>
-      Math.abs(bar.dateMs - epsMs) < Math.abs(best.dateMs - epsMs) ? bar : best
+  for (const { dateMs: epsMs, eps } of epsPoints) {
+    const closest = bars.reduce((best, b) =>
+      Math.abs(b.dateMs - epsMs) < Math.abs(best.dateMs - epsMs) ? b : best
     );
-    if (Math.abs(closest.dateMs - epsMs) < SIX_MONTHS_MS) {
+    if (Math.abs(closest.dateMs - epsMs) < SIX_MO) {
       const pe = closest.close / eps;
       if (pe > 0 && pe < 500) historicalPEs.push(pe);
     }
@@ -189,70 +228,58 @@ function computePeHiLo(
 
   if (historicalPEs.length < 2) return null;
 
-  // Score 1 if current PE is at or within 10% above its 3-year minimum
-  // (i.e. the stock's PE is actually near its historical cheap end, not just below average)
+  // Score 1 if current PE is at or within 10% of its 3-year minimum
   const minPE = Math.min(...historicalPEs);
   return trailingPE <= minPE * 1.1 ? 1 : 0;
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
+interface Phase2Result { S_equity_inc: number | null; S_pe_hi_lo: number | null }
+interface Body { codes: string[]; pes: Record<string, number | null> }
+
 export async function POST(request: Request) {
-  let body: RequestBody;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  let body: Body;
+  try { body = await request.json(); }
+  catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
 
   const { codes = [], pes = {} } = body;
   if (codes.length === 0) return NextResponse.json({});
 
-  // Get Yahoo Finance auth once for the whole batch
+  // Get auth once for the whole batch
   const auth = await getAuth();
 
-  const fourYearsAgo = new Date();
-  fourYearsAgo.setFullYear(fourYearsAgo.getFullYear() - 4);
-
-  // Phase 1: fetch all quoteSummaries in parallel
+  // Phase 1: all quoteSummary calls in parallel
   const summaries = await Promise.allSettled(
     codes.map((code) => fetchQuoteSummary(`${code}.AX`, auth))
   );
 
-  // Phase 2: fetch quarterly price history in parallel
-  // (only for stocks that have meaningful PE data)
+  // Phase 2: history only for stocks with a usable PE
   const histories = await Promise.allSettled(
     codes.map((code, i) => {
       const sr = summaries[i];
       if (sr.status !== "fulfilled" || !sr.value) return Promise.resolve([]);
-      const csvPE = pes[code] ?? null;
-      const trailingPE =
-        raw(sr.value?.summaryDetail?.trailingPE) ?? csvPE;
-      if (!trailingPE || trailingPE <= 0 || trailingPE >= 500)
-        return Promise.resolve([]);
-      return fetchHistory(`${code}.AX`, auth).catch(() => []);
+      const pe = raw(sr.value?.summaryDetail?.trailingPE) ?? pes[code];
+      if (!pe || pe <= 0 || pe >= 500) return Promise.resolve([]);
+      return fetchHistory(`${code}.AX`, auth);
     })
   );
 
-  // Compute scores
   const results: Record<string, Phase2Result> = {};
-
   for (let i = 0; i < codes.length; i++) {
-    const code = codes[i];
     const sr = summaries[i];
     const hr = histories[i];
-
     if (sr.status !== "fulfilled" || !sr.value) {
-      results[code] = { S_equity_inc: null, S_pe_hi_lo: null };
+      results[codes[i]] = { S_equity_inc: null, S_pe_hi_lo: null };
       continue;
     }
-
-    const summary = sr.value;
-    const bars = hr.status === "fulfilled" ? (hr.value ?? []) : [];
-
-    results[code] = {
-      S_equity_inc: computeEquityInc(summary),
-      S_pe_hi_lo: computePeHiLo(summary, bars, pes[code] ?? null),
+    results[codes[i]] = {
+      S_equity_inc: computeEquityInc(sr.value),
+      S_pe_hi_lo: computePeHiLo(
+        sr.value,
+        hr.status === "fulfilled" ? (hr.value ?? []) : [],
+        pes[codes[i]] ?? null
+      ),
     };
   }
 
