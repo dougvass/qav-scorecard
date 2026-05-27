@@ -3,20 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { BarChart2, FileSpreadsheet, Trash2, ArrowLeft, CheckCircle } from "lucide-react";
-
-// ─── Shared storage contract ──────────────────────────────────────────────────
-export const PHASE2_STORAGE_KEY = "qav_phase2_v1";
-
-export interface Phase2Entry {
-  S_pe_hi_lo: number | null;
-  S_equity_inc: number | null;
-}
-
-export interface StoredPhase2 {
-  timestamp: string;       // ISO date of last upload
-  source: string;          // filename
-  data: Record<string, Phase2Entry>;
-}
+import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

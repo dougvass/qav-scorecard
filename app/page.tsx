@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
-import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/app/phase2/page";
+import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
 import {
   scoreStocks,
   makeBuyList,
