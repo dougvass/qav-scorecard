@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
+import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
+import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/app/phase2/page";
 import {
   scoreStocks,
   makeBuyList,
@@ -22,7 +24,7 @@ import {
   ListFilter,
   BarChart2,
   Settings2,
-  FileSpreadsheet,
+  Database,
 } from "lucide-react";
 
 const SCORE_KEYS = [
@@ -90,10 +92,9 @@ export default function HomePage() {
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
-  const [phase2Loading, setPhase2Loading] = useState(false);
   const [phase2Loaded, setPhase2Loaded] = useState(false);
+  const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
-  const phase2FileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -109,6 +110,22 @@ export default function HomePage() {
     rrr: iv1Rate / 100,
     marketHurdle: (6 + cashRate) / 100,
   };
+
+  // Auto-load Phase 2 from localStorage on mount (stored by /phase2 page)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PHASE2_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as StoredPhase2;
+        const count = Object.values(stored.data).filter(
+          (v) => v.S_pe_hi_lo !== null || v.S_equity_inc !== null
+        ).length;
+        setPhase2Data(stored.data as Phase2Map);
+        setPhase2StockCount(count);
+        setPhase2Loaded(true);
+      }
+    } catch { /* corrupt storage — ignore */ }
+  }, []);
 
   // Re-score whenever raw rows, rates, or enrichment data changes
   useEffect(() => {
@@ -156,25 +173,6 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
-  /** Upload the QAV analysis workbook — reads Phase 2 scores from the QAV_updated sheet. */
-  const loadPhase2FromXlsx = useCallback(async (file: File) => {
-    setPhase2Loading(true);
-    setError(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/phase2-xlsx", { method: "POST", body: formData });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error ?? `API error ${res.status}`);
-      setPhase2Data(json as Phase2Map);
-      setPhase2Loaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? `Phase 2 load failed: ${e.message}` : "Failed to load Phase 2 data from spreadsheet.");
-    } finally {
-      setPhase2Loading(false);
-    }
-  }, []);
-
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
@@ -182,8 +180,7 @@ export default function HomePage() {
     setShowAll(false);
     setMsLoaded(false);
     setMsRatings(null);
-    setPhase2Loaded(false);
-    setPhase2Data(null);
+    // Phase 2 is stored in localStorage — persists across CSV uploads intentionally
     setFileName(null);
     setError(null);
   }, []);
@@ -232,40 +229,19 @@ export default function HomePage() {
                   Rates
                 </button>
 
-                {/* Phase 2 — QAV spreadsheet upload */}
-                {!phase2Loaded && (
-                  <button
-                    onClick={() => phase2FileRef.current?.click()}
-                    disabled={phase2Loading}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 disabled:opacity-60 transition-colors"
-                    title="Upload your QAV analysis workbook to load Phase 2 scores (PE Hi/Lo and Equity Inc)"
-                  >
-                    <FileSpreadsheet className={`w-4 h-4 ${phase2Loading ? "animate-pulse" : ""}`} />
-                    {phase2Loading ? "Reading spreadsheet…" : "Load Phase 2 (Spreadsheet)"}
-                  </button>
-                )}
-                {phase2Loaded && (
-                  <button
-                    onClick={() => phase2FileRef.current?.click()}
-                    className="flex items-center gap-1.5 text-sm text-teal-700 bg-teal-50 px-3 py-1.5 rounded-lg border border-teal-200 hover:bg-teal-100 transition-colors"
-                    title="Upload a newer version of your QAV spreadsheet"
-                  >
-                    <FileSpreadsheet className="w-4 h-4" />
-                    Phase 2 loaded ↺
-                  </button>
-                )}
-                {/* Hidden file input for XLSX */}
-                <input
-                  ref={phase2FileRef}
-                  type="file"
-                  accept=".xlsx,.xlsm"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) loadPhase2FromXlsx(file);
-                    e.target.value = ""; // allow re-selecting the same file
-                  }}
-                />
+                {/* Phase 2 — links to persistent data management page */}
+                <Link
+                  href="/phase2"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                    phase2Loaded
+                      ? "text-teal-700 bg-teal-50 border-teal-200 hover:bg-teal-100"
+                      : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  title="Manage Phase 2 data (PE Hi/Lo, Equity Inc)"
+                >
+                  <Database className="w-4 h-4" />
+                  {phase2Loaded ? `Phase 2 · ${phase2StockCount} stocks` : "Set up Phase 2"}
+                </Link>
 
                 {/* MorningStar */}
                 {!msLoaded && (
@@ -382,7 +358,7 @@ export default function HomePage() {
               </div>
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <p className="font-semibold text-gray-700 mb-1">Phase 2</p>
-                <p>PE Hi/Lo and Equity Inc from your QAV analysis spreadsheet</p>
+                <p>PE Hi/Lo and Equity Inc — upload your QAV spreadsheet once via the <Link href="/phase2" className="text-teal-600 underline">Phase 2 page</Link></p>
               </div>
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <p className="font-semibold text-gray-700 mb-1">Phase 3</p>
@@ -451,7 +427,7 @@ export default function HomePage() {
                 <li><strong>IV1</strong> = EPS ÷ IV1 Hurdle ({iv1Rate.toFixed(2)}%) — use your mortgage rate as a personal benchmark</li>
                 <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — driven by RBA cash rate ({cashRate}%) + 6%</li>
                 <li>Phase 1 (3PTL short sentiment) requires the manual Python pipeline</li>
-                <li><strong>Phase 2</strong> — click <em>Load Phase 2 (Spreadsheet)</em> and upload your QAV analysis workbook. Reads PE Hi/Lo (col AQ) and Equity Inc (col AR) from the QAV_updated sheet. PE Hi/Lo: +2 = lowest in 3yrs, 0 = middle, −1 = highest. Equity Inc: +1 = increasing, 0 = not</li>
+                <li><strong>Phase 2</strong> — upload your QAV analysis workbook once via the <Link href="/phase2" className="text-teal-600 underline">Phase 2 page</Link>. Scores are stored in your browser and applied automatically every time you upload a CSV. PE Hi/Lo: +2 = lowest in 3yrs, 0 = middle, −1 = highest. Equity Inc: +1 = increasing, 0 = not</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>
