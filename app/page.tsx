@@ -214,6 +214,20 @@ export default function HomePage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Phase 2 — always visible so users can upload data before or after CSV */}
+            <Link
+              href="/phase2"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                phase2Loaded
+                  ? "text-teal-700 bg-teal-50 border-teal-200 hover:bg-teal-100"
+                  : "text-gray-500 border-gray-300 hover:bg-gray-50"
+              }`}
+              title="Manage Phase 2 data (PE Hi/Lo, Equity Inc)"
+            >
+              <Database className="w-4 h-4" />
+              {phase2Loaded ? `Phase 2 · ${phase2StockCount} stocks` : "Set up Phase 2"}
+            </Link>
+
             {allStocks && (
               <>
                 <button
@@ -228,20 +242,6 @@ export default function HomePage() {
                   <Settings2 className="w-4 h-4" />
                   Rates
                 </button>
-
-                {/* Phase 2 — links to persistent data management page */}
-                <Link
-                  href="/phase2"
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                    phase2Loaded
-                      ? "text-teal-700 bg-teal-50 border-teal-200 hover:bg-teal-100"
-                      : "text-gray-500 border-gray-300 hover:bg-gray-50"
-                  }`}
-                  title="Manage Phase 2 data (PE Hi/Lo, Equity Inc)"
-                >
-                  <Database className="w-4 h-4" />
-                  {phase2Loaded ? `Phase 2 · ${phase2StockCount} stocks` : "Set up Phase 2"}
-                </Link>
 
                 {/* MorningStar */}
                 {!msLoaded && (

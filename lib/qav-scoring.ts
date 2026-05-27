@@ -71,16 +71,24 @@ function scoreSentimentLong(row: StockRow): number {
   const p5 = num(row["Price Chg 5yr (%)"]);
   const p6 = num(row["Price Chg 6mth (%)"]);
   const sdmax = row["SDMAX Status"];
-  const a = p5 !== null && p5 > 0 ? 1 : 0;
-  const b = p6 !== null && p6 > 0 ? 1 : 0;
-  const c = isBlank(row["Price Chg 5yr (%)"]) ? 1 : 0;
-  const inner = a + b + c === 2 ? 1 : 0;
-  // SDMAX=Bullish is only trusted when the 5yr trend is also positive (or absent).
-  // Stock Doctor can flip to "Bullish" when price crosses the 3PTL *buy* line —
-  // which in QAV terms is Josephine (between lines), not a confirmed uptrend above
-  // the sell line. Requiring a >= 1 or c >= 1 guards against this false positive.
-  const bullish = sdmax === "Bullish" && (a === 1 || c === 1) ? 1 : 0;
-  return inner + bullish > 0 ? 1 : 0;
+  const p5pos = p5 !== null && p5 > 0;
+  const p6pos = p6 !== null && p6 > 0;
+  const isBullish = sdmax === "Bullish";
+
+  if (p5 !== null) {
+    // Established stock with 5yr data.
+    // Pass if both 5yr and 6mth are positive, OR if SDMAX is Bullish AND 5yr is positive.
+    // SDMAX alone is insufficient — SD can flip Bullish when price crosses the *buy* line,
+    // which in QAV is Josephine (between lines), not a confirmed uptrend above the sell line.
+    const inner = p5pos && p6pos ? 1 : 0;
+    const bullish = isBullish && p5pos ? 1 : 0;
+    return inner + bullish > 0 ? 1 : 0;
+  } else {
+    // New/recent listing — no 5yr price history, so the standard 3PTL criteria can't
+    // be met from price-change data alone. Require BOTH 6mth positive AND SDMAX Bullish;
+    // either signal alone is insufficient to confirm an uptrend above the sell line.
+    return p6pos && isBullish ? 1 : 0;
+  }
 }
 
 function scorePriceToCashflow(row: StockRow): number | null {
