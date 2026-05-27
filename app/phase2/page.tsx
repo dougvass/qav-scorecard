@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { BarChart2, FileSpreadsheet, Trash2, ArrowLeft, CheckCircle } from "lucide-react";
-import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
+import { PHASE2_STORAGE_KEY, Phase2Entry, StoredPhase2 } from "@/lib/phase2-storage";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
