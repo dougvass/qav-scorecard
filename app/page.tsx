@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
+import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
   scoreStocks,
   makeBuyList,
@@ -25,6 +26,7 @@ import {
   BarChart2,
   Settings2,
   Database,
+  TrendingUp,
 } from "lucide-react";
 
 const SCORE_KEYS = [
@@ -32,11 +34,14 @@ const SCORE_KEYS = [
   "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
   "S_sp_lt_1.3neps", "S_geps_pe", "S_sp_lt_iv1", "S_sp_lt_iv2",
   "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
-  "S_fh_rating", "S_fh_trend", "S_ownership",
+  "S_fh_rating", "S_fh_trend", "S_ownership", "S_buyback",
 ] as const;
 
 // Phase 2 payload: Code → { S_equity_inc, S_pe_hi_lo }
 type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null }>;
+
+// Buyback payload: Code → active flag
+type BuybackMap = Record<string, boolean>;
 
 function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredStock[] {
   const ratingMap: Record<string, number | null> = {};
@@ -83,6 +88,26 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
   });
 }
 
+/** Apply buyback scores (1 if active buyback, null otherwise) and recompute derived stats. */
+function enrichWithBuybacks(stocks: ScoredStock[], buybacks: BuybackMap): ScoredStock[] {
+  return stocks.map((stock) => {
+    const active = buybacks[stock.Code];
+    if (!active) return stock; // false or undefined → no score change (stays null)
+    const enriched = { ...stock, S_buyback: 1 } as ScoredStock;
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+    return enriched;
+  });
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
@@ -95,6 +120,11 @@ export default function HomePage() {
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
+  const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
+  const [buybackLoading, setBuybackLoading] = useState(false);
+  const [buybackProgress, setBuybackProgress] = useState<{ done: number; total: number } | null>(null);
+  const [buybackLoaded, setBuybackLoaded] = useState(false);
+  const [buybackCount, setBuybackCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -111,18 +141,34 @@ export default function HomePage() {
     marketHurdle: (6 + cashRate) / 100,
   };
 
-  // Auto-load Phase 2 from localStorage on mount (stored by /phase2 page)
+  // Auto-load Phase 2 + buybacks from localStorage on mount
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(PHASE2_STORAGE_KEY);
-      if (raw) {
-        const stored = JSON.parse(raw) as StoredPhase2;
+      const raw2 = localStorage.getItem(PHASE2_STORAGE_KEY);
+      if (raw2) {
+        const stored = JSON.parse(raw2) as StoredPhase2;
         const count = Object.values(stored.data).filter(
           (v) => v.S_pe_hi_lo !== null || v.S_equity_inc !== null
         ).length;
         setPhase2Data(stored.data as Phase2Map);
         setPhase2StockCount(count);
         setPhase2Loaded(true);
+      }
+    } catch { /* corrupt storage — ignore */ }
+
+    try {
+      const rawBB = localStorage.getItem(BUYBACK_STORAGE_KEY);
+      if (rawBB) {
+        const stored = JSON.parse(rawBB) as StoredBuybacks;
+        const bbMap: BuybackMap = {};
+        let active = 0;
+        for (const [code, entry] of Object.entries(stored.data)) {
+          bbMap[code] = entry.active;
+          if (entry.active) active++;
+        }
+        setBuybackData(bbMap);
+        setBuybackCount(active);
+        setBuybackLoaded(true);
       }
     } catch { /* corrupt storage — ignore */ }
   }, []);
@@ -134,12 +180,13 @@ export default function HomePage() {
       ? Object.fromEntries(Object.entries(msRatings).map(([k, v]) => [k, v.starRating ?? null]))
       : undefined;
     let scored = scoreStocks(rawRows, msMap, rates);
-    if (msRatings) scored = enrichWithMsRatings(scored, msRatings);
-    if (phase2Data) scored = enrichWithPhase2(scored, phase2Data);
+    if (msRatings)   scored = enrichWithMsRatings(scored, msRatings);
+    if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
+    if (buybackData) scored = enrichWithBuybacks(scored, buybackData);
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data]);
+  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -173,6 +220,55 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
+  const loadBuybacks = useCallback(async () => {
+    if (!rawRows) return;
+    setBuybackLoading(true);
+    setBuybackProgress({ done: 0, total: rawRows.length });
+    setError(null);
+
+    const codes = rawRows.map((r) => r.Code);
+    const CHUNK = 20;
+    const accumulated: BuybackMap = {};
+    let activeCount = 0;
+
+    try {
+      for (let i = 0; i < codes.length; i += CHUNK) {
+        const chunk = codes.slice(i, i + CHUNK);
+        const res = await fetch("/api/buybacks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: chunk }),
+        });
+        if (!res.ok) throw new Error(`Buyback API error ${res.status}`);
+        const data: Record<string, { active: boolean }> = await res.json();
+        for (const [code, entry] of Object.entries(data)) {
+          accumulated[code] = entry.active;
+          if (entry.active) activeCount++;
+        }
+        setBuybackProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+      }
+
+      // Persist to localStorage
+      const stored: StoredBuybacks = {
+        timestamp: new Date().toISOString(),
+        checkedCount: codes.length,
+        data: Object.fromEntries(
+          Object.entries(accumulated).map(([code, active]) => [code, { active }])
+        ),
+      };
+      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+
+      setBuybackData(accumulated);
+      setBuybackCount(activeCount);
+      setBuybackLoaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? `Buyback check failed: ${e.message}` : "Buyback check failed.");
+    } finally {
+      setBuybackLoading(false);
+      setBuybackProgress(null);
+    }
+  }, [rawRows]);
+
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
@@ -180,7 +276,7 @@ export default function HomePage() {
     setShowAll(false);
     setMsLoaded(false);
     setMsRatings(null);
-    // Phase 2 is stored in localStorage — persists across CSV uploads intentionally
+    // Phase 2 + buybacks are stored in localStorage — persist across CSV uploads intentionally
     setFileName(null);
     setError(null);
   }, []);
@@ -190,8 +286,8 @@ export default function HomePage() {
   function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
     let result = arr;
     if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
-    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 1);
-    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long !== 1);
+    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 2);
+    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long === -1);
     return result;
   }
   const statsAll = applyTableFilters(allStocks ?? []);
@@ -259,6 +355,41 @@ export default function HomePage() {
                     <Star className="w-4 h-4" />
                     MorningStar loaded
                   </span>
+                )}
+
+                {/* Buyback checker */}
+                {!buybackLoaded && !buybackLoading && (
+                  <button
+                    onClick={loadBuybacks}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
+                  >
+                    <TrendingUp className="w-4 h-4" />
+                    Check Buybacks
+                  </button>
+                )}
+                {buybackLoading && buybackProgress && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700 bg-orange-50 border border-orange-200 rounded-lg">
+                    <TrendingUp className="w-4 h-4 animate-pulse" />
+                    <span>
+                      Buybacks {buybackProgress.done}/{buybackProgress.total}
+                    </span>
+                    <div className="w-20 h-1.5 bg-orange-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-orange-500 rounded-full transition-all"
+                        style={{ width: `${(buybackProgress.done / buybackProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {buybackLoaded && !buybackLoading && (
+                  <button
+                    onClick={loadBuybacks}
+                    className="flex items-center gap-1.5 text-sm text-orange-700 bg-orange-50 px-3 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 transition-colors"
+                    title="Re-check ASX announcements for buybacks"
+                  >
+                    <TrendingUp className="w-4 h-4" />
+                    {buybackCount} buyback{buybackCount !== 1 ? "s" : ""}
+                  </button>
                 )}
 
                 <button

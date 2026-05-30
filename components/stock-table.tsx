@@ -57,18 +57,13 @@ function SortIcon({ col, sortKey, sortDir }: { col: string; sortKey: string; sor
 }
 
 function SentimentBadge({ stock }: { stock: ScoredStock }) {
-  if (stock.S_sentiment_long === 1) {
-    return (
-      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["bullish_proxy"]}`}>
-        Bullish
-      </span>
-    );
-  }
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["—"]}`}>
-      Bearish
-    </span>
-  );
+  const v = stock.S_sentiment_long;
+  if (v === 2)
+    return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["bullish_proxy"]}`}>Bullish</span>;
+  if (v === -1)
+    return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["negative"]}`}>Bearish</span>;
+  // 0 = Josephine (between lines)
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["josephine"]}`}>Josephine</span>;
 }
 
 function StarBadge({ rating }: { rating: number | null }) {
@@ -101,8 +96,8 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
         (s) => (s["Avg Trade 3M ($000)"] ?? 0) >= minAdt
       );
     }
-    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 1);
-    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long !== 1);
+    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 2);
+    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long === -1);
     return result;
   }, [stocks, minAdt, filterSentiment, hideEtfs]);
 
@@ -380,7 +375,14 @@ function ScoreBreakdown({ stock, borrowingRate, phase2Loaded }: { stock: ScoredS
 
           // Sub-label under the score name — phase-specific context
           let subLabel: React.ReactNode = null;
-          if (meta.phase === 2) {
+          if (meta.key === "S_sentiment_long") {
+            if (val === 2)  subLabel = <span className="text-xs font-medium text-emerald-600">↑ Bullish (above sell line)</span>;
+            else if (val === -1) subLabel = <span className="text-xs font-medium text-red-500">↓ Bearish (below sell line)</span>;
+            else subLabel = <span className="text-xs text-sky-600">⇔ Josephine (between lines)</span>;
+          } else if (meta.key === "S_buyback") {
+            if (val === 1)  subLabel = <span className="text-xs font-medium text-emerald-600">✓ Active · ASX</span>;
+            else subLabel = <span className="text-xs text-gray-400">Not detected · ASX</span>;
+          } else if (meta.phase === 2) {
             if (val !== null && val > 0) {
               subLabel = <span className="text-xs font-medium text-emerald-600">✓ Pass · Spreadsheet</span>;
             } else if (val === 0) {

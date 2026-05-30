@@ -59,6 +59,7 @@ export interface ScoreColumns {
   S_pe_hi_lo: number | null;         // AQ — history
   S_equity_inc: number | null;       // AR — history
   S_sp_lt_iv3: number | null;        // BD — MorningStar
+  S_buyback: number | null;          // ASX announcements check
 }
 
 // Derived metrics
@@ -94,13 +95,13 @@ export interface ScoreColMeta {
 }
 
 export const SCORE_COL_META: ScoreColMeta[] = [
-  { key: "S_sentiment_long",  label: "Sentiment",   description: "Long-term price trend proxy (5yr + 6mth + SDMAX)", phase: 0 },
+  { key: "S_sentiment_long",  label: "Sentiment",   description: "3PTL trend: Bullish=+2, Bearish=−1, Josephine=0 (auto from SDMAX + price chg)", phase: 0 },
   { key: "S_sentiment_short", label: "3PTL",         description: "Short-term 3 Point Trendline (Phase 1)", phase: 1 },
   { key: "S_pcf",             label: "PCF",          description: "Price/CashFlow ≤ 7 → 2pts", phase: 0 },
   { key: "S_div_yield",       label: "Div Yield",    description: "Dividend yield > 9.3% → 1pt", phase: 0 },
   { key: "S_pe_lt_dy",        label: "PE<DY",        description: "PE ≤ Div Yield → 1pt", phase: 0 },
-  { key: "S_pe_hi_lo",        label: "PE Hi/Lo",     description: "Current trailing PE ≤ midpoint of 3-yr range → 1pt (Yahoo Finance)", phase: 2 },
-  { key: "S_equity_inc",      label: "Equity Inc",   description: "Stockholders' equity increasing YoY × 3 consecutive years → 1pt (Yahoo Finance)", phase: 2 },
+  { key: "S_pe_hi_lo",        label: "PE Hi/Lo",     description: "PE at record low (6 readings): +2 lowest / 0 mid / −1 highest", phase: 2 },
+  { key: "S_equity_inc",      label: "Equity Inc",   description: "Equity consistently increasing YoY → 1pt", phase: 2 },
   { key: "S_sp_lt_neps",      label: "SP<NEPS",      description: "Share price below net equity per share", phase: 0 },
   { key: "S_sp_lt_1.3neps",   label: "SP<1.3NEPS",   description: "Share price below 1.3× NEPS", phase: 0 },
   { key: "S_geps_pe",         label: "GEPS/PE",      description: "Earnings growth vs PE → 2/-1/0", phase: 0 },
@@ -113,4 +114,5 @@ export const SCORE_COL_META: ScoreColMeta[] = [
   { key: "S_fh_rating",       label: "FH Rating",    description: "Financial Health: Strong/Satisfactory → 1", phase: 0 },
   { key: "S_fh_trend",        label: "FH Trend",     description: "Recovering=2, Steady=1, Deteriorating=-1", phase: 0 },
   { key: "S_ownership",       label: "Ownership",    description: "Directors own ≥10% of market cap → 2pts", phase: 0 },
+  { key: "S_buyback",         label: "Buyback",      description: "Active on-market buyback detected via ASX announcements → 1pt", phase: 3 },
 ];
