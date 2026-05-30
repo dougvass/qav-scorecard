@@ -17,10 +17,21 @@ export const runtime = "edge";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TOKEN_URL = "https://www.asx.com.au/token.json";
+// Token endpoint — the correct URL is still TBD; we try a few candidates
+const TOKEN_CANDIDATES = [
+  "https://asx.api.markitdigital.com/asx-research/1.0/token",
+  "https://asx.api.markitdigital.com/token.json",
+  "https://www.asx.com.au/asx/json/token.json",
+];
 
-const SEARCH_URL = (code: string) =>
-  `https://asx.api.markitdigital.com/asx-research/1.0/data/predictive?searchText=${encodeURIComponent(code)}&size=5`;
+// Search/predictive endpoint — try multiple sub-paths until one returns 200
+const SEARCH_CANDIDATES = (code: string) => [
+  `https://asx.api.markitdigital.com/asx-research/1.0/company/predictive?searchText=${encodeURIComponent(code)}&size=5`,
+  `https://asx.api.markitdigital.com/asx-research/1.0/markets/company/predictive?searchText=${encodeURIComponent(code)}&size=5`,
+  `https://asx.api.markitdigital.com/asx-research/1.0/search?q=${encodeURIComponent(code)}&size=5`,
+  `https://asx.api.markitdigital.com/asx-research/1.0/company/search?q=${encodeURIComponent(code)}&size=5`,
+  `https://asx.api.markitdigital.com/asx-research/1.0/company/lookup?asxCode=${encodeURIComponent(code)}`,
+];
 
 const ANNOUNCEMENTS_URL = (entityXid: string) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -62,59 +73,59 @@ function searchJson(obj: unknown): boolean {
 // ── Step 1: get bearer token ──────────────────────────────────────────────────
 
 async function getToken(): Promise<string | null> {
-  try {
-    const res = await fetch(TOKEN_URL, {
-      headers: BASE_HEADERS,
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as Record<string, unknown>;
-    // Try common token field names
-    return (
-      (data.token as string) ??
-      (data.access_token as string) ??
-      (data.value as string) ??
-      null
-    );
-  } catch {
-    return null;
+  for (const url of TOKEN_CANDIDATES) {
+    try {
+      const res = await fetch(url, { headers: BASE_HEADERS, signal: AbortSignal.timeout(5_000) });
+      if (!res.ok) continue;
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("json")) continue;
+      const data = await res.json() as Record<string, unknown>;
+      const tok = (data.token ?? data.access_token ?? data.value ?? null) as string | null;
+      if (tok) return tok;
+    } catch { /* try next */ }
   }
+  return null; // no token found — try unauthenticated
 }
 
 // ── Step 2: look up entityXid for an ASX code ─────────────────────────────────
 
-async function getEntityXid(code: string, token: string | null): Promise<string | null> {
-  try {
-    const headers: Record<string, string> = { ...BASE_HEADERS };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+function extractXidFromData(data: unknown, code: string): string | null {
+  if (!data || typeof data !== "object") return null;
+  // Try known response shapes
+  const obj = data as Record<string, unknown>;
+  const items: unknown[] =
+    (obj?.data as Record<string, unknown>)?.items as unknown[] ??
+    (obj?.results as unknown[]) ??
+    (obj?.items as unknown[]) ??
+    (obj?.data as unknown[]) ??
+    (Array.isArray(data) ? data as unknown[] : []);
 
-    const res = await fetch(SEARCH_URL(code), {
-      headers,
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as Record<string, unknown>;
-
-    // Walk common response shapes to find entityXid matching the exact ticker
-    const items: unknown[] =
-      (data?.data as Record<string, unknown>)?.items as unknown[] ??
-      (data?.results as unknown[]) ??
-      (data?.items as unknown[]) ??
-      (Array.isArray(data) ? data : []);
-
-    for (const item of items) {
-      if (!item || typeof item !== "object") continue;
-      const rec = item as Record<string, unknown>;
-      const sym = String(rec.symbol ?? rec.code ?? rec.ticker ?? "").toUpperCase();
-      if (sym === code.toUpperCase()) {
-        const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
-        if (xid) return String(xid);
-      }
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const sym = String(rec.symbol ?? rec.code ?? rec.asxCode ?? rec.ticker ?? "").toUpperCase();
+    if (sym === code.toUpperCase()) {
+      const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
+      if (xid) return String(xid);
     }
-    return null;
-  } catch {
-    return null;
   }
+  return null;
+}
+
+async function getEntityXid(code: string, token: string | null): Promise<{ xid: string | null; usedUrl: string | null }> {
+  const headers: Record<string, string> = { ...BASE_HEADERS };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  for (const url of SEARCH_CANDIDATES(code)) {
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(6_000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const xid = extractXidFromData(data, code);
+      if (xid) return { xid, usedUrl: url };
+    } catch { /* try next */ }
+  }
+  return { xid: null, usedUrl: null };
 }
 
 // ── Step 3: check announcements for buy-back ──────────────────────────────────
@@ -139,10 +150,10 @@ async function checkAnnouncements(entityXid: string, token: string | null): Prom
 // ── Full pipeline for one code ────────────────────────────────────────────────
 
 async function checkCode(code: string, token: string | null) {
-  const entityXid = await getEntityXid(code, token);
-  if (!entityXid) return { active: false, _err: `No entityXid found for ${code}` };
-  const active = await checkAnnouncements(entityXid, token);
-  return { active, entityXid };
+  const { xid, usedUrl } = await getEntityXid(code, token);
+  if (!xid) return { active: false, _err: `No entityXid found for ${code}` };
+  const active = await checkAnnouncements(xid, token);
+  return { active, entityXid: xid, _searchUrl: usedUrl };
 }
 
 // ── POST — batch ──────────────────────────────────────────────────────────────
@@ -167,72 +178,94 @@ export async function GET(request: Request) {
   const code = (searchParams.get("code") ?? "BOL").toUpperCase();
   const result: Record<string, unknown> = { code, runtime: "edge" };
 
-  // Step 1 — token
-  const tokenRes = await fetch(TOKEN_URL, {
-    headers: BASE_HEADERS,
-    signal: AbortSignal.timeout(8_000),
-  }).catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
+  // ── A. Test announcements directly with BOL's known entityXid (no auth needed?) ──
+  // This tells us immediately whether the API is open or requires a token.
+  const KNOWN_BOL_XID = "204124452";
+  const testUrl = ANNOUNCEMENTS_URL(KNOWN_BOL_XID);
+  result.direct_test_url = testUrl;
+  try {
+    const r = await fetch(testUrl, { headers: BASE_HEADERS, signal: AbortSignal.timeout(8_000) });
+    result.direct_test_status = r.status;
+    if (r.ok) {
+      const data = await r.json();
+      result.direct_test_buyback_found = searchJson(data);
+      result.direct_test_sample = JSON.stringify(data).slice(0, 600);
+    } else {
+      result.direct_test_body = (await r.text()).slice(0, 300);
+    }
+  } catch (e) { result.direct_test_err = String(e); }
 
-  result.token_status = tokenRes.status;
+  // ── B. Try token candidates ───────────────────────────────────────────────
+  const tokenResults: Record<string, unknown>[] = [];
   let token: string | null = null;
-  if (tokenRes.ok) {
-    const td = await tokenRes.json() as Record<string, unknown>;
-    result.token_fields = Object.keys(td);
-    token = (td.token ?? td.access_token ?? td.value ?? null) as string | null;
-    result.token_found = !!token;
-    result.token_preview = token ? token.slice(0, 20) + "…" : null;
-  } else {
-    result.token_body = (await tokenRes.text().catch(() => "")).slice(0, 200);
+  for (const url of TOKEN_CANDIDATES) {
+    const tr: Record<string, unknown> = { url };
+    try {
+      const r = await fetch(url, { headers: BASE_HEADERS, signal: AbortSignal.timeout(5_000) });
+      tr.status = r.status;
+      if (r.ok) {
+        const ct = r.headers.get("content-type") ?? "";
+        tr.content_type = ct;
+        if (ct.includes("json")) {
+          const data = await r.json() as Record<string, unknown>;
+          tr.fields = Object.keys(data);
+          tr.sample = JSON.stringify(data).slice(0, 200);
+          const tok = (data.token ?? data.access_token ?? data.value ?? null) as string | null;
+          if (tok && !token) { token = tok; tr.token_found = true; }
+        }
+      } else {
+        tr.body_preview = (await r.text()).slice(0, 100);
+      }
+    } catch (e) { tr.err = String(e); }
+    tokenResults.push(tr);
   }
+  result.token_candidates = tokenResults;
+  result.token_found = !!token;
 
-  // Step 2 — entity lookup
-  const searchUrl = SEARCH_URL(code);
-  result.search_url = searchUrl;
+  // ── C. Try search/predictive candidates ──────────────────────────────────
   const headers: Record<string, string> = { ...BASE_HEADERS };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const searchRes = await fetch(searchUrl, { headers, signal: AbortSignal.timeout(8_000) })
-    .catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
-
-  result.search_status = searchRes.status;
+  const searchResults: Record<string, unknown>[] = [];
   let entityXid: string | null = null;
-  if (searchRes.ok) {
-    const sd = await searchRes.json() as Record<string, unknown>;
-    result.search_sample = JSON.stringify(sd).slice(0, 600);
-    // Try to extract entityXid
-    const items: unknown[] =
-      (sd?.data as Record<string, unknown>)?.items as unknown[] ??
-      (sd?.results as unknown[]) ??
-      (sd?.items as unknown[]) ??
-      (Array.isArray(sd) ? sd : []);
-    for (const item of items) {
-      if (!item || typeof item !== "object") continue;
-      const rec = item as Record<string, unknown>;
-      const sym = String(rec.symbol ?? rec.code ?? rec.ticker ?? "").toUpperCase();
-      if (sym === code) {
-        const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
-        if (xid) { entityXid = String(xid); break; }
+  let workingSearchUrl: string | null = null;
+  for (const url of SEARCH_CANDIDATES(code)) {
+    const sr: Record<string, unknown> = { url };
+    try {
+      const r = await fetch(url, { headers, signal: AbortSignal.timeout(6_000) });
+      sr.status = r.status;
+      if (r.ok) {
+        const data = await r.json();
+        sr.sample = JSON.stringify(data).slice(0, 300);
+        const xid = extractXidFromData(data, code);
+        sr.xid_found = xid;
+        if (xid && !entityXid) { entityXid = xid; workingSearchUrl = url; }
+      } else {
+        sr.body = (await r.text()).slice(0, 150);
       }
-    }
-    result.entity_xid = entityXid;
-  } else {
-    result.search_body = (await searchRes.text().catch(() => "")).slice(0, 300);
+    } catch (e) { sr.err = String(e); }
+    searchResults.push(sr);
+    if (entityXid) break; // stop once we find a working one
   }
+  result.search_candidates = searchResults;
+  result.entity_xid = entityXid;
+  result.working_search_url = workingSearchUrl;
 
-  // Step 3 — announcements
+  // ── D. Announcements with found entityXid ────────────────────────────────
   if (entityXid) {
     const annUrl = ANNOUNCEMENTS_URL(entityXid);
     result.announcements_url = annUrl;
-    const annRes = await fetch(annUrl, { headers, signal: AbortSignal.timeout(8_000) })
-      .catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
-    result.announcements_status = annRes.status;
-    if (annRes.ok) {
-      const ad = await annRes.json();
-      result.buyback_found = searchJson(ad);
-      result.announcements_sample = JSON.stringify(ad).slice(0, 800);
-    } else {
-      result.announcements_body = (await annRes.text().catch(() => "")).slice(0, 300);
-    }
+    try {
+      const r = await fetch(annUrl, { headers, signal: AbortSignal.timeout(8_000) });
+      result.announcements_status = r.status;
+      if (r.ok) {
+        const data = await r.json();
+        result.buyback_found = searchJson(data);
+        result.announcements_sample = JSON.stringify(data).slice(0, 600);
+      } else {
+        result.announcements_body = (await r.text()).slice(0, 300);
+      }
+    } catch (e) { result.announcements_err = String(e); }
   }
 
   return Response.json(result);
