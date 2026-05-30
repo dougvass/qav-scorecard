@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
-import { BUYBACK_STORAGE_KEY, StoredBuybacks, BUYBACK_KEYWORDS, BUYBACK_LOOKBACK_MONTHS } from "@/lib/buyback-storage";
+import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
   scoreStocks,
   makeBuyList,
@@ -108,33 +108,96 @@ function enrichWithBuybacks(stocks: ScoredStock[], buybacks: BuybackMap): Scored
   });
 }
 
-/** Shown when ASX is unreachable — lets the user paste codes manually */
-function BuybackManualEntry({ onSave }: { onSave: (codes: string[]) => void }) {
-  const [text, setText] = useState("");
-  function save() {
+/**
+ * Slide-down panel for entering active buyback codes manually.
+ * The ASX /asx/1/company/{code}/announcements API is no longer available (404),
+ * so we ask the user to check asx.com.au and enter the codes themselves.
+ * This matches how the original TK spreadsheet works (column K, manual entry).
+ */
+function BuybackPanel({
+  currentCodes,
+  onSave,
+  onClose,
+}: {
+  currentCodes: string[];
+  onSave: (codes: string[]) => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState(currentCodes.join(", "));
+
+  function handleSave() {
     const codes = text
       .toUpperCase()
       .split(/[\s,;]+/)
       .map((c) => c.trim())
       .filter(Boolean);
-    if (codes.length) onSave(codes);
+    onSave(codes);
   }
+
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-50 border border-orange-200 rounded-lg">
-      <TrendingUp className="w-4 h-4 text-orange-600 shrink-0" />
-      <span className="text-xs text-orange-700 font-medium whitespace-nowrap">ASX blocked — enter codes:</span>
-      <input
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="BHP,CBA,ANZ…"
-        className="text-xs border border-orange-200 rounded px-2 py-1 w-36 focus:outline-none focus:ring-1 focus:ring-orange-400 bg-white"
-      />
-      <button
-        onClick={save}
-        className="text-xs font-medium text-orange-700 hover:text-orange-900 px-2 py-1 rounded border border-orange-300 hover:bg-orange-100 transition-colors"
-      >
-        Save
-      </button>
+    <div className="border-t border-orange-100 bg-orange-50 px-6 py-4">
+      <div className="max-w-screen-2xl mx-auto space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-orange-800">On-Market Buybacks (+1 score each)</p>
+            <p className="text-xs text-orange-600 mt-0.5">
+              Check{" "}
+              <a
+                href="https://www.asx.com.au/markets/trade-our-cash-equities/announcements.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-orange-800"
+              >
+                ASX Market Announcements
+              </a>{" "}
+              for each stock — filter by <strong>Appendix 3C</strong> (buy-back announcement) or{" "}
+              <strong>Appendix 3D</strong> (change to buy-back). Enter the codes below.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-orange-400 hover:text-orange-700 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="e.g. BHP, CBA, ANZ, WBC"
+            className="flex-1 text-sm border border-orange-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-orange-400 font-mono"
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+          />
+          <button
+            onClick={handleSave}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-orange-600 text-white hover:bg-orange-700 transition-colors"
+          >
+            Save
+          </button>
+          {currentCodes.length > 0 && (
+            <button
+              onClick={() => onSave([])}
+              className="px-3 py-2 text-sm font-medium rounded-lg border border-orange-300 text-orange-700 hover:bg-orange-100 transition-colors"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+
+        {currentCodes.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {currentCodes.map((code) => (
+              <span key={code} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-orange-100 text-orange-800 border border-orange-200">
+                <TrendingUp className="w-3 h-3" />
+                {code}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <p className="text-xs text-orange-400">
+          Tip: for each code visit{" "}
+          <code className="bg-orange-100 px-1 rounded">asx.com.au/markets/company/CODE/announcements</code>{" "}
+          and look for Appendix 3C filings in the last 12 months.
+        </p>
+      </div>
     </div>
   );
 }
@@ -152,12 +215,9 @@ export default function HomePage() {
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
   const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
-  const [buybackLoading, setBuybackLoading] = useState(false);
-  const [buybackProgress, setBuybackProgress] = useState<{ done: number; total: number } | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
-  const [buybackBlocked, setBuybackBlocked] = useState(false);
-  const [buybackManual, setBuybackManual] = useState("");
+  const [showBuybackPanel, setShowBuybackPanel] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -253,142 +313,21 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
-  /**
-   * Check ASX announcements for on-market buybacks (Appendix 3C / 3D).
-   *
-   * Strategy (tries in order, stops at first success):
-   *  1. Server-side via /api/buybacks (Vercel Edge Runtime — different IPs from Lambda)
-   *  2. Client-side browser fetch directly to ASX (user's IP, no CORS if ASX allows it)
-   *
-   * If both fail we set buybackBlocked=true so the UI shows the manual entry fallback.
-   */
-  const loadBuybacks = useCallback(async () => {
-    if (!rawRows) return;
-    setBuybackLoading(true);
-    setBuybackProgress({ done: 0, total: rawRows.length });
-    setBuybackBlocked(false);
-    setError(null);
-
-    const codes = rawRows.map((r) => r.Code);
-    const accumulated: BuybackMap = {};
-    let activeCount = 0;
-    const CHUNK = 20;
-    const CONCURRENCY = 8;
-
-    // ── Strategy 1: edge server-side ────────────────────────────────────────
-    async function checkViaServer(chunk: string[]): Promise<Record<string, boolean> | null> {
-      try {
-        const res = await fetch("/api/buybacks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ codes: chunk }),
-        });
-        if (!res.ok) return null;
-        const data = await res.json() as Record<string, { active: boolean; _status?: number; _err?: string }>;
-        // If every result has _status:403 or _err, the edge is also blocked
-        const allFailed = chunk.every((c) => !data[c]?.active && (data[c]?._status === 403 || data[c]?._err));
-        if (allFailed && chunk.length > 1) return null; // signal: fall through to browser
-        return Object.fromEntries(chunk.map((c) => [c, data[c]?.active ?? false]));
-      } catch {
-        return null;
-      }
-    }
-
-    // ── Strategy 2: browser direct to ASX ────────────────────────────────────
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - BUYBACK_LOOKBACK_MONTHS);
-
-    async function checkViaBrowser(code: string): Promise<boolean | "cors"> {
-      try {
-        const res = await fetch(
-          `https://www.asx.com.au/asx/1/company/${code}/announcements?count=50&market_sensitive=false`,
-          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }
-        );
-        if (!res.ok) return false;
-        const json = await res.json();
-        const anns: Array<{ header?: string; document_type?: string; document_release_date?: string }> =
-          json?.data ?? [];
-        return anns.some((ann) => {
-          const dateStr = ann.document_release_date ?? "";
-          if (dateStr && new Date(dateStr) < cutoff) return false;
-          const text = `${ann.header ?? ""} ${ann.document_type ?? ""}`.toLowerCase();
-          return BUYBACK_KEYWORDS.some((kw) => text.includes(kw));
-        });
-      } catch (e) {
-        // TypeError = almost certainly a CORS block
-        if (e instanceof TypeError) return "cors";
-        return false;
-      }
-    }
-
-    try {
-      let useBrowser = false;
-      let corsBlocked = false;
-
-      // Probe: try first chunk via server to detect edge blocking
-      const probeChunk = codes.slice(0, Math.min(5, codes.length));
-      const probeResult = await checkViaServer(probeChunk);
-      if (probeResult === null) {
-        useBrowser = true;
-        // Probe browser too — check one code to see if CORS allows it
-        const browserProbe = await checkViaBrowser(probeChunk[0]);
-        if (browserProbe === "cors") corsBlocked = true;
-      }
-
-      if (corsBlocked) {
-        // Neither server nor browser can reach ASX — show manual entry UI
-        setBuybackBlocked(true);
-        return;
-      }
-
-      if (useBrowser) {
-        // Browser-side: parallel batches
-        for (let i = 0; i < codes.length; i += CONCURRENCY) {
-          const chunk = codes.slice(i, i + CONCURRENCY);
-          const results = await Promise.all(chunk.map(checkViaBrowser));
-          chunk.forEach((code, j) => {
-            const r = results[j];
-            const active = r === true;
-            accumulated[code] = active;
-            if (active) activeCount++;
-          });
-          setBuybackProgress({ done: Math.min(i + CONCURRENCY, codes.length), total: codes.length });
-        }
-      } else {
-        // Server-side: merge probe, then continue in chunks
-        Object.assign(accumulated, probeResult ?? {});
-        activeCount = Object.values(accumulated).filter(Boolean).length;
-        setBuybackProgress({ done: probeChunk.length, total: codes.length });
-
-        for (let i = probeChunk.length; i < codes.length; i += CHUNK) {
-          const chunk = codes.slice(i, i + CHUNK);
-          const result = await checkViaServer(chunk);
-          if (result) {
-            Object.assign(accumulated, result);
-            activeCount = Object.values(accumulated).filter(Boolean).length;
-          }
-          setBuybackProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
-        }
-      }
-
-      const stored: StoredBuybacks = {
-        timestamp: new Date().toISOString(),
-        checkedCount: codes.length,
-        data: Object.fromEntries(
-          Object.entries(accumulated).map(([code, active]) => [code, { active }])
-        ),
-      };
-      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
-      setBuybackData(accumulated);
-      setBuybackCount(activeCount);
-      setBuybackLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? `Buyback check: ${e.message}` : "Buyback check failed.");
-    } finally {
-      setBuybackLoading(false);
-      setBuybackProgress(null);
-    }
-  }, [rawRows]);
+  /** Save a set of buyback codes (from manual entry) to state + localStorage. */
+  const saveBuybacks = useCallback((activeCodes: string[]) => {
+    const map: BuybackMap = {};
+    activeCodes.forEach((c) => { map[c.toUpperCase()] = true; });
+    const stored: StoredBuybacks = {
+      timestamp: new Date().toISOString(),
+      checkedCount: activeCodes.length,
+      data: Object.fromEntries(activeCodes.map((c) => [c.toUpperCase(), { active: true }])),
+    };
+    localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+    setBuybackData(map);
+    setBuybackCount(activeCodes.length);
+    setBuybackLoaded(true);
+    setShowBuybackPanel(false);
+  }, []);
 
   const reset = useCallback(() => {
     setRawRows(null);
@@ -480,56 +419,19 @@ export default function HomePage() {
                   </span>
                 )}
 
-                {/* Buyback checker */}
-                {!buybackLoaded && !buybackLoading && !buybackBlocked && (
-                  <button
-                    onClick={loadBuybacks}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
-                  >
-                    <TrendingUp className="w-4 h-4" />
-                    Check Buybacks
-                  </button>
-                )}
-                {buybackLoading && buybackProgress && (
-                  <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700 bg-orange-50 border border-orange-200 rounded-lg">
-                    <TrendingUp className="w-4 h-4 animate-pulse" />
-                    <span>Buybacks {buybackProgress.done}/{buybackProgress.total}</span>
-                    <div className="w-20 h-1.5 bg-orange-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-orange-500 rounded-full transition-all"
-                        style={{ width: `${(buybackProgress.done / buybackProgress.total) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-                {buybackLoaded && !buybackLoading && (
-                  <button
-                    onClick={loadBuybacks}
-                    className="flex items-center gap-1.5 text-sm text-orange-700 bg-orange-50 px-3 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 transition-colors"
-                    title="Re-check ASX announcements for buybacks"
-                  >
-                    <TrendingUp className="w-4 h-4" />
-                    {buybackCount} buyback{buybackCount !== 1 ? "s" : ""}
-                  </button>
-                )}
-                {buybackBlocked && !buybackLoading && (
-                  <BuybackManualEntry
-                    onSave={(codes) => {
-                      const map: BuybackMap = {};
-                      codes.forEach((c) => { map[c] = true; });
-                      const stored: StoredBuybacks = {
-                        timestamp: new Date().toISOString(),
-                        checkedCount: codes.length,
-                        data: Object.fromEntries(codes.map((c) => [c, { active: true }])),
-                      };
-                      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
-                      setBuybackData(map);
-                      setBuybackCount(codes.length);
-                      setBuybackLoaded(true);
-                      setBuybackBlocked(false);
-                    }}
-                  />
-                )}
+                {/* Buyback — manual entry (ASX API no longer available) */}
+                <button
+                  onClick={() => setShowBuybackPanel((v) => !v)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                    buybackLoaded
+                      ? "text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100"
+                      : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  title="Mark stocks with active on-market buybacks"
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  {buybackLoaded ? `${buybackCount} buyback${buybackCount !== 1 ? "s" : ""}` : "Buybacks"}
+                </button>
 
                 <button
                   onClick={reset}
@@ -542,6 +444,15 @@ export default function HomePage() {
             )}
           </div>
         </div>
+
+        {/* Buyback manual entry panel */}
+        {showBuybackPanel && (
+          <BuybackPanel
+            currentCodes={buybackData ? Object.keys(buybackData).filter((c) => buybackData[c]) : []}
+            onSave={saveBuybacks}
+            onClose={() => setShowBuybackPanel(false)}
+          />
+        )}
 
         {/* Rate settings panel */}
         {showRateSettings && (
