@@ -74,7 +74,7 @@ async function fetchCurrentPrice(code: string): Promise<number | null> {
 // ── Pivot detection on OHLC ────────────────────────────────────────────────────
 
 /** Pivot HIGH: monthly HIGH is higher than any HIGH in the surrounding window */
-function findPivotHighs(bars: PriceBar[], lookback = 3): Pivot[] {
+function findPivotHighs(bars: PriceBar[], lookback = 2): Pivot[] {
   const n = bars.length;
   return bars.flatMap((bar, i) => {
     if (i < lookback || i >= n - lookback) return [];
@@ -84,7 +84,7 @@ function findPivotHighs(bars: PriceBar[], lookback = 3): Pivot[] {
 }
 
 /** Pivot LOW: monthly LOW is lower than any LOW in the surrounding window */
-function findPivotLows(bars: PriceBar[], lookback = 3): Pivot[] {
+function findPivotLows(bars: PriceBar[], lookback = 2): Pivot[] {
   const n = bars.length;
   return bars.flatMap((bar, i) => {
     if (i < lookback || i >= n - lookback) return [];
@@ -191,6 +191,34 @@ function classify(bars: PriceBar[], currentPrice: number): {
       }
     } else {
       note = `Insufficient pivot data — ${pivotHighs.length} highs, ${pivotLows.length} lows`;
+    }
+  }
+
+  // ── Fallback A: early-stage downtrend (stock just peaked, not yet 3 lower highs) ──
+  // If still Josephine: check if the most recent confirmed pivot high is recent AND
+  // current price is significantly below it — clear evidence of a new downtrend forming.
+  if (sentiment === "Josephine" && pivotHighs.length >= 1) {
+    const recentHigh = pivotHighs[pivotHighs.length - 1];
+    const monthsAgo  = currentIdx - recentHigh.idx;
+    const pctBelow   = (recentHigh.price - currentPrice) / recentHigh.price;
+    if (monthsAgo <= 18 && pctBelow >= 0.15) {
+      sentiment = "Bearish";
+      note = `Early downtrend: ${(pctBelow * 100).toFixed(0)}% below recent peak ${recentHigh.price.toFixed(2)} (${monthsAgo}mo ago) — downtrend forming, 3PTL not yet confirmed`;
+    }
+  }
+
+  // ── Fallback B: trough recovery — stock bottomed recently and has strongly recovered ──
+  // If still Josephine: check if the most recent pivot low was recent AND price has
+  // recovered strongly above it — suggests early-stage uptrend / breakout.
+  if (sentiment === "Josephine" && pivotLows.length >= 1) {
+    const recentLow  = pivotLows[pivotLows.length - 1];
+    const monthsAgo  = currentIdx - recentLow.idx;
+    const pctAbove   = (currentPrice - recentLow.price) / recentLow.price;
+    // Also check: has the current price broken above the most recent pivot HIGH?
+    const aboveLastHigh = pivotHighs.length >= 1 && currentPrice > pivotHighs[pivotHighs.length - 1].price * 0.98;
+    if (monthsAgo <= 12 && pctAbove >= 0.20 && aboveLastHigh) {
+      sentiment = "Bullish";
+      note = `Trough recovery: ${(pctAbove * 100).toFixed(0)}% above recent low ${recentLow.price.toFixed(2)} (${monthsAgo}mo ago) and price near/above last resistance — uptrend forming`;
     }
   }
 
