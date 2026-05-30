@@ -141,17 +141,13 @@ function BuybackPanel({
           <div>
             <p className="text-sm font-semibold text-orange-800">On-Market Buybacks (+1 score each)</p>
             <p className="text-xs text-orange-600 mt-0.5">
-              Check{" "}
-              <a
-                href="https://www.asx.com.au/markets/trade-our-cash-equities/announcements.html"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-orange-800"
-              >
-                ASX Market Announcements
-              </a>{" "}
-              for each stock — filter by <strong>Appendix 3C</strong> (buy-back announcement) or{" "}
-              <strong>Appendix 3D</strong> (change to buy-back). Enter the codes below.
+              Manual override — or use <strong>Check Buybacks</strong> to scan automatically.
+              For each stock check{" "}
+              <code className="bg-orange-100 px-1 rounded text-orange-700">
+                asx.com.au/markets/trade-our-cash-market/announcements.<em>code</em>
+              </code>{" "}
+              and look for <strong>Appendix 3C</strong> (buy-back) or{" "}
+              <strong>Appendix 3D</strong> (change). Enter active codes below.
             </p>
           </div>
           <button onClick={onClose} className="text-orange-400 hover:text-orange-700 text-lg leading-none">✕</button>
@@ -193,9 +189,16 @@ function BuybackPanel({
         )}
 
         <p className="text-xs text-orange-400">
-          Tip: for each code visit{" "}
-          <code className="bg-orange-100 px-1 rounded">asx.com.au/markets/company/CODE/announcements</code>{" "}
-          and look for Appendix 3C filings in the last 12 months.
+          Tip: for BHP visit{" "}
+          <a
+            href="https://www.asx.com.au/markets/trade-our-cash-market/announcements.bhp"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            asx.com.au/markets/trade-our-cash-market/announcements.<strong>bhp</strong>
+          </a>
+          {" "}— replace <em>bhp</em> with the lowercase ticker code.
         </p>
       </div>
     </div>
@@ -218,6 +221,8 @@ export default function HomePage() {
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
   const [showBuybackPanel, setShowBuybackPanel] = useState(false);
+  const [buybackChecking, setBuybackChecking] = useState(false);
+  const [buybackProgress, setBuybackProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -340,6 +345,58 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
+  /**
+   * Auto-check: fetch each stock's ASX announcement HTML page via the edge
+   * server and search it for Appendix 3C / 3D text.
+   * URL format: asx.com.au/markets/trade-our-cash-market/announcements.{code}
+   */
+  const checkBuybacks = useCallback(async () => {
+    if (!rawRows) return;
+    setBuybackChecking(true);
+    setBuybackProgress({ done: 0, total: rawRows.length });
+    setError(null);
+
+    const codes = rawRows.map((r) => r.Code);
+    const CHUNK = 20;
+    const accumulated: BuybackMap = {};
+    let activeCount = 0;
+
+    try {
+      for (let i = 0; i < codes.length; i += CHUNK) {
+        const chunk = codes.slice(i, i + CHUNK);
+        const res = await fetch("/api/buybacks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: chunk }),
+        });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const data = await res.json() as Record<string, { active: boolean }>;
+        for (const [code, entry] of Object.entries(data)) {
+          accumulated[code] = entry.active;
+          if (entry.active) activeCount++;
+        }
+        setBuybackProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+      }
+
+      const stored: StoredBuybacks = {
+        timestamp: new Date().toISOString(),
+        checkedCount: codes.length,
+        data: Object.fromEntries(
+          Object.entries(accumulated).map(([c, active]) => [c, { active }])
+        ),
+      };
+      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+      setBuybackData(accumulated);
+      setBuybackCount(activeCount);
+      setBuybackLoaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? `Buyback check: ${e.message}` : "Buyback check failed.");
+    } finally {
+      setBuybackChecking(false);
+      setBuybackProgress(null);
+    }
+  }, [rawRows]);
+
   /** Save a set of buyback codes (from manual entry) to state + localStorage. */
   const saveBuybacks = useCallback((activeCodes: string[]) => {
     const map: BuybackMap = {};
@@ -446,18 +503,39 @@ export default function HomePage() {
                   </span>
                 )}
 
-                {/* Buyback — manual entry (ASX API no longer available) */}
+                {/* Buyback — auto-check + manual fallback */}
+                {!buybackChecking && (
+                  <button
+                    onClick={checkBuybacks}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                      buybackLoaded
+                        ? "text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100"
+                        : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                    }`}
+                    title="Scan ASX announcement pages for Appendix 3C / 3D buyback filings"
+                  >
+                    <TrendingUp className="w-4 h-4" />
+                    {buybackLoaded ? `${buybackCount} buyback${buybackCount !== 1 ? "s" : ""}` : "Check Buybacks"}
+                  </button>
+                )}
+                {buybackChecking && buybackProgress && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-orange-700 bg-orange-50 border border-orange-200 rounded-lg">
+                    <TrendingUp className="w-4 h-4 animate-pulse" />
+                    <span>{buybackProgress.done}/{buybackProgress.total}</span>
+                    <div className="w-16 h-1.5 bg-orange-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-orange-500 rounded-full transition-all"
+                        style={{ width: `${(buybackProgress.done / buybackProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
                 <button
                   onClick={() => setShowBuybackPanel((v) => !v)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                    buybackLoaded
-                      ? "text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100"
-                      : "text-gray-500 border-gray-300 hover:bg-gray-50"
-                  }`}
-                  title="Mark stocks with active on-market buybacks"
+                  className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-400 hover:bg-gray-50 transition-colors"
+                  title="Manually enter buyback codes"
                 >
-                  <TrendingUp className="w-4 h-4" />
-                  {buybackLoaded ? `${buybackCount} buyback${buybackCount !== 1 ? "s" : ""}` : "Buybacks"}
+                  ✎
                 </button>
 
                 <button

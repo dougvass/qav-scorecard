@@ -1,39 +1,93 @@
 /**
- * GET /api/buybacks?code=BHP
+ * POST /api/buybacks  { codes: string[] }
+ *   Fetches each stock's ASX announcement HTML page and searches for
+ *   Appendix 3C (buy-back announcement) or 3D (change to buy-back) text.
+ *   Returns Record<string, { active: boolean, _status?: number, _err?: string }>
  *
- * Debug endpoint — shows what the Vercel edge sees when calling the ASX
- * announcements API. Useful for checking if ASX changes their endpoint.
- *
- * Note: Buyback entry is now manual (via the Buybacks panel in the UI)
- * because the ASX /asx/1/company/{code}/announcements endpoint returned 404.
+ * GET  /api/buybacks?code=BHP
+ *   Debug — shows raw fetch result for one ticker including HTML length and
+ *   whether any buyback keywords were found.
  */
 
 export const runtime = "edge";
 
+const ASX_URL = (code: string) =>
+  `https://www.asx.com.au/markets/trade-our-cash-market/announcements.${code.toLowerCase()}`;
+
+const FETCH_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-AU,en;q=0.9",
+  Referer: "https://www.asx.com.au/",
+};
+
+// Keywords to find in the HTML text (case-insensitive)
+const KEYWORDS = ["appendix 3c", "appendix 3d", "buy-back", "buyback"];
+
+function searchHtml(html: string): boolean {
+  const lower = html.toLowerCase();
+  return KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+async function checkCode(code: string) {
+  const url = ASX_URL(code);
+  try {
+    const res = await fetch(url, {
+      headers: FETCH_HEADERS,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { active: false, _status: res.status };
+    const html = await res.text();
+    return { active: searchHtml(html), _status: res.status };
+  } catch (e) {
+    return { active: false, _err: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ── POST — batch ──────────────────────────────────────────────────────────────
+
+export async function POST(request: Request) {
+  const body = (await request.json()) as { codes?: string[] };
+  const codes = (body.codes ?? []).slice(0, 25);
+  if (!codes.length) return Response.json({ error: "codes required" }, { status: 400 });
+
+  const results = await Promise.all(codes.map(checkCode));
+  const out: Record<string, object> = {};
+  codes.forEach((c, i) => { out[c] = results[i]; });
+  return Response.json(out);
+}
+
+// ── GET — single-code debug ───────────────────────────────────────────────────
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = (searchParams.get("code") ?? "BHP").toUpperCase();
-  const url = `https://www.asx.com.au/asx/1/company/${code}/announcements?count=20&market_sensitive=false`;
-
-  const result: Record<string, unknown> = { code, url, runtime: "edge" };
+  const url = ASX_URL(code);
+  const result: Record<string, unknown> = { code, url, runtime: "edge", keywords: KEYWORDS };
 
   try {
     const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        Accept: "application/json",
-        Referer: "https://www.asx.com.au/",
-      },
-      signal: AbortSignal.timeout(9_000),
+      headers: FETCH_HEADERS,
+      signal: AbortSignal.timeout(10_000),
     });
     result.status = res.status;
     result.ok = res.ok;
     if (res.ok) {
-      const json = (await res.json()) as { data?: unknown[] };
-      result.announcement_count = (json?.data ?? []).length;
-      result.sample = (json?.data ?? []).slice(0, 3);
+      const html = await res.text();
+      result.html_length = html.length;
+      result.is_js_shell = html.length < 5000; // tiny = JS SPA shell, no data
+      result.buyback_found = searchHtml(html);
+      result.keyword_matches = KEYWORDS.filter((kw) => html.toLowerCase().includes(kw));
+      // Show a snippet around the first keyword hit, if any
+      const hit = KEYWORDS.find((kw) => html.toLowerCase().includes(kw));
+      if (hit) {
+        const idx = html.toLowerCase().indexOf(hit);
+        result.snippet = html.slice(Math.max(0, idx - 100), idx + 200).replace(/<[^>]+>/g, " ").trim();
+      }
     } else {
-      result.body = (await res.text()).slice(0, 500);
+      result.body = (await res.text()).slice(0, 400);
     }
   } catch (e) {
     result.error = e instanceof Error ? e.message : String(e);
