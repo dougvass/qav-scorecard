@@ -145,6 +145,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [minAdt, setMinAdt] = useState(0);
+  const [search, setSearch] = useState("");
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -165,8 +166,14 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
     }
     if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 2);
     if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long === -1);
+    if (search.trim()) {
+      const q = search.trim().toUpperCase();
+      result = result.filter(
+        (s) => s.Code.toUpperCase().includes(q) || s.Name.toUpperCase().includes(q)
+      );
+    }
     return result;
-  }, [stocks, minAdt, filterSentiment, hideEtfs]);
+  }, [stocks, minAdt, filterSentiment, hideEtfs, search]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -258,10 +265,22 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
         >
           {hideEtfs ? "ETFs hidden" : "Hide ETFs/Funds"}
         </button>
-        <span className="text-sm text-gray-400 ml-auto">
-          {sorted.length} stock{sorted.length !== 1 ? "s" : ""}
-          {!showAll && " in buy list"}
-        </span>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search code or name…"
+            className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white w-48 focus:outline-none focus:ring-2 focus:ring-indigo-400 placeholder-gray-400"
+          />
+          {search && (
+            <button onClick={() => setSearch("")} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          )}
+          <span className="text-sm text-gray-400 whitespace-nowrap">
+            {sorted.length} stock{sorted.length !== 1 ? "s" : ""}
+            {!showAll && " in buy list"}
+          </span>
+        </div>
       </div>
 
       {/* Table */}
