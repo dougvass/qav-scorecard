@@ -148,7 +148,7 @@ export async function GET(request: Request) {
         const rec = item as Record<string, unknown>;
         const sym = String(rec.symbol ?? rec.code ?? rec.asxCode ?? rec.ticker ?? "").toUpperCase();
         if (sym === code) {
-          const v = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
+          const v = rec.xidEntity ?? rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
           if (v) { xid = String(v); break; }
         }
       }
