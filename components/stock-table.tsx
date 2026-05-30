@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
 import { qavColor, scoreColor, isEtfOrFund } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
+import { StoredSentiments, SentimentOverride } from "@/lib/sentiment-storage";
 
 interface StockTableProps {
   stocks: ScoredStock[];
@@ -12,8 +13,10 @@ interface StockTableProps {
   onToggleEtfs: () => void;
   filterSentiment: "all" | "bullish" | "bearish";
   onChangeFilterSentiment: (v: "all" | "bullish" | "bearish") => void;
-  borrowingRate: number;   // % — compared against div yield in breakdown
-  phase2Loaded?: boolean;  // true once QAV spreadsheet Phase 2 data has been loaded
+  borrowingRate: number;
+  phase2Loaded?: boolean;
+  sentimentOverrides?: StoredSentiments;
+  onSentimentOverride?: (code: string, value: SentimentOverride | null) => void;
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt";
@@ -56,14 +59,78 @@ function SortIcon({ col, sortKey, sortDir }: { col: string; sortKey: string; sor
     : <ChevronDown className="w-3 h-3 text-indigo-500" />;
 }
 
-function SentimentBadge({ stock }: { stock: ScoredStock }) {
+const SENTIMENT_OPTIONS: { label: SentimentOverride | "Auto"; value: SentimentOverride | null }[] = [
+  { label: "Auto", value: null },
+  { label: "Bullish", value: "Bullish" },
+  { label: "Josephine", value: "Josephine" },
+  { label: "Bearish", value: "Bearish" },
+];
+
+function SentimentBadge({
+  stock,
+  override,
+  onOverride,
+}: {
+  stock: ScoredStock;
+  override?: SentimentOverride;
+  onOverride?: (code: string, value: SentimentOverride | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function close(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
   const v = stock.S_sentiment_long;
-  if (v === 2)
-    return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["bullish_proxy"]}`}>Bullish</span>;
-  if (v === -1)
-    return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["negative"]}`}>Bearish</span>;
-  // 0 = Josephine (between lines)
-  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SENTIMENT_COLORS["josephine"]}`}>Josephine</span>;
+  const isOverridden = override !== undefined;
+  let label = "Josephine";
+  let colorCls = SENTIMENT_COLORS["josephine"];
+  if (v === 2)  { label = "Bullish";   colorCls = SENTIMENT_COLORS["bullish_proxy"]; }
+  if (v === -1) { label = "Bearish";   colorCls = SENTIMENT_COLORS["negative"]; }
+
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={() => setOpen((x) => !x)}
+        className={`text-xs px-2 py-0.5 rounded-full font-medium transition-opacity hover:opacity-80 ${colorCls}`}
+        title={isOverridden ? `Manual override: ${override}. Click to change.` : "Click to manually set 3PTL sentiment"}
+      >
+        {label}{isOverridden && " ✎"}
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full mt-1 left-1/2 -translate-x-1/2 bg-white border border-gray-200 rounded-lg shadow-lg p-1.5 min-w-[140px]">
+          <p className="text-xs text-gray-400 px-2 pb-1 border-b border-gray-100 mb-1">3PTL override</p>
+          {SENTIMENT_OPTIONS.map(({ label: l, value }) => (
+            <button
+              key={l}
+              onClick={() => { onOverride?.(stock.Code, value); setOpen(false); }}
+              className={`w-full text-left text-xs px-2 py-1.5 rounded hover:bg-gray-50 flex items-center justify-between ${
+                (value === null && !isOverridden) || (value === override) ? "font-semibold text-indigo-600" : "text-gray-700"
+              }`}
+            >
+              {l}
+              {((value === null && !isOverridden) || (value === override)) && <span>✓</span>}
+            </button>
+          ))}
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=ASX:${stock.Code}&interval=1M`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1.5 border-t border-gray-100 mt-1"
+            onClick={() => setOpen(false)}
+          >
+            Open {stock.Code} on TradingView ↗
+          </a>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StarBadge({ rating }: { rating: number | null }) {
@@ -73,7 +140,7 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -295,7 +362,11 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       {stock.PCF !== null ? stock.PCF.toFixed(1) : "—"}
                     </td>
                     <td className="px-3 py-3 text-center">
-                      <SentimentBadge stock={stock} />
+                      <SentimentBadge
+                        stock={stock}
+                        override={sentimentOverrides?.[stock.Code]}
+                        onOverride={onSentimentOverride}
+                      />
                     </td>
                     <td className="px-3 py-3 text-center">
                       {stock.S_buyback === 1 ? (
@@ -384,9 +455,11 @@ function ScoreBreakdown({ stock, borrowingRate, phase2Loaded }: { stock: ScoredS
           // Sub-label under the score name — phase-specific context
           let subLabel: React.ReactNode = null;
           if (meta.key === "S_sentiment_long") {
-            if (val === 2)  subLabel = <span className="text-xs font-medium text-emerald-600">↑ Bullish (above sell line)</span>;
-            else if (val === -1) subLabel = <span className="text-xs font-medium text-red-500">↓ Bearish (below sell line)</span>;
-            else subLabel = <span className="text-xs text-sky-600">⇔ Josephine (between lines)</span>;
+            const isManual = !!(stock as Record<string,unknown>)._sentimentOverride;
+            const src = isManual ? " · manual" : " · SDMAX";
+            if (val === 2)  subLabel = <span className="text-xs font-medium text-emerald-600">↑ Bullish{src}</span>;
+            else if (val === -1) subLabel = <span className="text-xs font-medium text-red-500">↓ Bearish{src}</span>;
+            else subLabel = <span className="text-xs text-sky-600">⇔ Josephine{src}</span>;
           } else if (meta.key === "S_buyback") {
             if (val === 1)  subLabel = <span className="text-xs font-medium text-emerald-600">✓ Active · ASX</span>;
             else subLabel = <span className="text-xs text-gray-400">Not detected · ASX</span>;

@@ -6,6 +6,12 @@ import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
 import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
+  SENTIMENT_STORAGE_KEY,
+  StoredSentiments,
+  SentimentOverride,
+  SENTIMENT_SCORES,
+} from "@/lib/sentiment-storage";
+import {
   scoreStocks,
   makeBuyList,
   starToIv3Score,
@@ -74,6 +80,26 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     const enriched = { ...stock } as ScoredStock;
     if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
     if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+    return enriched;
+  });
+}
+
+/** Apply manual 3PTL sentiment overrides and recompute derived stats. */
+function enrichWithSentimentOverrides(stocks: ScoredStock[], overrides: StoredSentiments): ScoredStock[] {
+  return stocks.map((stock) => {
+    const override = overrides[stock.Code];
+    if (override === undefined) return stock;
+    const enriched = { ...stock, S_sentiment_long: SENTIMENT_SCORES[override] } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -217,6 +243,7 @@ export default function HomePage() {
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
+  const [sentimentOverrides, setSentimentOverrides] = useState<StoredSentiments>({});
   const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
@@ -261,6 +288,13 @@ export default function HomePage() {
     } catch { /* corrupt — ignore */ }
   }
 
+  function loadSentimentsFromStorage() {
+    try {
+      const raw = localStorage.getItem(SENTIMENT_STORAGE_KEY);
+      setSentimentOverrides(raw ? (JSON.parse(raw) as StoredSentiments) : {});
+    } catch { /* corrupt — ignore */ }
+  }
+
   function loadBuybacksFromStorage() {
     try {
       const raw = localStorage.getItem(BUYBACK_STORAGE_KEY);
@@ -287,10 +321,12 @@ export default function HomePage() {
   useEffect(() => {
     loadPhase2FromStorage();
     loadBuybacksFromStorage();
+    loadSentimentsFromStorage();
 
     function onStorageChange(e: StorageEvent) {
-      if (e.key === PHASE2_STORAGE_KEY)  loadPhase2FromStorage();
-      if (e.key === BUYBACK_STORAGE_KEY) loadBuybacksFromStorage();
+      if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
+      if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
+      if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
     }
 
     window.addEventListener("storage", onStorageChange);
@@ -308,10 +344,12 @@ export default function HomePage() {
     if (msRatings)   scored = enrichWithMsRatings(scored, msRatings);
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData) scored = enrichWithBuybacks(scored, buybackData);
+    if (Object.keys(sentimentOverrides).length > 0)
+      scored = enrichWithSentimentOverrides(scored, sentimentOverrides);
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData]);
+  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, sentimentOverrides]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -396,6 +434,17 @@ export default function HomePage() {
       setBuybackProgress(null);
     }
   }, [rawRows]);
+
+  /** Set or clear a manual 3PTL sentiment override for one stock. */
+  const saveSentimentOverride = useCallback((code: string, value: SentimentOverride | null) => {
+    setSentimentOverrides((prev) => {
+      const next = { ...prev };
+      if (value === null) delete next[code];
+      else next[code] = value;
+      localStorage.setItem(SENTIMENT_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   /** Save a set of buyback codes (from manual entry) to state + localStorage. */
   const saveBuybacks = useCallback((activeCodes: string[]) => {
@@ -703,6 +752,8 @@ export default function HomePage() {
               onChangeFilterSentiment={setFilterSentiment}
               borrowingRate={borrowingRate}
               phase2Loaded={phase2Loaded}
+              sentimentOverrides={sentimentOverrides}
+              onSentimentOverride={saveSentimentOverride}
             />
 
             <div className="bg-white border border-gray-200 rounded-xl p-5 text-sm text-gray-500 space-y-2">
