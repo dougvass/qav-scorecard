@@ -310,15 +310,17 @@ export default function HomePage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {/* Phase 2 — always visible so users can upload data before or after CSV */}
+            {/* Phase 2 — opens in new tab so the CSV session is not lost */}
             <Link
               href="/phase2"
+              target="_blank"
+              rel="noopener noreferrer"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
                 phase2Loaded
                   ? "text-teal-700 bg-teal-50 border-teal-200 hover:bg-teal-100"
                   : "text-gray-500 border-gray-300 hover:bg-gray-50"
               }`}
-              title="Manage Phase 2 data (PE Hi/Lo, Equity Inc)"
+              title="Manage Phase 2 data — opens in new tab so your scorecard session is preserved"
             >
               <Database className="w-4 h-4" />
               {phase2Loaded ? `Phase 2 · ${phase2StockCount} stocks` : "Set up Phase 2"}
@@ -489,7 +491,7 @@ export default function HomePage() {
               </div>
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <p className="font-semibold text-gray-700 mb-1">Phase 2</p>
-                <p>PE Hi/Lo and Equity Inc — upload your QAV spreadsheet once via the <Link href="/phase2" className="text-teal-600 underline">Phase 2 page</Link></p>
+                <p>PE Hi/Lo and Equity Inc — upload your QAV spreadsheet once via the <Link href="/phase2" target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">Phase 2 page</Link></p>
               </div>
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <p className="font-semibold text-gray-700 mb-1">Phase 3</p>
@@ -558,7 +560,7 @@ export default function HomePage() {
                 <li><strong>IV1</strong> = EPS ÷ IV1 Hurdle ({iv1Rate.toFixed(2)}%) — use your mortgage rate as a personal benchmark</li>
                 <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — driven by RBA cash rate ({cashRate}%) + 6%</li>
                 <li>Phase 1 (3PTL short sentiment) requires the manual Python pipeline</li>
-                <li><strong>Phase 2</strong> — upload your QAV analysis workbook once via the <Link href="/phase2" className="text-teal-600 underline">Phase 2 page</Link>. Scores are stored in your browser and applied automatically every time you upload a CSV. PE Hi/Lo: +2 = lowest in 3yrs, 0 = middle, −1 = highest. Equity Inc: +1 = increasing, 0 = not</li>
+                <li><strong>Phase 2</strong> — upload your QAV analysis workbook once via the <Link href="/phase2" target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">Phase 2 page</Link>. Scores are stored in your browser and applied automatically every time you upload a CSV. PE Hi/Lo: +2 = lowest in 3yrs, 0 = middle, −1 = highest. Equity Inc: +1 = increasing, 0 = not</li>
                 <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>

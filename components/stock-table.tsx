@@ -214,6 +214,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
               <Th label="Quality" col="Quality" title="Average score per column (TotalScore ÷ Count) — green ≥ 75%" className="text-center" />
               <Th label="PCF" col="PCF" title="Price to Cash Flow — lower is cheaper" className="text-center" />
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Sentiment</th>
+              <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Active on-market buyback detected via ASX announcements">BB</th>
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">MS ★</th>
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Breakdown</th>
             </tr>
@@ -297,6 +298,13 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       <SentimentBadge stock={stock} />
                     </td>
                     <td className="px-3 py-3 text-center">
+                      {stock.S_buyback === 1 ? (
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-orange-100 text-orange-700 text-xs font-bold" title="Active buyback detected">↑</span>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-center">
                       <StarBadge rating={msRating ?? null} />
                     </td>
                     <td className="px-3 py-3 text-center">
@@ -311,7 +319,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                   </tr>
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
-                      <td colSpan={14} className="px-6 py-4">
+                      <td colSpan={15} className="px-6 py-4">
                         <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} phase2Loaded={phase2Loaded} />
                       </td>
                     </tr>
