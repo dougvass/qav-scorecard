@@ -12,6 +12,11 @@ import {
   SENTIMENT_SCORES,
 } from "@/lib/sentiment-storage";
 import {
+  TRENDLINE_STORAGE_KEY,
+  StoredTrendlines,
+  TRENDLINE_SCORES,
+} from "@/lib/trendline-storage";
+import {
   scoreStocks,
   makeBuyList,
   starToIv3Score,
@@ -33,6 +38,7 @@ import {
   Settings2,
   Database,
   TrendingUp,
+  Activity,
 } from "lucide-react";
 
 const SCORE_KEYS = [
@@ -80,6 +86,26 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     const enriched = { ...stock } as ScoredStock;
     if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
     if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+    return enriched;
+  });
+}
+
+/** Apply auto-calculated 3PTL trendline results (overrides SDMAX, overridden by manual). */
+function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendlines): ScoredStock[] {
+  return stocks.map((stock) => {
+    const entry = trendlines.data[stock.Code];
+    if (!entry) return stock;
+    const enriched = { ...stock, S_sentiment_long: TRENDLINE_SCORES[entry.sentiment] } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -244,6 +270,10 @@ export default function HomePage() {
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
   const [sentimentOverrides, setSentimentOverrides] = useState<StoredSentiments>({});
+  const [trendlineData, setTrendlineData] = useState<StoredTrendlines | null>(null);
+  const [trendlineChecking, setTrendlineChecking] = useState(false);
+  const [trendlineProgress, setTrendlineProgress] = useState<{ done: number; total: number } | null>(null);
+  const [trendlineLoaded, setTrendlineLoaded] = useState(false);
   const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
@@ -288,6 +318,17 @@ export default function HomePage() {
     } catch { /* corrupt — ignore */ }
   }
 
+  function loadTrendlineFromStorage() {
+    try {
+      const raw = localStorage.getItem(TRENDLINE_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as StoredTrendlines;
+        setTrendlineData(stored);
+        setTrendlineLoaded(true);
+      }
+    } catch { /* corrupt — ignore */ }
+  }
+
   function loadSentimentsFromStorage() {
     try {
       const raw = localStorage.getItem(SENTIMENT_STORAGE_KEY);
@@ -322,11 +363,13 @@ export default function HomePage() {
     loadPhase2FromStorage();
     loadBuybacksFromStorage();
     loadSentimentsFromStorage();
+    loadTrendlineFromStorage();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
       if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
       if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
+      if (e.key === TRENDLINE_STORAGE_KEY) loadTrendlineFromStorage();
     }
 
     window.addEventListener("storage", onStorageChange);
@@ -343,13 +386,14 @@ export default function HomePage() {
     let scored = scoreStocks(rawRows, msMap, rates);
     if (msRatings)   scored = enrichWithMsRatings(scored, msRatings);
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
-    if (buybackData) scored = enrichWithBuybacks(scored, buybackData);
+    if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
+    if (trendlineData) scored = enrichWithTrendlines(scored, trendlineData);   // auto 3PTL
     if (Object.keys(sentimentOverrides).length > 0)
-      scored = enrichWithSentimentOverrides(scored, sentimentOverrides);
+      scored = enrichWithSentimentOverrides(scored, sentimentOverrides);        // manual wins
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, sentimentOverrides]);
+  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, trendlineData, sentimentOverrides]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -432,6 +476,52 @@ export default function HomePage() {
     } finally {
       setBuybackChecking(false);
       setBuybackProgress(null);
+    }
+  }, [rawRows]);
+
+  /** Run the 3PTL calculation for all stocks in the CSV via Yahoo Finance monthly data. */
+  const calculateTrendlines = useCallback(async () => {
+    if (!rawRows) return;
+    setTrendlineChecking(true);
+    setTrendlineProgress({ done: 0, total: rawRows.length });
+    setError(null);
+
+    const codes = rawRows.map((r) => r.Code);
+    const CHUNK = 20;
+    const accumulated: StoredTrendlines["data"] = {};
+
+    try {
+      for (let i = 0; i < codes.length; i += CHUNK) {
+        const chunk = codes.slice(i, i + CHUNK);
+        const res = await fetch("/api/trendline", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: chunk }),
+        });
+        if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
+        const data = await res.json() as Record<string, { sentiment: string; note?: string }>;
+        for (const [code, entry] of Object.entries(data)) {
+          accumulated[code] = {
+            sentiment: (entry.sentiment ?? "Josephine") as "Bullish" | "Josephine" | "Bearish",
+            note: entry.note,
+          };
+        }
+        setTrendlineProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+      }
+
+      const stored: StoredTrendlines = {
+        timestamp: new Date().toISOString(),
+        checkedCount: codes.length,
+        data: accumulated,
+      };
+      localStorage.setItem(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
+      setTrendlineData(stored);
+      setTrendlineLoaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? `3PTL: ${e.message}` : "3PTL calculation failed.");
+    } finally {
+      setTrendlineChecking(false);
+      setTrendlineProgress(null);
     }
   }, [rawRows]);
 
@@ -550,6 +640,34 @@ export default function HomePage() {
                     <Star className="w-4 h-4" />
                     MorningStar loaded
                   </span>
+                )}
+
+                {/* 3PTL auto-calculation */}
+                {!trendlineChecking && (
+                  <button
+                    onClick={calculateTrendlines}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                      trendlineLoaded
+                        ? "text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100"
+                        : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                    }`}
+                    title="Calculate 3PTL (3-Point Trendline) from 5yr monthly Yahoo Finance data"
+                  >
+                    <Activity className="w-4 h-4" />
+                    {trendlineLoaded ? "3PTL ✓" : "Calc 3PTL"}
+                  </button>
+                )}
+                {trendlineChecking && trendlineProgress && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-lg">
+                    <Activity className="w-4 h-4 animate-pulse" />
+                    <span>{trendlineProgress.done}/{trendlineProgress.total}</span>
+                    <div className="w-16 h-1.5 bg-violet-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-violet-500 rounded-full transition-all"
+                        style={{ width: `${(trendlineProgress.done / trendlineProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
                 )}
 
                 {/* Buyback — auto-check + manual fallback */}

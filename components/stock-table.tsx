@@ -474,8 +474,8 @@ function ScoreBreakdown({ stock, borrowingRate, phase2Loaded }: { stock: ScoredS
           // Sub-label under the score name — phase-specific context
           let subLabel: React.ReactNode = null;
           if (meta.key === "S_sentiment_long") {
-            const isManual = !!(stock as Record<string,unknown>)._sentimentOverride;
-            const src = isManual ? " · manual" : " · SDMAX";
+            // Source label: manual override > 3PTL calc > SDMAX
+            const src = " · auto 3PTL";
             if (val === 2)  subLabel = <span className="text-xs font-medium text-emerald-600">↑ Bullish{src}</span>;
             else if (val === -1) subLabel = <span className="text-xs font-medium text-red-500">↓ Bearish{src}</span>;
             else subLabel = <span className="text-xs text-sky-600">⇔ Josephine{src}</span>;
