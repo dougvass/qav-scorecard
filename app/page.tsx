@@ -234,25 +234,33 @@ export default function HomePage() {
     marketHurdle: (6 + cashRate) / 100,
   };
 
-  // Auto-load Phase 2 + buybacks from localStorage on mount
-  useEffect(() => {
+  // ── localStorage loaders (called on mount AND when another tab writes) ──────
+
+  function loadPhase2FromStorage() {
     try {
-      const raw2 = localStorage.getItem(PHASE2_STORAGE_KEY);
-      if (raw2) {
-        const stored = JSON.parse(raw2) as StoredPhase2;
+      const raw = localStorage.getItem(PHASE2_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as StoredPhase2;
         const count = Object.values(stored.data).filter(
           (v) => v.S_pe_hi_lo !== null || v.S_equity_inc !== null
         ).length;
         setPhase2Data(stored.data as Phase2Map);
         setPhase2StockCount(count);
         setPhase2Loaded(true);
+      } else {
+        // Key was deleted in the other tab
+        setPhase2Data(null);
+        setPhase2StockCount(0);
+        setPhase2Loaded(false);
       }
-    } catch { /* corrupt storage — ignore */ }
+    } catch { /* corrupt — ignore */ }
+  }
 
+  function loadBuybacksFromStorage() {
     try {
-      const rawBB = localStorage.getItem(BUYBACK_STORAGE_KEY);
-      if (rawBB) {
-        const stored = JSON.parse(rawBB) as StoredBuybacks;
+      const raw = localStorage.getItem(BUYBACK_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as StoredBuybacks;
         const bbMap: BuybackMap = {};
         let active = 0;
         for (const [code, entry] of Object.entries(stored.data)) {
@@ -262,8 +270,27 @@ export default function HomePage() {
         setBuybackData(bbMap);
         setBuybackCount(active);
         setBuybackLoaded(true);
+      } else {
+        setBuybackData(null);
+        setBuybackCount(0);
+        setBuybackLoaded(false);
       }
-    } catch { /* corrupt storage — ignore */ }
+    } catch { /* corrupt — ignore */ }
+  }
+
+  // Auto-load on mount + listen for changes from other tabs (e.g. /phase2 in new tab)
+  useEffect(() => {
+    loadPhase2FromStorage();
+    loadBuybacksFromStorage();
+
+    function onStorageChange(e: StorageEvent) {
+      if (e.key === PHASE2_STORAGE_KEY)  loadPhase2FromStorage();
+      if (e.key === BUYBACK_STORAGE_KEY) loadBuybacksFromStorage();
+    }
+
+    window.addEventListener("storage", onStorageChange);
+    return () => window.removeEventListener("storage", onStorageChange);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Re-score whenever raw rows, rates, or enrichment data changes
