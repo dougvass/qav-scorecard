@@ -1,116 +1,148 @@
 /**
- * POST /api/buybacks  { codes: string[] }
- *   For each code:
- *   1. Fetch the ASX announcement HTML page to extract the Next.js build ID
- *   2. Fetch the pre-rendered JSON data file at /_next/data/{buildId}/...
- *   3. Walk the JSON and search for Appendix 3C / 3D (buyback) document types
+ * ASX buyback detection using the MarkitDigital API that powers asx.com.au.
  *
- * GET /api/buybacks?code=BOL
- *   Debug — shows the full pipeline result for one ticker.
+ * Three-step chain per ticker:
+ *  1. GET https://www.asx.com.au/token.json          → bearer token
+ *  2. GET asx.api.markitdigital.com/.../predictive?searchText={code}
+ *                                                     → entityXid for the ticker
+ *  3. GET asx.api.markitdigital.com/.../announcements?entityXids={xid}
+ *                                                     → announcement list
+ *     Search result JSON for "buy-back", "Market Buy-Back", etc.
+ *
+ * POST /api/buybacks  { codes: string[] }  — batch check (≤25 codes)
+ * GET  /api/buybacks?code=BOL              — debug single ticker
  */
 
 export const runtime = "edge";
 
-const ASX_HTML_URL = (code: string) =>
-  `https://www.asx.com.au/markets/trade-our-cash-market/announcements.${code.toLowerCase()}`;
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-const ASX_JSON_URL = (buildId: string, code: string) =>
-  `https://www.asx.com.au/_next/data/${buildId}/markets/trade-our-cash-market/announcements.${code.toLowerCase()}.json`;
+const TOKEN_URL = "https://www.asx.com.au/token.json";
 
-const HEADERS = {
+const SEARCH_URL = (code: string) =>
+  `https://asx.api.markitdigital.com/asx-research/1.0/data/predictive?searchText=${encodeURIComponent(code)}&size=5`;
+
+const ANNOUNCEMENTS_URL = (entityXid: string) => {
+  const today = new Date().toISOString().slice(0, 10);
+  return `https://asx.api.markitdigital.com/asx-research/1.0/markets/announcements?entityXids=${entityXid}&page=0&itemsPerPage=25&summaryCountsDate=${today}`;
+};
+
+const BUYBACK_PATTERNS = [
+  "buy-back",
+  "buyback",
+  "buy back",
+  "market buy",     // "Market Buy-Back"
+  "appendix 3c",
+  "appendix 3d",
+];
+
+const BASE_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-AU,en;q=0.9",
+  Accept: "application/json, */*",
+  Origin: "https://www.asx.com.au",
   Referer: "https://www.asx.com.au/",
 };
 
-const JSON_HEADERS = {
-  ...HEADERS,
-  Accept: "application/json, */*",
-  "x-nextjs-data": "1",
-};
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Document types / keywords that indicate an active buy-back
-const BUYBACK_PATTERNS = [
-  "appendix 3c", "appendix 3d",
-  "buy-back", "buyback", "buy back",
-  "3c", "3d",   // short form used in ASX JSON document_type fields
-];
-
-function isBuybackText(text: string): boolean {
+function isBuyback(text: string): boolean {
   const t = text.toLowerCase();
-  // "3c" and "3d" are short so only match when they appear as a document type
-  // (surrounded by quotes or whitespace in JSON/HTML), not as part of other strings.
-  if (t === "3c" || t === "3d") return true;
-  return BUYBACK_PATTERNS.slice(0, -2).some((kw) => t.includes(kw));
+  return BUYBACK_PATTERNS.some((p) => t.includes(p));
 }
 
 function searchJson(obj: unknown): boolean {
-  if (typeof obj === "string") return isBuybackText(obj);
+  if (typeof obj === "string") return isBuyback(obj);
   if (Array.isArray(obj)) return obj.some(searchJson);
-  if (obj && typeof obj === "object") return Object.values(obj).some(searchJson);
+  if (obj && typeof obj === "object") return Object.values(obj as Record<string, unknown>).some(searchJson);
   return false;
 }
 
-/** Extract Next.js build ID from the HTML's __NEXT_DATA__ script tag */
-function extractBuildId(html: string): string | null {
-  // <script id="__NEXT_DATA__" type="application/json">{"buildId":"abc123",...}</script>
-  const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>(\{[\s\S]*?\})<\/script>/);
-  if (!m) return null;
+// ── Step 1: get bearer token ──────────────────────────────────────────────────
+
+async function getToken(): Promise<string | null> {
   try {
-    const data = JSON.parse(m[1]);
-    return data?.buildId ?? null;
+    const res = await fetch(TOKEN_URL, {
+      headers: BASE_HEADERS,
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as Record<string, unknown>;
+    // Try common token field names
+    return (
+      (data.token as string) ??
+      (data.access_token as string) ??
+      (data.value as string) ??
+      null
+    );
   } catch {
     return null;
   }
 }
 
-async function checkCode(code: string): Promise<{
-  active: boolean;
-  method?: string;
-  _status?: number;
-  _json_status?: number;
-  _err?: string;
-}> {
-  // Step 1: fetch HTML to get the build ID
-  let buildId: string | null = null;
-  let htmlStatus = 0;
-  try {
-    const res = await fetch(ASX_HTML_URL(code), {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(10_000),
-    });
-    htmlStatus = res.status;
-    if (res.ok) {
-      const html = await res.text();
-      buildId = extractBuildId(html);
-    }
-  } catch (e) {
-    return { active: false, _err: `HTML fetch: ${e instanceof Error ? e.message : e}` };
-  }
+// ── Step 2: look up entityXid for an ASX code ─────────────────────────────────
 
-  if (!buildId) {
-    return { active: false, _status: htmlStatus, _err: "Could not find Next.js buildId in page HTML" };
-  }
-
-  // Step 2: fetch the Next.js pre-rendered JSON data
-  const jsonUrl = ASX_JSON_URL(buildId, code);
+async function getEntityXid(code: string, token: string | null): Promise<string | null> {
   try {
-    const res = await fetch(jsonUrl, {
-      headers: JSON_HEADERS,
-      signal: AbortSignal.timeout(10_000),
+    const headers: Record<string, string> = { ...BASE_HEADERS };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(SEARCH_URL(code), {
+      headers,
+      signal: AbortSignal.timeout(8_000),
     });
-    if (!res.ok) {
-      return { active: false, _status: htmlStatus, _json_status: res.status, _err: `JSON fetch: ${res.status}` };
+    if (!res.ok) return null;
+    const data = await res.json() as Record<string, unknown>;
+
+    // Walk common response shapes to find entityXid matching the exact ticker
+    const items: unknown[] =
+      (data?.data as Record<string, unknown>)?.items as unknown[] ??
+      (data?.results as unknown[]) ??
+      (data?.items as unknown[]) ??
+      (Array.isArray(data) ? data : []);
+
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const sym = String(rec.symbol ?? rec.code ?? rec.ticker ?? "").toUpperCase();
+      if (sym === code.toUpperCase()) {
+        const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
+        if (xid) return String(xid);
+      }
     }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Step 3: check announcements for buy-back ──────────────────────────────────
+
+async function checkAnnouncements(entityXid: string, token: string | null): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = { ...BASE_HEADERS };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(ANNOUNCEMENTS_URL(entityXid), {
+      headers,
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return false;
     const json = await res.json();
-    const active = searchJson(json);
-    return { active, method: "nextjs-data", _status: htmlStatus, _json_status: res.status };
-  } catch (e) {
-    return { active: false, _status: htmlStatus, _err: `JSON fetch: ${e instanceof Error ? e.message : e}` };
+    return searchJson(json);
+  } catch {
+    return false;
   }
+}
+
+// ── Full pipeline for one code ────────────────────────────────────────────────
+
+async function checkCode(code: string, token: string | null) {
+  const entityXid = await getEntityXid(code, token);
+  if (!entityXid) return { active: false, _err: `No entityXid found for ${code}` };
+  const active = await checkAnnouncements(entityXid, token);
+  return { active, entityXid };
 }
 
 // ── POST — batch ──────────────────────────────────────────────────────────────
@@ -120,70 +152,87 @@ export async function POST(request: Request) {
   const codes = (body.codes ?? []).slice(0, 25);
   if (!codes.length) return Response.json({ error: "codes required" }, { status: 400 });
 
-  const results = await Promise.all(codes.map(checkCode));
+  // Fetch token once, share across all codes in the batch
+  const token = await getToken();
+  const results = await Promise.all(codes.map((c) => checkCode(c, token)));
   const out: Record<string, object> = {};
   codes.forEach((c, i) => { out[c] = results[i]; });
   return Response.json(out);
 }
 
-// ── GET — single-code debug ───────────────────────────────────────────────────
+// ── GET — debug one ticker ────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = (searchParams.get("code") ?? "BOL").toUpperCase();
+  const result: Record<string, unknown> = { code, runtime: "edge" };
 
-  const result: Record<string, unknown> = {
-    code,
-    html_url: ASX_HTML_URL(code),
-    runtime: "edge",
-  };
+  // Step 1 — token
+  const tokenRes = await fetch(TOKEN_URL, {
+    headers: BASE_HEADERS,
+    signal: AbortSignal.timeout(8_000),
+  }).catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
 
-  // Step 1: get HTML + build ID
-  let buildId: string | null = null;
-  try {
-    const res = await fetch(ASX_HTML_URL(code), {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(10_000),
-    });
-    result.html_status = res.status;
-    if (res.ok) {
-      const html = await res.text();
-      result.html_length = html.length;
-      buildId = extractBuildId(html);
-      result.build_id = buildId;
+  result.token_status = tokenRes.status;
+  let token: string | null = null;
+  if (tokenRes.ok) {
+    const td = await tokenRes.json() as Record<string, unknown>;
+    result.token_fields = Object.keys(td);
+    token = (td.token ?? td.access_token ?? td.value ?? null) as string | null;
+    result.token_found = !!token;
+    result.token_preview = token ? token.slice(0, 20) + "…" : null;
+  } else {
+    result.token_body = (await tokenRes.text().catch(() => "")).slice(0, 200);
+  }
 
-      // Also show a fragment of the __NEXT_DATA__ for debugging
-      const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]{1,2000}?)<\/script>/);
-      result.next_data_sample = m ? m[1].slice(0, 500) : "NOT FOUND";
+  // Step 2 — entity lookup
+  const searchUrl = SEARCH_URL(code);
+  result.search_url = searchUrl;
+  const headers: Record<string, string> = { ...BASE_HEADERS };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const searchRes = await fetch(searchUrl, { headers, signal: AbortSignal.timeout(8_000) })
+    .catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
+
+  result.search_status = searchRes.status;
+  let entityXid: string | null = null;
+  if (searchRes.ok) {
+    const sd = await searchRes.json() as Record<string, unknown>;
+    result.search_sample = JSON.stringify(sd).slice(0, 600);
+    // Try to extract entityXid
+    const items: unknown[] =
+      (sd?.data as Record<string, unknown>)?.items as unknown[] ??
+      (sd?.results as unknown[]) ??
+      (sd?.items as unknown[]) ??
+      (Array.isArray(sd) ? sd : []);
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const sym = String(rec.symbol ?? rec.code ?? rec.ticker ?? "").toUpperCase();
+      if (sym === code) {
+        const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
+        if (xid) { entityXid = String(xid); break; }
+      }
     }
-  } catch (e) {
-    result.html_error = e instanceof Error ? e.message : String(e);
+    result.entity_xid = entityXid;
+  } else {
+    result.search_body = (await searchRes.text().catch(() => "")).slice(0, 300);
   }
 
-  if (!buildId) {
-    result.result = "FAILED — no buildId found";
-    return Response.json(result);
-  }
-
-  // Step 2: fetch Next.js JSON data
-  const jsonUrl = ASX_JSON_URL(buildId, code);
-  result.json_url = jsonUrl;
-  try {
-    const res = await fetch(jsonUrl, {
-      headers: JSON_HEADERS,
-      signal: AbortSignal.timeout(10_000),
-    });
-    result.json_status = res.status;
-    if (res.ok) {
-      const json = await res.json();
-      result.buyback_found = searchJson(json);
-      // Show a condensed sample of the JSON to understand its structure
-      result.json_sample = JSON.stringify(json).slice(0, 1000);
+  // Step 3 — announcements
+  if (entityXid) {
+    const annUrl = ANNOUNCEMENTS_URL(entityXid);
+    result.announcements_url = annUrl;
+    const annRes = await fetch(annUrl, { headers, signal: AbortSignal.timeout(8_000) })
+      .catch((e) => ({ ok: false, status: 0, json: async () => ({}), text: async () => String(e) } as unknown as Response));
+    result.announcements_status = annRes.status;
+    if (annRes.ok) {
+      const ad = await annRes.json();
+      result.buyback_found = searchJson(ad);
+      result.announcements_sample = JSON.stringify(ad).slice(0, 800);
     } else {
-      result.json_body = (await res.text()).slice(0, 400);
+      result.announcements_body = (await annRes.text().catch(() => "")).slice(0, 300);
     }
-  } catch (e) {
-    result.json_error = e instanceof Error ? e.message : String(e);
   }
 
   return Response.json(result);
