@@ -108,6 +108,37 @@ function enrichWithBuybacks(stocks: ScoredStock[], buybacks: BuybackMap): Scored
   });
 }
 
+/** Shown when ASX is unreachable — lets the user paste codes manually */
+function BuybackManualEntry({ onSave }: { onSave: (codes: string[]) => void }) {
+  const [text, setText] = useState("");
+  function save() {
+    const codes = text
+      .toUpperCase()
+      .split(/[\s,;]+/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (codes.length) onSave(codes);
+  }
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-50 border border-orange-200 rounded-lg">
+      <TrendingUp className="w-4 h-4 text-orange-600 shrink-0" />
+      <span className="text-xs text-orange-700 font-medium whitespace-nowrap">ASX blocked — enter codes:</span>
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="BHP,CBA,ANZ…"
+        className="text-xs border border-orange-200 rounded px-2 py-1 w-36 focus:outline-none focus:ring-1 focus:ring-orange-400 bg-white"
+      />
+      <button
+        onClick={save}
+        className="text-xs font-medium text-orange-700 hover:text-orange-900 px-2 py-1 rounded border border-orange-300 hover:bg-orange-100 transition-colors"
+      >
+        Save
+      </button>
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
@@ -125,6 +156,8 @@ export default function HomePage() {
   const [buybackProgress, setBuybackProgress] = useState<{ done: number; total: number } | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
+  const [buybackBlocked, setBuybackBlocked] = useState(false);
+  const [buybackManual, setBuybackManual] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
@@ -221,34 +254,56 @@ export default function HomePage() {
   }, [rawRows]);
 
   /**
-   * Check ASX announcements for buybacks — runs entirely in the BROWSER so the
-   * requests come from the user's IP, not Vercel's datacenter IPs (which ASX blocks).
+   * Check ASX announcements for on-market buybacks (Appendix 3C / 3D).
    *
-   * Looks for Appendix 3C (announcement of buy-back) and Appendix 3D (change to
-   * buy-back) in both the `document_type` and `header` fields of the last 12 months
-   * of announcements, using 8 concurrent requests to keep total time reasonable.
+   * Strategy (tries in order, stops at first success):
+   *  1. Server-side via /api/buybacks (Vercel Edge Runtime — different IPs from Lambda)
+   *  2. Client-side browser fetch directly to ASX (user's IP, no CORS if ASX allows it)
+   *
+   * If both fail we set buybackBlocked=true so the UI shows the manual entry fallback.
    */
   const loadBuybacks = useCallback(async () => {
     if (!rawRows) return;
     setBuybackLoading(true);
     setBuybackProgress({ done: 0, total: rawRows.length });
+    setBuybackBlocked(false);
     setError(null);
 
     const codes = rawRows.map((r) => r.Code);
     const accumulated: BuybackMap = {};
     let activeCount = 0;
-    let done = 0;
+    const CHUNK = 20;
+    const CONCURRENCY = 8;
 
+    // ── Strategy 1: edge server-side ────────────────────────────────────────
+    async function checkViaServer(chunk: string[]): Promise<Record<string, boolean> | null> {
+      try {
+        const res = await fetch("/api/buybacks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: chunk }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json() as Record<string, { active: boolean; _status?: number; _err?: string }>;
+        // If every result has _status:403 or _err, the edge is also blocked
+        const allFailed = chunk.every((c) => !data[c]?.active && (data[c]?._status === 403 || data[c]?._err));
+        if (allFailed && chunk.length > 1) return null; // signal: fall through to browser
+        return Object.fromEntries(chunk.map((c) => [c, data[c]?.active ?? false]));
+      } catch {
+        return null;
+      }
+    }
+
+    // ── Strategy 2: browser direct to ASX ────────────────────────────────────
     const cutoff = new Date();
     cutoff.setMonth(cutoff.getMonth() - BUYBACK_LOOKBACK_MONTHS);
 
-    async function checkOne(code: string): Promise<boolean> {
+    async function checkViaBrowser(code: string): Promise<boolean | "cors"> {
       try {
-        const url = `https://www.asx.com.au/asx/1/company/${code}/announcements?count=50&market_sensitive=false`;
-        const res = await fetch(url, {
-          headers: { Accept: "application/json" },
-          signal: AbortSignal.timeout(8_000),
-        });
+        const res = await fetch(
+          `https://www.asx.com.au/asx/1/company/${code}/announcements?count=50&market_sensitive=false`,
+          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }
+        );
         if (!res.ok) return false;
         const json = await res.json();
         const anns: Array<{ header?: string; document_type?: string; document_release_date?: string }> =
@@ -259,23 +314,61 @@ export default function HomePage() {
           const text = `${ann.header ?? ""} ${ann.document_type ?? ""}`.toLowerCase();
           return BUYBACK_KEYWORDS.some((kw) => text.includes(kw));
         });
-      } catch {
+      } catch (e) {
+        // TypeError = almost certainly a CORS block
+        if (e instanceof TypeError) return "cors";
         return false;
       }
     }
 
-    // Process in parallel batches of 8 to balance speed vs ASX rate limits
-    const CONCURRENCY = 8;
     try {
-      for (let i = 0; i < codes.length; i += CONCURRENCY) {
-        const chunk = codes.slice(i, i + CONCURRENCY);
-        const results = await Promise.all(chunk.map(checkOne));
-        chunk.forEach((code, j) => {
-          accumulated[code] = results[j];
-          if (results[j]) activeCount++;
-        });
-        done = Math.min(i + CONCURRENCY, codes.length);
-        setBuybackProgress({ done, total: codes.length });
+      let useBrowser = false;
+      let corsBlocked = false;
+
+      // Probe: try first chunk via server to detect edge blocking
+      const probeChunk = codes.slice(0, Math.min(5, codes.length));
+      const probeResult = await checkViaServer(probeChunk);
+      if (probeResult === null) {
+        useBrowser = true;
+        // Probe browser too — check one code to see if CORS allows it
+        const browserProbe = await checkViaBrowser(probeChunk[0]);
+        if (browserProbe === "cors") corsBlocked = true;
+      }
+
+      if (corsBlocked) {
+        // Neither server nor browser can reach ASX — show manual entry UI
+        setBuybackBlocked(true);
+        return;
+      }
+
+      if (useBrowser) {
+        // Browser-side: parallel batches
+        for (let i = 0; i < codes.length; i += CONCURRENCY) {
+          const chunk = codes.slice(i, i + CONCURRENCY);
+          const results = await Promise.all(chunk.map(checkViaBrowser));
+          chunk.forEach((code, j) => {
+            const r = results[j];
+            const active = r === true;
+            accumulated[code] = active;
+            if (active) activeCount++;
+          });
+          setBuybackProgress({ done: Math.min(i + CONCURRENCY, codes.length), total: codes.length });
+        }
+      } else {
+        // Server-side: merge probe, then continue in chunks
+        Object.assign(accumulated, probeResult ?? {});
+        activeCount = Object.values(accumulated).filter(Boolean).length;
+        setBuybackProgress({ done: probeChunk.length, total: codes.length });
+
+        for (let i = probeChunk.length; i < codes.length; i += CHUNK) {
+          const chunk = codes.slice(i, i + CHUNK);
+          const result = await checkViaServer(chunk);
+          if (result) {
+            Object.assign(accumulated, result);
+            activeCount = Object.values(accumulated).filter(Boolean).length;
+          }
+          setBuybackProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+        }
       }
 
       const stored: StoredBuybacks = {
@@ -286,12 +379,11 @@ export default function HomePage() {
         ),
       };
       localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
-
       setBuybackData(accumulated);
       setBuybackCount(activeCount);
       setBuybackLoaded(true);
     } catch (e) {
-      setError(e instanceof Error ? `Buyback check failed: ${e.message}` : "Buyback check failed.");
+      setError(e instanceof Error ? `Buyback check: ${e.message}` : "Buyback check failed.");
     } finally {
       setBuybackLoading(false);
       setBuybackProgress(null);
@@ -389,7 +481,7 @@ export default function HomePage() {
                 )}
 
                 {/* Buyback checker */}
-                {!buybackLoaded && !buybackLoading && (
+                {!buybackLoaded && !buybackLoading && !buybackBlocked && (
                   <button
                     onClick={loadBuybacks}
                     className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
@@ -401,9 +493,7 @@ export default function HomePage() {
                 {buybackLoading && buybackProgress && (
                   <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700 bg-orange-50 border border-orange-200 rounded-lg">
                     <TrendingUp className="w-4 h-4 animate-pulse" />
-                    <span>
-                      Buybacks {buybackProgress.done}/{buybackProgress.total}
-                    </span>
+                    <span>Buybacks {buybackProgress.done}/{buybackProgress.total}</span>
                     <div className="w-20 h-1.5 bg-orange-200 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-orange-500 rounded-full transition-all"
@@ -421,6 +511,24 @@ export default function HomePage() {
                     <TrendingUp className="w-4 h-4" />
                     {buybackCount} buyback{buybackCount !== 1 ? "s" : ""}
                   </button>
+                )}
+                {buybackBlocked && !buybackLoading && (
+                  <BuybackManualEntry
+                    onSave={(codes) => {
+                      const map: BuybackMap = {};
+                      codes.forEach((c) => { map[c] = true; });
+                      const stored: StoredBuybacks = {
+                        timestamp: new Date().toISOString(),
+                        checkedCount: codes.length,
+                        data: Object.fromEntries(codes.map((c) => [c, { active: true }])),
+                      };
+                      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+                      setBuybackData(map);
+                      setBuybackCount(codes.length);
+                      setBuybackLoaded(true);
+                      setBuybackBlocked(false);
+                    }}
+                  />
                 )}
 
                 <button
