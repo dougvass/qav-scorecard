@@ -75,7 +75,7 @@ async function getEntityXid(code: string): Promise<string | null> {
       const rec = item as Record<string, unknown>;
       const sym = String(rec.symbol ?? rec.code ?? rec.asxCode ?? rec.ticker ?? "").toUpperCase();
       if (sym === code.toUpperCase()) {
-        const xid = rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
+        const xid = rec.xidEntity ?? rec.entityXid ?? rec.entityXids ?? rec.xid ?? rec.id;
         if (xid) return String(xid);
       }
     }
