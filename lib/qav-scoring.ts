@@ -68,44 +68,26 @@ export function isEtfOrFund(stock: { Name: string; "Industry Group": string | nu
 // ─── Individual scoring functions ──────────────────────────────────────────
 
 /**
- * Sentiment score using the same +2 / 0 / −1 scale as Tony Kynaston's spreadsheets.
+ * Sentiment score — +2 / 0 / −1, matching Tony Kynaston's spreadsheet scale.
  *
- *  +2  Confirmed uptrend  — SD SDMAX=Bullish corroborated by price data
- *   0  Josephine / unclear — stock is between the buy and sell lines, or signals conflict
- *  −1  Confirmed downtrend — SD SDMAX=Bearish corroborated by price data
+ * Uses Stock Doctor's SDMAX Status directly, because SDMAX is SD's own
+ * calculation of whether the stock is above the sell line, between the lines,
+ * or below the buy line — exactly what Tony checks manually on the chart.
  *
- * For established stocks (5yr price data present):
- *   Bullish: (5yr & 6mth both positive) OR (SDMAX=Bullish AND 5yr positive)
- *   Bearish: (5yr & 6mth both negative) OR (SDMAX=Bearish AND 5yr negative)
- *   → SDMAX alone without a corroborating 5yr sign is treated as Josephine (0),
- *     because SD can flip "Bullish" when price crosses the *buy* line (not the sell line).
+ *  +2  SDMAX = "Bullish"  → price is above the 3PTL sell line
+ *   0  SDMAX = "Neither"  → price is between buy and sell lines (Josephine)
+ *  −1  SDMAX = "Bearish"  → price is below the 3PTL buy line
  *
- * For new/recent listings (no 5yr data):
- *   Bullish: 6mth positive AND SDMAX=Bullish
- *   Bearish: 6mth negative AND SDMAX=Bearish
- *   → One signal alone = 0 (insufficient to confirm either direction)
+ * Previous approach also scored +2 when both 5yr AND 6mth price changes were
+ * positive — this caused false positives for stocks that have risen over those
+ * periods but are currently trading below the sell line (e.g. NWS, BOL, MSV).
+ * Tony's manual review correctly marks these as Bearish; SDMAX agrees.
  */
 function scoreSentimentLong(row: StockRow): number {
-  const p5 = num(row["Price Chg 5yr (%)"]);
-  const p6 = num(row["Price Chg 6mth (%)"]);
   const sdmax = row["SDMAX Status"];
-  const p5pos   = p5 !== null && p5 > 0;
-  const p5neg   = p5 !== null && p5 <= 0;
-  const p6pos   = p6 !== null && p6 > 0;
-  const p6neg   = p6 !== null && p6 <= 0;
-  const isBullish = sdmax === "Bullish";
-  const isBearish = sdmax === "Bearish";
-
-  if (p5 !== null) {
-    if ((p5pos && p6pos) || (isBullish && p5pos)) return  2;
-    if ((p5neg && p6neg) || (isBearish && p5neg)) return -1;
-    return 0; // Josephine or mixed signals
-  } else {
-    // New listing — no 5yr history
-    if (p6pos && isBullish) return  2;
-    if (p6neg && isBearish) return -1;
-    return 0;
-  }
+  if (sdmax === "Bullish") return  2;
+  if (sdmax === "Bearish") return -1;
+  return 0; // "Neither" = Josephine (between the lines)
 }
 
 function scorePriceToCashflow(row: StockRow): number | null {
