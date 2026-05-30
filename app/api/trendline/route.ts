@@ -1,238 +1,218 @@
 /**
- * POST /api/trendline  { codes: string[] }  — batch 3PTL calculation (≤25)
- * GET  /api/trendline?code=SYL             — debug single ticker
+ * 3PTL (3-Point Trendline) API — Tony Kynaston's QAV methodology
  *
- * Tony Kynaston's 3-Point Trendline (3PTL) on monthly bar charts:
+ * Uses monthly OHLC bars from Yahoo Finance:
+ *   • Pivot HIGHS are detected on the monthly HIGH price (candle top)
+ *   • Pivot LOWS  are detected on the monthly LOW  price (candle bottom)
+ * This matches how Tony draws lines on the monthly bar chart.
  *
- *  BULLISH (+2): Stock has either—
- *    a) 3 consecutive RISING pivot lows (higher-low uptrend) AND price > the uptrend line
- *    b) broken ABOVE the last downtrend line (3 lower highs)
+ * Classification:
+ *   DOWNTREND (3 lower monthly HIGHS):
+ *     Bearish  — price still below falling resistance line
+ *     Bullish  — price broke above resistance by ≥2% (confirmed breakout)
  *
- *  BEARISH (-1): 3 consecutive FALLING pivot highs (lower-high downtrend) AND price below the line
+ *   UPTREND (3 higher monthly LOWS):
+ *     Bullish   — price above rising support line
+ *     Josephine — price fell back below rising support (weakening)
  *
- *  JOSEPHINE (0): everything in between — forming, unclear, or between lines
+ *   Downtrend takes priority over uptrend when both present.
  *
- * Data: Yahoo Finance 5yr monthly (server-side call, confirmed working from edge).
+ * POST /api/trendline { codes: string[] }  — batch ≤25
+ * GET  /api/trendline?code=SYL             — debug
  */
 
 export const runtime = "edge";
 
-const MARKIT_BASE = "https://asx.api.markitdigital.com/asx-research/1.0";
-const HEADERS = {
+const YF_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-  Accept: "application/json, */*",
-  Origin: "https://www.asx.com.au",
-  Referer: "https://www.asx.com.au/",
+  Accept: "application/json",
 };
 
-// ── Price data ────────────────────────────────────────────────────────────────
+/** Minimum % price must exceed downtrend resistance to count as a confirmed breakout */
+const BREAKOUT_BUFFER = 1.02;
 
-interface PricePoint { date: string; close: number }
+// ── Data types ─────────────────────────────────────────────────────────────────
 
-async function fetchMonthlyPrices(code: string): Promise<PricePoint[]> {
-  // 5 year range gives ~60 monthly bars — enough for reliable 3PTL
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1mo&range=5y&includePrePost=false`;
+interface PriceBar { date: string; open: number; high: number; low: number; close: number }
+interface Pivot    { idx: number; price: number; date: string }
+
+// ── Yahoo Finance fetch ────────────────────────────────────────────────────────
+
+async function fetchBars(code: string, range: string, interval: string): Promise<PriceBar[]> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=${interval}&range=${range}&includePrePost=false`;
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": HEADERS["User-Agent"], Accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return [];
     const json = await res.json() as Record<string, unknown>;
     const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
     if (!result) return [];
-    const timestamps = result.timestamp as number[];
-    const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
-    if (!timestamps || !closes) return [];
-    return timestamps
-      .map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 7), close: closes[i] }))
-      .filter((p) => p.close != null && !isNaN(p.close) && p.close > 0);
+    const ts = result.timestamp as number[];
+    const q  = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
+    if (!ts || !q) return [];
+    return ts.map((t, i) => ({
+      date:  new Date(t * 1000).toISOString().slice(0, 7),
+      open:  q.open?.[i]  ?? 0,
+      high:  q.high?.[i]  ?? 0,
+      low:   q.low?.[i]   ?? 0,
+      close: q.close?.[i] ?? 0,
+    })).filter((b) => b.close > 0 && b.high > 0 && b.low > 0);
   } catch { return []; }
 }
 
+async function fetchMonthly(code: string): Promise<PriceBar[]> {
+  return fetchBars(code, "5y", "1mo");
+}
+
 async function fetchCurrentPrice(code: string): Promise<number | null> {
-  // 5-day daily data — last close is today's or most recent
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1d&range=5d&includePrePost=false`;
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": HEADERS["User-Agent"], Accept: "application/json" },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) return null;
-    const json = await res.json() as Record<string, unknown>;
-    const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
-    if (!result) return null;
-    const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
-    if (!closes) return null;
-    // Return last non-null close
-    for (let i = closes.length - 1; i >= 0; i--) {
-      if (closes[i] != null && !isNaN(closes[i]) && closes[i] > 0) return closes[i];
-    }
-    return null;
-  } catch { return null; }
-}
-
-// ── Pivot detection ────────────────────────────────────────────────────────────
-
-interface Pivot { idx: number; price: number; date: string }
-
-/**
- * Find pivot highs/lows using a 3-bar lookback on each side.
- * A pivot high: highest bar in a 7-bar window centred on itself.
- * A pivot low:  lowest  bar in a 7-bar window centred on itself.
- */
-function findPivots(prices: PricePoint[], lookback = 3): { highs: Pivot[]; lows: Pivot[] } {
-  const closes = prices.map((p) => p.close);
-  const n = closes.length;
-  const highs: Pivot[] = [];
-  const lows: Pivot[] = [];
-
-  for (let i = lookback; i < n - lookback; i++) {
-    const window = closes.slice(i - lookback, i + lookback + 1);
-    if (closes[i] === Math.max(...window)) highs.push({ idx: i, price: closes[i], date: prices[i].date });
-    if (closes[i] === Math.min(...window)) lows.push({ idx: i, price: closes[i], date: prices[i].date });
+  const bars = await fetchBars(code, "5d", "1d");
+  for (let i = bars.length - 1; i >= 0; i--) {
+    if (bars[i].close > 0) return bars[i].close;
   }
-  return { highs, lows };
+  return null;
 }
 
-/** Linear regression through pivot points, extrapolated to targetIdx. */
+// ── Pivot detection on OHLC ────────────────────────────────────────────────────
+
+/** Pivot HIGH: monthly HIGH is higher than any HIGH in the surrounding window */
+function findPivotHighs(bars: PriceBar[], lookback = 3): Pivot[] {
+  const n = bars.length;
+  return bars.flatMap((bar, i) => {
+    if (i < lookback || i >= n - lookback) return [];
+    const window = bars.slice(i - lookback, i + lookback + 1).map((b) => b.high);
+    return bar.high === Math.max(...window) ? [{ idx: i, price: bar.high, date: bar.date }] : [];
+  });
+}
+
+/** Pivot LOW: monthly LOW is lower than any LOW in the surrounding window */
+function findPivotLows(bars: PriceBar[], lookback = 3): Pivot[] {
+  const n = bars.length;
+  return bars.flatMap((bar, i) => {
+    if (i < lookback || i >= n - lookback) return [];
+    const window = bars.slice(i - lookback, i + lookback + 1).map((b) => b.low);
+    return bar.low === Math.min(...window) ? [{ idx: i, price: bar.low, date: bar.date }] : [];
+  });
+}
+
+/** Fit a line through pivot points and extrapolate to targetIdx */
 function trendlineAt(pivots: Pivot[], targetIdx: number): number | null {
   if (pivots.length < 2) return null;
   const n = pivots.length;
-  const meanX = pivots.reduce((s, p) => s + p.idx, 0) / n;
-  const meanY = pivots.reduce((s, p) => s + p.price, 0) / n;
-  const num = pivots.reduce((s, p) => s + (p.idx - meanX) * (p.price - meanY), 0);
-  const den = pivots.reduce((s, p) => s + (p.idx - meanX) ** 2, 0);
-  if (den === 0) return meanY;
+  const mx = pivots.reduce((s, p) => s + p.idx,   0) / n;
+  const my = pivots.reduce((s, p) => s + p.price, 0) / n;
+  const num = pivots.reduce((s, p) => s + (p.idx - mx) * (p.price - my), 0);
+  const den = pivots.reduce((s, p) => s + (p.idx - mx) ** 2, 0);
+  if (den === 0) return my;
   const slope = num / den;
-  return slope * (targetIdx - meanX) + meanY;
+  return slope * (targetIdx - mx) + my;
 }
 
-// ── 3PTL classification ───────────────────────────────────────────────────────
+// ── 3PTL classification ────────────────────────────────────────────────────────
 
 type Sentiment = "Bullish" | "Josephine" | "Bearish";
 
-interface TrendlineResult {
+function classify(bars: PriceBar[], currentPrice: number): {
   sentiment: Sentiment;
   currentPrice: number;
-  sellLine: number | null;  // downtrend resistance (lower highs)
-  buyLine: number | null;   // uptrend support (higher lows)
-  uptrendActive: boolean;   // last 3 lows are rising
-  downtrendActive: boolean; // last 3 highs are falling
-  pivotHighCount: number;
-  pivotLowCount: number;
-  monthsOfData: number;
-  note?: string;
-}
+  sellLine: number | null;
+  buyLine: number | null;
+  downtrendActive: boolean;
+  uptrendActive: boolean;
+  pivotHighs: Pivot[];
+  pivotLows: Pivot[];
+  note: string;
+} {
+  const n = bars.length;
+  const currentIdx = n;
 
-function classify3PTL(prices: PricePoint[], currentPrice: number): TrendlineResult {
-  const n = prices.length;
-  const currentIdx = n; // one step beyond the last bar
-  const { highs, lows } = findPivots(prices, 3);
+  const pivotHighs = findPivotHighs(bars, 3);
+  const pivotLows  = findPivotLows(bars,  3);
 
-  // ── Detect uptrend: last 3 pivot lows are each HIGHER than the previous ──
-  const last3Lows = lows.slice(-3);
-  const uptrendActive = last3Lows.length === 3 &&
-    last3Lows[0].price < last3Lows[1].price && last3Lows[1].price < last3Lows[2].price;
+  const last3H = pivotHighs.slice(-3);
+  const last3L = pivotLows.slice(-3);
 
-  // ── Detect downtrend: last 3 pivot highs are each LOWER than the previous ──
-  const last3Highs = highs.slice(-3);
-  const downtrendActive = last3Highs.length === 3 &&
-    last3Highs[0].price > last3Highs[1].price && last3Highs[1].price > last3Highs[2].price;
+  // Downtrend: last 3 monthly HIGHS are each lower than previous
+  const downtrendActive = last3H.length === 3 &&
+    last3H[0].price > last3H[1].price && last3H[1].price > last3H[2].price;
 
-  const buyLine  = uptrendActive   ? trendlineAt(last3Lows,  currentIdx) : null;
-  const sellLine = downtrendActive ? trendlineAt(last3Highs, currentIdx) : null;
+  // Uptrend: last 3 monthly LOWS are each higher than previous
+  const uptrendActive = last3L.length === 3 &&
+    last3L[0].price < last3L[1].price && last3L[1].price < last3L[2].price;
+
+  const sellLine = downtrendActive ? trendlineAt(last3H, currentIdx) : null;
+  const buyLine  = uptrendActive   ? trendlineAt(last3L, currentIdx) : null;
 
   let sentiment: Sentiment = "Josephine";
   let note = "";
 
-  if (uptrendActive && buyLine !== null) {
-    // In confirmed uptrend: Bullish if price above the rising support line
-    if (currentPrice >= buyLine) {
+  // ── Priority 1: active DOWNTREND — requires convincing breakout to flip Bullish ──
+  if (downtrendActive && sellLine !== null) {
+    if (currentPrice >= sellLine * BREAKOUT_BUFFER) {
       sentiment = "Bullish";
-      note = `Price ${currentPrice.toFixed(2)} ≥ rising support ${buyLine.toFixed(2)}`;
-    } else {
-      sentiment = "Josephine";
-      note = `Uptrend forming but price ${currentPrice.toFixed(2)} < support ${buyLine.toFixed(2)} — weakening`;
-    }
-  } else if (downtrendActive && sellLine !== null) {
-    // In confirmed downtrend: Bullish if price broke ABOVE the falling resistance
-    if (currentPrice > sellLine) {
-      sentiment = "Bullish";
-      note = `Broke above downtrend resistance ${sellLine.toFixed(2)} — confirmed uptrend`;
+      note = `Broke above downtrend resistance ${sellLine.toFixed(2)} by ≥2% (price ${currentPrice.toFixed(2)}) — confirmed uptrend`;
     } else {
       sentiment = "Bearish";
-      note = `Price ${currentPrice.toFixed(2)} below falling resistance ${sellLine.toFixed(2)}`;
+      note = `Downtrend active: price ${currentPrice.toFixed(2)} at/below falling resistance ${sellLine.toFixed(2)} (needs ${(sellLine * BREAKOUT_BUFFER).toFixed(2)} to confirm)`;
     }
-  } else {
-    // Neither clear uptrend nor clear downtrend — look at simpler signals
-    // If we have at least 2 rising lows, treat as likely uptrend (forming)
-    const last2Lows = lows.slice(-2);
-    if (last2Lows.length === 2 && last2Lows[0].price < last2Lows[1].price) {
-      const approxBuy = trendlineAt(last2Lows, currentIdx);
+  }
+  // ── Priority 2: active UPTREND (only if no downtrend) ──
+  else if (uptrendActive && buyLine !== null) {
+    if (currentPrice >= buyLine) {
+      sentiment = "Bullish";
+      note = `Uptrend active: price ${currentPrice.toFixed(2)} ≥ rising support ${buyLine.toFixed(2)}`;
+    } else {
+      sentiment = "Josephine";
+      note = `Uptrend weakening: price ${currentPrice.toFixed(2)} fell below support ${buyLine.toFixed(2)}`;
+    }
+  }
+  // ── Priority 3: partial signals (2 pivots) ──
+  else {
+    const last2H = pivotHighs.slice(-2);
+    const last2L = pivotLows.slice(-2);
+    const partialDowntrend = last2H.length === 2 && last2H[0].price > last2H[1].price;
+    const partialUptrend   = last2L.length === 2 && last2L[0].price < last2L[1].price;
+
+    if (partialDowntrend) {
+      const approxSell = trendlineAt(last2H, currentIdx);
+      if (approxSell !== null && currentPrice >= approxSell * BREAKOUT_BUFFER) {
+        sentiment = "Bullish";
+        note = `Partial downtrend (2 highs) — price broke above ${approxSell.toFixed(2)}`;
+      } else {
+        sentiment = "Bearish";
+        note = `Partial downtrend (2 lower highs) — 3rd high not yet confirmed`;
+      }
+    } else if (partialUptrend) {
+      const approxBuy = trendlineAt(last2L, currentIdx);
       if (approxBuy !== null && currentPrice >= approxBuy) {
         sentiment = "Bullish";
-        note = `2 rising lows (3rd not yet confirmed), price above approx support ${approxBuy.toFixed(2)}`;
+        note = `Partial uptrend (2 higher lows) — price above support ${approxBuy.toFixed(2)}`;
       } else {
         sentiment = "Josephine";
-        note = "Rising lows forming but price below support";
-      }
-    } else if (last2Lows.length === 2 && last2Lows[0].price > last2Lows[1].price) {
-      const approxSell = trendlineAt(highs.slice(-2), currentIdx);
-      if (approxSell !== null && currentPrice < approxSell) {
-        sentiment = "Bearish";
-        note = `2 falling lows (3rd not yet confirmed), below resistance ${approxSell?.toFixed(2)}`;
-      } else {
-        sentiment = "Josephine";
-        note = "Falling lows but price held above resistance — mixed";
+        note = `Partial uptrend (2 higher lows) — price below support`;
       }
     } else {
-      note = "Insufficient pivot data for 3PTL — defaulting to Josephine";
+      note = `Insufficient pivot data — ${pivotHighs.length} highs, ${pivotLows.length} lows`;
     }
   }
 
   return {
     sentiment, currentPrice, sellLine, buyLine,
-    uptrendActive, downtrendActive,
-    pivotHighCount: highs.length, pivotLowCount: lows.length,
-    monthsOfData: prices.length, note,
+    downtrendActive, uptrendActive,
+    pivotHighs: pivotHighs.slice(-5),
+    pivotLows:  pivotLows.slice(-5),
+    note,
   };
-}
-
-// ── MarkitDigital entity lookup ───────────────────────────────────────────────
-
-async function getEntityXid(code: string): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `${MARKIT_BASE}/search/predictive?searchText=${encodeURIComponent(code)}`,
-      { headers: HEADERS, signal: AbortSignal.timeout(8_000) }
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as Record<string, unknown>;
-    const items = (data?.data as Record<string, unknown>)?.items as Record<string, unknown>[] ?? [];
-    for (const item of items) {
-      if (String(item.symbol ?? "").toUpperCase() === code.toUpperCase()) {
-        return String(item.xidEntity ?? "");
-      }
-    }
-    return null;
-  } catch { return null; }
 }
 
 // ── Full pipeline ──────────────────────────────────────────────────────────────
 
 async function processCode(code: string) {
-  const [monthly, currentPrice] = await Promise.all([
-    fetchMonthlyPrices(code),
-    fetchCurrentPrice(code),
-  ]);
-
-  if (monthly.length < 12) {
-    return { sentiment: "Josephine" as Sentiment, error: "insufficient price data", months: monthly.length };
+  const [bars, currentPrice] = await Promise.all([fetchMonthly(code), fetchCurrentPrice(code)]);
+  if (bars.length < 12) {
+    return { sentiment: "Josephine" as Sentiment, error: "insufficient data", months: bars.length };
   }
-
-  const price = currentPrice ?? monthly[monthly.length - 1].close;
-  return classify3PTL(monthly, price);
+  const price = currentPrice ?? bars[bars.length - 1].close;
+  const result = classify(bars, price);
+  return { ...result, months: bars.length };
 }
 
 // ── POST — batch ──────────────────────────────────────────────────────────────
@@ -252,30 +232,19 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = (searchParams.get("code") ?? "SYL").toUpperCase();
+  const [bars, currentPrice] = await Promise.all([fetchMonthly(code), fetchCurrentPrice(code)]);
 
-  const [monthly, currentPrice] = await Promise.all([
-    fetchMonthlyPrices(code),
-    fetchCurrentPrice(code),
-  ]);
+  const base = { code, runtime: "edge", monthly_bars: bars.length, current_price: currentPrice };
+  if (bars.length < 12) return Response.json({ ...base, error: "insufficient price data" });
 
-  const result: Record<string, unknown> = {
-    code, runtime: "edge",
-    monthly_count: monthly.length,
-    current_price: currentPrice,
-    oldest_bar: monthly[0]?.date,
-    newest_bar: monthly[monthly.length - 1]?.date,
-    last_6_bars: monthly.slice(-6),
-  };
+  const price = currentPrice ?? bars[bars.length - 1].close;
+  const result = classify(bars, price);
 
-  if (monthly.length < 12) {
-    return Response.json({ ...result, error: "insufficient price data" });
-  }
-
-  const price = currentPrice ?? monthly[monthly.length - 1].close;
-  const { highs, lows } = findPivots(monthly, 3);
-  result.pivot_highs = highs.slice(-5);
-  result.pivot_lows  = lows.slice(-5);
-  result.trendline   = classify3PTL(monthly, price);
-
-  return Response.json(result);
+  return Response.json({
+    ...base,
+    oldest: bars[0]?.date,
+    newest: bars[bars.length - 1]?.date,
+    last_6: bars.slice(-6).map((b) => ({ date: b.date, high: b.high, low: b.low, close: b.close })),
+    ...result,
+  });
 }
