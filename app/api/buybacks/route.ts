@@ -76,16 +76,36 @@ export async function GET(request: Request) {
     result.ok = res.ok;
     if (res.ok) {
       const html = await res.text();
+      const lower = html.toLowerCase();
       result.html_length = html.length;
-      result.is_js_shell = html.length < 5000; // tiny = JS SPA shell, no data
+      result.is_js_shell = html.length < 5000;
       result.buyback_found = searchHtml(html);
-      result.keyword_matches = KEYWORDS.filter((kw) => html.toLowerCase().includes(kw));
-      // Show a snippet around the first keyword hit, if any
-      const hit = KEYWORDS.find((kw) => html.toLowerCase().includes(kw));
-      if (hit) {
-        const idx = html.toLowerCase().indexOf(hit);
-        result.snippet = html.slice(Math.max(0, idx - 100), idx + 200).replace(/<[^>]+>/g, " ").trim();
+      result.keyword_matches = KEYWORDS.filter((kw) => lower.includes(kw));
+
+      // Show snippets around every occurrence of "buy" to see what text ASX actually uses
+      const buyContexts: string[] = [];
+      let searchFrom = 0;
+      while (buyContexts.length < 10) {
+        const idx = lower.indexOf("buy", searchFrom);
+        if (idx === -1) break;
+        const snippet = html.slice(Math.max(0, idx - 40), idx + 80).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        if (snippet) buyContexts.push(snippet);
+        searchFrom = idx + 3;
       }
+      result.buy_contexts = buyContexts;
+
+      // Also look for "3c" and "3d" patterns
+      const formContexts: string[] = [];
+      for (const pat of ["3c", "3d", "3-c", "3-d"]) {
+        const idx = lower.indexOf(pat);
+        if (idx !== -1) {
+          formContexts.push(`[${pat}] ` + html.slice(Math.max(0, idx - 60), idx + 80).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+        }
+      }
+      result.form_contexts = formContexts;
+
+      // First 1000 chars of visible text (strip tags) to see page structure
+      result.text_sample = html.slice(0, 3000).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 800);
     } else {
       result.body = (await res.text()).slice(0, 400);
     }
