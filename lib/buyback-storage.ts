@@ -22,8 +22,20 @@ export interface StoredBuybacks {
   data: Record<string, BuybackEntry>;
 }
 
-/** Keywords that indicate an active on-market buyback announcement */
-export const BUYBACK_KEYWORDS = ["buy-back", "buyback", "buy back"];
+/**
+ * Keywords / document types that indicate an active on-market buyback.
+ * Matched against both the announcement `header` and `document_type` fields.
+ *   Appendix 3C = Announcement of buy-back
+ *   Appendix 3D = Change to buy-back
+ *   Appendix 3E = Cessation of buy-back (we intentionally exclude this)
+ */
+export const BUYBACK_KEYWORDS = [
+  "buy-back",
+  "buyback",
+  "buy back",
+  "appendix 3c",
+  "appendix 3d",
+];
 
 /** How many months back to look for announcements */
 export const BUYBACK_LOOKBACK_MONTHS = 12;

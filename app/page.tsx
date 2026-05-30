@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
-import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
+import { BUYBACK_STORAGE_KEY, StoredBuybacks, BUYBACK_KEYWORDS, BUYBACK_LOOKBACK_MONTHS } from "@/lib/buyback-storage";
 import {
   scoreStocks,
   makeBuyList,
@@ -220,6 +220,14 @@ export default function HomePage() {
     }
   }, [rawRows]);
 
+  /**
+   * Check ASX announcements for buybacks — runs entirely in the BROWSER so the
+   * requests come from the user's IP, not Vercel's datacenter IPs (which ASX blocks).
+   *
+   * Looks for Appendix 3C (announcement of buy-back) and Appendix 3D (change to
+   * buy-back) in both the `document_type` and `header` fields of the last 12 months
+   * of announcements, using 8 concurrent requests to keep total time reasonable.
+   */
   const loadBuybacks = useCallback(async () => {
     if (!rawRows) return;
     setBuybackLoading(true);
@@ -227,28 +235,49 @@ export default function HomePage() {
     setError(null);
 
     const codes = rawRows.map((r) => r.Code);
-    const CHUNK = 20;
     const accumulated: BuybackMap = {};
     let activeCount = 0;
+    let done = 0;
 
-    try {
-      for (let i = 0; i < codes.length; i += CHUNK) {
-        const chunk = codes.slice(i, i + CHUNK);
-        const res = await fetch("/api/buybacks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ codes: chunk }),
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - BUYBACK_LOOKBACK_MONTHS);
+
+    async function checkOne(code: string): Promise<boolean> {
+      try {
+        const url = `https://www.asx.com.au/asx/1/company/${code}/announcements?count=50&market_sensitive=false`;
+        const res = await fetch(url, {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(8_000),
         });
-        if (!res.ok) throw new Error(`Buyback API error ${res.status}`);
-        const data: Record<string, { active: boolean }> = await res.json();
-        for (const [code, entry] of Object.entries(data)) {
-          accumulated[code] = entry.active;
-          if (entry.active) activeCount++;
-        }
-        setBuybackProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+        if (!res.ok) return false;
+        const json = await res.json();
+        const anns: Array<{ header?: string; document_type?: string; document_release_date?: string }> =
+          json?.data ?? [];
+        return anns.some((ann) => {
+          const dateStr = ann.document_release_date ?? "";
+          if (dateStr && new Date(dateStr) < cutoff) return false;
+          const text = `${ann.header ?? ""} ${ann.document_type ?? ""}`.toLowerCase();
+          return BUYBACK_KEYWORDS.some((kw) => text.includes(kw));
+        });
+      } catch {
+        return false;
+      }
+    }
+
+    // Process in parallel batches of 8 to balance speed vs ASX rate limits
+    const CONCURRENCY = 8;
+    try {
+      for (let i = 0; i < codes.length; i += CONCURRENCY) {
+        const chunk = codes.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(chunk.map(checkOne));
+        chunk.forEach((code, j) => {
+          accumulated[code] = results[j];
+          if (results[j]) activeCount++;
+        });
+        done = Math.min(i + CONCURRENCY, codes.length);
+        setBuybackProgress({ done, total: codes.length });
       }
 
-      // Persist to localStorage
       const stored: StoredBuybacks = {
         timestamp: new Date().toISOString(),
         checkedCount: codes.length,
