@@ -11,6 +11,8 @@ export type TrendlineSentiment = "Bullish" | "Josephine" | "Bearish";
 export interface TrendlineEntry {
   sentiment: TrendlineSentiment;
   note?: string;
+  /** true when the 3PTL detected a recent breakout above resistance — maps to Bible Col R (New 3PT Upturn) */
+  newUpturn?: boolean;
 }
 
 export interface StoredTrendlines {

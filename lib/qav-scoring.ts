@@ -11,12 +11,13 @@ import { StockRow, ScoredStock, ScoreColumns } from "./types";
 
 export const DEFAULT_RRR = 0.195;           // Tony's hurdle rate (AV35)
 export const DEFAULT_MARKET_HURDLE = 0.1035; // 6% + RBA cash rate 4.35% (AW35)
-export const DEFAULT_CASH_RATE = 4.35;       // RBA cash rate %
-const DIV_YIELD_THRESHOLD_PCT = 9.3;         // AM35 threshold (compared as %)
+export const DEFAULT_CASH_RATE = 4.35;          // RBA cash rate %
+export const DEFAULT_BORROWING_RATE = 6.5;      // Mortgage rate % — Bible Col Q: "Yield > mortgage rate"
 
 export interface ScoringRates {
   rrr: number;           // IV1 hurdle (e.g. 0.195 or personal mortgage rate)
   marketHurdle: number;  // IV2 hurdle = 6% + cash rate
+  borrowingRate: number; // Mortgage/borrowing rate % for dividend yield comparison (Col Q)
 }
 
 const STAR_STOCK_SCORES: Record<string, number> = {
@@ -101,12 +102,13 @@ function scorePriceToCashflow(row: StockRow): number | null {
   return pcf <= 7 ? 2 : 0;
 }
 
-function scoreDivYield(row: StockRow): number {
-  // Always scored 0 or 1 — no dividend = 0, not null.
-  // Tony's spreadsheet: "Yield>Bank Debt?" returns 0 when yield is absent or too low.
+function scoreDivYield(row: StockRow, borrowingRate: number): number {
+  // Always scored 0 or 1 (Bible Col Q: "Yield > mortgage rate?" — positive=1, negative=0).
+  // No dividend data = fails the test = 0.
+  // Threshold = user's configured mortgage/borrowing rate (default 6.5%).
   const y = num(row["Div Yield (%)"]);
-  if (y === null) return 0; // no dividend data = fails the test = 0
-  return y > DIV_YIELD_THRESHOLD_PCT ? 1 : 0;
+  if (y === null) return 0;
+  return y > borrowingRate ? 1 : 0;
 }
 
 function scorePeLtDy(row: StockRow): number | null {
@@ -232,13 +234,14 @@ export function scoreStocks(
 ): ScoredStock[] {
   const rrr = rates.rrr ?? DEFAULT_RRR;
   const mh = rates.marketHurdle ?? DEFAULT_MARKET_HURDLE;
+  const br = rates.borrowingRate ?? DEFAULT_BORROWING_RATE;
 
   return rows.map((row) => {
     const scores: ScoreColumns = {
       S_sentiment_long: scoreSentimentLong(row),
       S_sentiment_short: null,        // Phase 1 — not available client-side
       S_pcf: scorePriceToCashflow(row),
-      S_div_yield: scoreDivYield(row),
+      S_div_yield: scoreDivYield(row, br),
       S_pe_lt_dy: scorePeLtDy(row),
       S_pe_hi_lo: null,               // Phase 2 — needs history DB
       S_equity_inc: null,             // Phase 2 — needs history DB
@@ -254,7 +257,8 @@ export function scoreStocks(
       S_fh_rating: scoreFhRating(row),
       S_fh_trend: scoreFhTrend(row),
       S_ownership: scoreOwnership(row),
-      S_buyback: null,               // Phase 3 — applied separately via ASX lookup
+      S_buyback: null,               // Phase 3 — applied separately via ASX lookup / manual
+      S_new_upturn: null,           // Phase 3 — recent new 3PT uptrend (Bible Col R/I)
     };
 
     const scoreVals = Object.values(scores).filter((v) => v !== null) as number[];

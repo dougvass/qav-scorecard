@@ -59,7 +59,8 @@ export interface ScoreColumns {
   S_pe_hi_lo: number | null;         // AQ — history
   S_equity_inc: number | null;       // AR — history
   S_sp_lt_iv3: number | null;        // BD — MorningStar
-  S_buyback: number | null;          // ASX announcements check
+  S_buyback: number | null;          // ASX announcements / manual (note: Bible requires ≥5% share reduction)
+  S_new_upturn: number | null;       // Col R — recent new 3PT uptrend (1/blank, manual or auto-3PTL)
 }
 
 // Derived metrics
@@ -114,5 +115,6 @@ export const SCORE_COL_META: ScoreColMeta[] = [
   { key: "S_fh_rating",       label: "FH Rating",    description: "Financial Health: Strong/Satisfactory → 1", phase: 0 },
   { key: "S_fh_trend",        label: "FH Trend",     description: "Recovering=2, Steady=1, Deteriorating=-1", phase: 0 },
   { key: "S_ownership",       label: "Ownership",    description: "Directors own ≥10% of market cap → 2pts", phase: 0 },
-  { key: "S_buyback",         label: "Buyback",      description: "Active on-market buyback detected via ASX announcements → 1pt", phase: 3 },
+  { key: "S_buyback",         label: "Buyback",      description: "On-market buyback with ≥5% share reduction (Bible Col S) → 1pt", phase: 3 },
+  { key: "S_new_upturn",     label: "New Upturn",   description: "Recently breached buy line — new 3PT uptrend started (Bible Col R/I) → 1pt", phase: 3 },
 ];

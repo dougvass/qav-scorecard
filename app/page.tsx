@@ -46,7 +46,7 @@ const SCORE_KEYS = [
   "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
   "S_sp_lt_1.3neps", "S_geps_pe", "S_sp_lt_iv1", "S_sp_lt_iv2",
   "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
-  "S_fh_rating", "S_fh_trend", "S_ownership", "S_buyback",
+  "S_fh_rating", "S_fh_trend", "S_ownership", "S_buyback", "S_new_upturn",
 ] as const;
 
 // Phase 2 payload: Code → { S_equity_inc, S_pe_hi_lo }
@@ -105,7 +105,12 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
   return stocks.map((stock) => {
     const entry = trendlines.data[stock.Code];
     if (!entry) return stock;
-    const enriched = { ...stock, S_sentiment_long: TRENDLINE_SCORES[entry.sentiment] } as ScoredStock;
+    const enriched = {
+      ...stock,
+      S_sentiment_long: TRENDLINE_SCORES[entry.sentiment],
+      // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
+      S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
+    } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -294,6 +299,7 @@ export default function HomePage() {
   const rates: ScoringRates = {
     rrr: iv1Rate / 100,
     marketHurdle: (6 + cashRate) / 100,
+    borrowingRate: borrowingRate,   // used for dividend yield threshold (Bible Col Q)
   };
 
   // ── localStorage loaders (called on mount AND when another tab writes) ──────
@@ -504,6 +510,9 @@ export default function HomePage() {
           accumulated[code] = {
             sentiment: (entry.sentiment ?? "Josephine") as "Bullish" | "Josephine" | "Bearish",
             note: entry.note,
+            // Flag as "new upturn" if 3PTL detected a recent breakout above resistance
+            newUpturn: !!(entry.note?.toLowerCase().includes("broke above") ||
+                          entry.note?.toLowerCase().includes("trough recovery")),
           };
         }
         setTrendlineProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
