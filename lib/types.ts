@@ -41,10 +41,10 @@ export interface StockRow {
 export interface ScoreColumns {
   S_sentiment_long: number | null;   // AJ
   S_pcf: number | null;              // AL
-  S_div_yield: number | null;        // AM
+  S_div_yield: number;               // AM — always 0 or 1 (no dividend = 0)
   S_pe_lt_dy: number | null;         // AN
   S_sp_lt_neps: number | null;       // AS
-  "S_sp_lt_1.3neps": number | null;  // AT
+  "S_sp_lt_1.3neps": number;         // AT — always 0 or 1 (price ≥ 1.3×NEPS = 0)
   S_geps_pe: number | null;          // AU
   S_sp_lt_iv1: number | null;        // AX
   S_sp_lt_iv2: number | null;        // AY

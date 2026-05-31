@@ -101,9 +101,11 @@ function scorePriceToCashflow(row: StockRow): number | null {
   return pcf <= 7 ? 2 : 0;
 }
 
-function scoreDivYield(row: StockRow): number | null {
+function scoreDivYield(row: StockRow): number {
+  // Always scored 0 or 1 — no dividend = 0, not null.
+  // Tony's spreadsheet: "Yield>Bank Debt?" returns 0 when yield is absent or too low.
   const y = num(row["Div Yield (%)"]);
-  if (y === null) return null;
+  if (y === null) return 0; // no dividend data = fails the test = 0
   return y > DIV_YIELD_THRESHOLD_PCT ? 1 : 0;
 }
 
@@ -123,13 +125,15 @@ function scoreSpLtNeps(row: StockRow): number | null {
   return sp < neps ? 1 : null;
 }
 
-function scoreSpLt13Neps(row: StockRow): number | null {
+function scoreSpLt13Neps(row: StockRow): number {
+  // Always scored 0 or 1 — Tony's "Is Price≤Book+30%?" returns 0 when condition
+  // is not met, not blank. Missing equity data also = 0.
   const sp = num(row["Share Price ($)"]);
   const eq = num(row["Equity ($)"]);
   const shares = num(row["Shares Outstanding (M)"]);
-  if (sp === null || eq === null || shares === null || shares === 0) return null;
+  if (sp === null || eq === null || shares === null || shares === 0) return 0;
   const neps = Math.round((1.3 * eq / (shares * 1_000_000)) * 10) / 10;
-  return sp < neps ? 1 : null;
+  return sp < neps ? 1 : 0;
 }
 
 function scoreGepsOverPe(row: StockRow): number | null {
