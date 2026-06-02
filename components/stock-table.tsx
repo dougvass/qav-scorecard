@@ -11,8 +11,8 @@ interface StockTableProps {
   showAll: boolean;
   hideEtfs: boolean;
   onToggleEtfs: () => void;
-  filterSentiment: "all" | "bullish" | "bearish";
-  onChangeFilterSentiment: (v: "all" | "bullish" | "bearish") => void;
+  filterSentiment: "all" | "bullish" | "josephine" | "bearish";
+  onChangeFilterSentiment: (v: "all" | "bullish" | "josephine" | "bearish") => void;
   borrowingRate: number;
   phase2Loaded?: boolean;
   sentimentOverrides?: StoredSentiments;
@@ -25,6 +25,7 @@ type SortDir = "asc" | "desc";
 const SENTIMENT_COLORS: Record<string, string> = {
   positive: "bg-emerald-100 text-emerald-800",
   josephine: "bg-sky-100 text-sky-800",
+  positive_josephine: "bg-teal-100 text-teal-800 border border-teal-300", // was Bullish, minor monthly dip
   schrodinger: "bg-orange-100 text-orange-800",
   negative: "bg-red-100 text-red-700",
   insufficient_data: "bg-gray-100 text-gray-500",
@@ -89,10 +90,17 @@ function SentimentBadge({
 
   const v = stock.S_sentiment_long;
   const isOverridden = override !== undefined;
+  const isPositiveJosephine = v === 0 &&
+    !!(stock as Record<string, unknown>)._positiveJosephine;
+
   let label = "Josephine";
   let colorCls = SENTIMENT_COLORS["josephine"];
   if (v === 2)  { label = "Bullish";   colorCls = SENTIMENT_COLORS["bullish_proxy"]; }
   if (v === -1) { label = "Bearish";   colorCls = SENTIMENT_COLORS["negative"]; }
+  if (v === 0 && isPositiveJosephine) {
+    label = "Josephine ↗";   // teal — was Bullish, just a monthly dip
+    colorCls = SENTIMENT_COLORS["positive_josephine"];
+  }
 
   return (
     <div ref={ref} className="relative inline-block">
@@ -164,8 +172,9 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
         (s) => (s["Avg Trade 3M ($000)"] ?? 0) >= minAdt
       );
     }
-    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 2);
-    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long === -1);
+    if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
+    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0);
+    if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
     if (search.trim()) {
       const q = search.trim().toUpperCase();
       result = result.filter(
@@ -251,6 +260,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
           >
             <option value="all">All</option>
             <option value="bullish">Bullish only</option>
+            <option value="josephine">Josephine only</option>
             <option value="bearish">Bearish only</option>
           </select>
         </div>

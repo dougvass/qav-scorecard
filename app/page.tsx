@@ -105,11 +105,18 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
   return stocks.map((stock) => {
     const entry = trendlines.data[stock.Code];
     if (!entry) return stock;
+    const isPositiveJosephine =
+      entry.sentiment === "Josephine" &&
+      !!(entry.note?.toLowerCase().includes("josephine: positive") ||
+         entry.note?.toLowerCase().includes("positive 3ptl"));
+
     const enriched = {
       ...stock,
       S_sentiment_long: TRENDLINE_SCORES[entry.sentiment],
       // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
       S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
+      // Flag positive Josephines (was Bullish, just a monthly dip) for teal badge
+      _positiveJosephine: isPositiveJosephine || undefined,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -289,7 +296,7 @@ export default function HomePage() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
-  const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "bearish">("all");
+  const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "josephine" | "bearish">("all");
 
   // Rate inputs
   const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);
@@ -578,8 +585,9 @@ export default function HomePage() {
   function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
     let result = arr;
     if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
-    if (filterSentiment === "bullish") result = result.filter((s) => s.S_sentiment_long === 2);
-    if (filterSentiment === "bearish") result = result.filter((s) => s.S_sentiment_long === -1);
+    if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
+    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0);
+    if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
     return result;
   }
   const statsAll = applyTableFilters(allStocks ?? []);
