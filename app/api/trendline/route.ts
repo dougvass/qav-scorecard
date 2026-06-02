@@ -222,6 +222,33 @@ function classify(bars: PriceBar[], currentPrice: number): {
     }
   }
 
+  // ── Falling knife override ────────────────────────────────────────────────────
+  // The Bible explicitly warns: "NEVER TRY TO CATCH A FALLING KNIFE."
+  // If a Bullish signal came from a PARTIAL or FALLBACK path (not a formally
+  // confirmed 3PTL with 3 consecutive higher lows), and the stock is still
+  // deeply below a recent peak, override to protect against false positives.
+  //
+  //  >70% below recent peak → Bearish  (clear falling knife, avoid entirely)
+  //  >40% below recent peak → Josephine (uncertain, wait for 3 confirmed lows)
+  //
+  // We only apply this when uptrendActive=false (formal 3PTL not confirmed).
+  // If 3 consecutive higher lows ARE confirmed, we trust that signal.
+  if (sentiment === "Bullish" && !uptrendActive && pivotHighs.length >= 1) {
+    const recentHigh = pivotHighs[pivotHighs.length - 1];
+    const monthsSincePeak = currentIdx - recentHigh.idx;
+    const pctBelowPeak = (recentHigh.price - currentPrice) / recentHigh.price;
+
+    if (monthsSincePeak <= 48 && pctBelowPeak >= 0.70) {
+      // Deep falling knife — 70%+ below peak — clearly still in downtrend
+      sentiment = "Bearish";
+      note = `Falling knife: ${(pctBelowPeak * 100).toFixed(0)}% below recent peak $${recentHigh.price.toFixed(3)} (${monthsSincePeak}mo ago). Minor upticks at the bottom of a multi-year downtrend are not confirmed reversals.`;
+    } else if (monthsSincePeak <= 36 && pctBelowPeak >= 0.40) {
+      // Significant decline, partial signal only — too risky to call Bullish
+      sentiment = "Josephine";
+      note = `Caution: ${(pctBelowPeak * 100).toFixed(0)}% below recent peak $${recentHigh.price.toFixed(3)} (${monthsSincePeak}mo ago) with only partial 3PTL confirmation. Wait for 3 consecutive higher lows before buying.`;
+    }
+  }
+
   return {
     sentiment, currentPrice, sellLine, buyLine,
     downtrendActive, uptrendActive,
