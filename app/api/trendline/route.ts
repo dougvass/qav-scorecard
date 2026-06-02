@@ -222,6 +222,26 @@ function classify(bars: PriceBar[], currentPrice: number): {
     }
   }
 
+  // ── Josephine check ───────────────────────────────────────────────────────────
+  // Bible: "if the stock has positive sentiment BUT it's in a downward trend
+  // (ie today's price lower than the price at the end of the previous month),
+  // then it's a Josephine — it's technically a buy but Tony wouldn't buy it
+  // until it shows an uptick."
+  //
+  // If we called it Bullish but the most recent monthly close is LOWER than
+  // the previous month's close, downgrade to Josephine.
+  // This also catches cases where our calculated buy line is slightly off from
+  // the true 3PTL line — if the stock is already month-on-month declining,
+  // it's not a buy signal regardless of line precision.
+  if (sentiment === "Bullish" && bars.length >= 2) {
+    const lastClose = bars[bars.length - 1].close;
+    const prevClose = bars[bars.length - 2].close;
+    if (lastClose < prevClose) {
+      sentiment = "Josephine";
+      note = `Josephine: positive 3PTL but current month (${lastClose.toFixed(3)}) below previous (${prevClose.toFixed(3)}) — wait for an uptick before buying`;
+    }
+  }
+
   // ── Falling knife override ────────────────────────────────────────────────────
   // The Bible explicitly warns: "NEVER TRY TO CATCH A FALLING KNIFE."
   // If a Bullish signal came from a PARTIAL or FALLBACK path (not a formally
