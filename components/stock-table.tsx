@@ -91,7 +91,7 @@ function SentimentBadge({
   const v = stock.S_sentiment_long;
   const isOverridden = override !== undefined;
   const isPositiveJosephine = v === 0 &&
-    !!(stock as Record<string, unknown>)._positiveJosephine;
+    (stock as Record<string, unknown>)._positiveJosephine === 1;
 
   let label = "Josephine";
   let colorCls = SENTIMENT_COLORS["josephine"];

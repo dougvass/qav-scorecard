@@ -115,8 +115,8 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       S_sentiment_long: TRENDLINE_SCORES[entry.sentiment],
       // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
       S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
-      // Flag positive Josephines (was Bullish, just a monthly dip) for teal badge
-      _positiveJosephine: isPositiveJosephine || undefined,
+      // Flag positive Josephines (was Bullish, just a monthly dip) for teal badge (1=yes, null=no)
+      _positiveJosephine: isPositiveJosephine ? 1 : null,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
