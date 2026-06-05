@@ -373,18 +373,25 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   // Only applies when sentiment is Bullish AND no formal 3PTL uptrend (uptrendActive).
   // If 3 consecutive higher lows are confirmed, we trust that signal.
   if (sentiment === "Bullish" && maxima.length >= 1) {
-    const recentPeak  = maxima[maxima.length - 1];
-    const mthsSincePeak = currentIdx - recentPeak.idx;
-    const pctBelow    = (recentPeak.price - currentPrice) / recentPeak.price;
+    // Use the HIGHEST local maximum in the dataset for the 70% Bearish check.
+    // A stock 90% below its 2022 major peak is a falling knife even if there was
+    // a minor rally to $0.305 in Nov 2025 — check against the true peak, not just
+    // the most recent one.
+    const highestPeak = maxima.reduce((best, m) => m.price > best.price ? m : best, maxima[0]);
+    const recentPeak  = maxima[maxima.length - 1]; // most recent local max
+    const mthsSinceHighest = currentIdx - highestPeak.idx;
+    const mthsSinceRecent  = currentIdx - recentPeak.idx;
+    const pctBelowHighest  = (highestPeak.price - currentPrice) / highestPeak.price;
+    const pctBelowRecent   = (recentPeak.price  - currentPrice) / recentPeak.price;
 
-    if (pctBelow >= 0.70) {
-      // Deep falling knife — override regardless of how long ago the peak was.
-      // A 90% decline over 50 months is still a falling knife.
+    if (pctBelowHighest >= 0.70) {
+      // Deep falling knife vs the major peak — override regardless of time elapsed.
       sentiment = "Bearish";
-      note = `Falling knife: ${(pctBelow * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSincePeak}mo ago). Crossed buy line but long-term downtrend not reversed.`;
-    } else if (mthsSincePeak <= 36 && pctBelow >= 0.40) {
+      note = `Falling knife: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago). Long-term downtrend not reversed.`;
+    } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40) {
+      // Significant recent decline — caution
       sentiment = "Josephine";
-      note = `Caution: ${(pctBelow * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSincePeak}mo ago) — wait for 3 confirmed higher lows before buying.`;
+      note = `Caution: ${(pctBelowRecent * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSinceRecent}mo ago) — wait for 3 confirmed higher lows before buying.`;
     }
   }
 
