@@ -63,17 +63,24 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
     const adjQ = ((result.indicators as Record<string, unknown>)?.adjclose as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
     if (!ts || !q) return [];
 
-    // Build unadjustment factor per bar: ratio of unadjusted to adjusted close.
-    // Apply this to high/low so all prices are on the same (unadjusted) scale.
+    // Use dividend-adjusted prices consistently across all bars.
+    // Yahoo's adjclose adjusts historical prices DOWNWARD for paid dividends.
+    // We apply the same per-bar factor (adjClose/rawClose) to high and low so
+    // all OHLC values are in the same adjusted space. For recent bars adjClose ≈ rawClose
+    // so the current price is essentially unadjusted — consistent for trendline comparison.
+    // This fixes the issue where using (rawClose/adjClose) > 1 over-inflated historical
+    // peaks for large dividend payers (ACL, SXL), making buy lines too low.
     return ts.map((t, i) => {
       const adjClose = adjQ?.adjclose?.[i];
       const rawClose = q.close?.[i];
-      const factor   = (adjClose && rawClose && adjClose > 0) ? rawClose / adjClose : 1;
+      // adjFactor < 1 for historical bars (dividends reduce historical prices)
+      // adjFactor ≈ 1.0 for recent/current bars (no future dividends to subtract)
+      const adjFactor = (adjClose && rawClose && rawClose > 0) ? adjClose / rawClose : 1;
       return {
         date:  new Date(t * 1000).toISOString().slice(0, 7),
-        high:  (q.high?.[i]  ?? 0) * factor,
-        low:   (q.low?.[i]   ?? 0) * factor,
-        close: rawClose ?? 0,
+        high:  (q.high?.[i]  ?? 0) * adjFactor,
+        low:   (q.low?.[i]   ?? 0) * adjFactor,
+        close: adjClose ?? rawClose ?? 0,
       };
     }).filter(b => b.close > 0 && b.high > 0 && b.low > 0);
   } catch { return []; }
