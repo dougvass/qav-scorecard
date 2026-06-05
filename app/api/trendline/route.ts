@@ -324,17 +324,19 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   const belowSell = sellLine !== null && currentPrice < sellLine;
 
   if (aboveBuy && aboveSell) {
-    // Above both lines — check for Josephine using completed end-of-month closes only.
-    // Bible: "today's price lower than the price at the end of the previous month."
-    // bars[n-1] is the CURRENT in-progress month (not a completed close), so we
-    // compare bars[n-2] (last completed month close) vs bars[n-3] (month before that).
-    // This matches Tony's Saturday analysis which uses two fully closed months.
+    // Above both lines — check for Josephine using Tony's Bible rule:
+    // "today's price is lower than the price at the end of the previous month."
+    // bars[n-1] is the CURRENT in-progress month bar (partial close, unreliable).
+    // bars[n-2] is the LAST COMPLETED month's close — the "end of previous month" reference.
+    // We compare the live currentPrice against bars[n-2] to detect a declining stock.
+    // This correctly catches stocks that spiked last month and are now pulling back
+    // (e.g. CTP spiked in May, now below May close in June → Josephine).
+    // It avoids the BFL false-positive because BFL's live price was not >3% below April's close.
     const lastMonthClose = n >= 2 ? bars[n - 2].close : 0;
-    const prevMonthClose = n >= 3 ? bars[n - 3].close : lastMonthClose;
-    const monthlyChange = prevMonthClose > 0 ? (lastMonthClose - prevMonthClose) / prevMonthClose : 0;
-    if (monthlyChange < -0.03) {
+    const priceVsLastMonth = lastMonthClose > 0 ? (currentPrice - lastMonthClose) / lastMonthClose : 0;
+    if (priceVsLastMonth < -0.03) {
       sentiment = "Josephine";
-      note = `Josephine ↗: above both lines but last month closed ${(monthlyChange * 100).toFixed(1)}% (${lastMonthClose.toFixed(3)} < ${prevMonthClose.toFixed(3)}) — wait for uptick`;
+      note = `Josephine ↗: above both lines but price ${currentPrice.toFixed(3)} is ${(priceVsLastMonth * 100).toFixed(1)}% below last month's close ${lastMonthClose.toFixed(3)} — wait for uptick`;
     } else {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
