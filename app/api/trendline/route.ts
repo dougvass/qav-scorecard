@@ -324,12 +324,17 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   const belowSell = sellLine !== null && currentPrice < sellLine;
 
   if (aboveBuy && aboveSell) {
-    // Above both lines — check for Josephine (month-on-month decline)
+    // Above both lines — check for Josephine (month-on-month meaningful decline).
+    // Require >3% decline to downgrade: a 0.5-2% monthly dip in a confirmed uptrend
+    // is normal price action, not a Josephine signal. Tony's "today's price lower than
+    // previous month" rule is intended for stocks clearly at or near the lines, not for
+    // stocks well above both lines experiencing a minor monthly fluctuation.
     const lastClose = bars[n - 1].close;
     const prevClose = bars[n - 2]?.close ?? lastClose;
-    if (lastClose < prevClose) {
+    const monthlyChange = prevClose > 0 ? (lastClose - prevClose) / prevClose : 0;
+    if (monthlyChange < -0.03) {
       sentiment = "Josephine";
-      note = `Josephine ↗: above both lines but current month (${lastClose.toFixed(3)}) < previous (${prevClose.toFixed(3)}) — wait for uptick`;
+      note = `Josephine ↗: above both lines but ${(monthlyChange * 100).toFixed(1)}% this month (${lastClose.toFixed(3)} < ${prevClose.toFixed(3)}) — wait for uptick`;
     } else {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
