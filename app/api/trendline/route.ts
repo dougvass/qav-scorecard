@@ -324,17 +324,17 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   const belowSell = sellLine !== null && currentPrice < sellLine;
 
   if (aboveBuy && aboveSell) {
-    // Above both lines — check for Josephine (month-on-month meaningful decline).
-    // Require >3% decline to downgrade: a 0.5-2% monthly dip in a confirmed uptrend
-    // is normal price action, not a Josephine signal. Tony's "today's price lower than
-    // previous month" rule is intended for stocks clearly at or near the lines, not for
-    // stocks well above both lines experiencing a minor monthly fluctuation.
-    const lastClose = bars[n - 1].close;
-    const prevClose = bars[n - 2]?.close ?? lastClose;
-    const monthlyChange = prevClose > 0 ? (lastClose - prevClose) / prevClose : 0;
+    // Above both lines — check for Josephine using completed end-of-month closes only.
+    // Bible: "today's price lower than the price at the end of the previous month."
+    // bars[n-1] is the CURRENT in-progress month (not a completed close), so we
+    // compare bars[n-2] (last completed month close) vs bars[n-3] (month before that).
+    // This matches Tony's Saturday analysis which uses two fully closed months.
+    const lastMonthClose = n >= 2 ? bars[n - 2].close : 0;
+    const prevMonthClose = n >= 3 ? bars[n - 3].close : lastMonthClose;
+    const monthlyChange = prevMonthClose > 0 ? (lastMonthClose - prevMonthClose) / prevMonthClose : 0;
     if (monthlyChange < -0.03) {
       sentiment = "Josephine";
-      note = `Josephine ↗: above both lines but ${(monthlyChange * 100).toFixed(1)}% this month (${lastClose.toFixed(3)} < ${prevClose.toFixed(3)}) — wait for uptick`;
+      note = `Josephine ↗: above both lines but last month closed ${(monthlyChange * 100).toFixed(1)}% (${lastMonthClose.toFixed(3)} < ${prevMonthClose.toFixed(3)}) — wait for uptick`;
     } else {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
