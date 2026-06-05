@@ -179,8 +179,13 @@ function lineAt(p1: Pivot, p2: Pivot, targetIdx: number): number {
  * Tries H2 candidates in order: highest-price first (best line from top),
  * then falls back to later (lower, further-right) maxima for a shallower slope.
  */
+/** Minimum months between H1 and H2 (or L1 and L2) to avoid meaninglessly steep lines */
+const MIN_GAP_MONTHS = 6;
+
 function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const rightMaxima = maxima.filter(m => m.idx > h1.idx);
+  // Require H2 to be at least MIN_GAP_MONTHS after H1.
+  // Three-month gaps create slopes so steep they extrapolate to near-zero years later.
+  const rightMaxima = maxima.filter(m => m.idx > h1.idx + MIN_GAP_MONTHS);
   if (rightMaxima.length === 0) return null;
 
   // Try candidates: highest price first (steepest valid line), then by index descending (shallower)
@@ -240,7 +245,7 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
  * Find the sell line (L1→L2 through troughs). Mirror of findBuyLine.
  */
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const rightMinima = minima.filter(m => m.idx > l1.idx);
+  const rightMinima = minima.filter(m => m.idx > l1.idx + MIN_GAP_MONTHS);
   if (rightMinima.length === 0) return null;
 
   const byPrice  = [...rightMinima].sort((a, b) => a.price - b.price); // lowest first
