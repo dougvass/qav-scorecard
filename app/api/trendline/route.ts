@@ -165,6 +165,47 @@ function lineAt(p1: Pivot, p2: Pivot, targetIdx: number): number {
  * 4. If no valid H2 exists to the right (H1 is the rightmost significant peak),
  *    try the next highest local maximum as H1 until we find a pair.
  */
+/**
+ * For a given H1, find the best H2 to the right that:
+ *   1. Has no high-violations between H1 and H2
+ *   2. Gives a POSITIVE buy line at currentIdx (prevents negative extrapolation)
+ * Tries H2 candidates in order: highest-price first (best line from top),
+ * then falls back to later (lower, further-right) maxima for a shallower slope.
+ */
+function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
+  const rightMaxima = maxima.filter(m => m.idx > h1.idx);
+  if (rightMaxima.length === 0) return null;
+
+  // Try candidates: highest price first (steepest valid line), then by index descending (shallower)
+  const byPrice  = [...rightMaxima].sort((a, b) => b.price - a.price);
+  const byRecent = [...rightMaxima].sort((a, b) => b.idx - a.idx);
+  const candidates = [...byPrice, ...byRecent];
+
+  for (const h2Candidate of candidates) {
+    // Apply violation-check refinement: ratchet H2 left if any intermediate max is above the line
+    let h2 = h2Candidate;
+    for (let iter = 0; iter < 20; iter++) {
+      if (noHighViolation(bars, h1, h2)) break;
+      const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
+      let worstViol: Pivot | null = null;
+      for (const m of maxima) {
+        if (m.idx <= h1.idx || m.idx >= h2.idx) continue;
+        const lineAtM = h1.price + slope * (m.idx - h1.idx);
+        if (m.price > lineAtM && (worstViol === null || m.price > worstViol.price)) worstViol = m;
+      }
+      if (!worstViol) break;
+      h2 = worstViol;
+    }
+    if (!noHighViolation(bars, h1, h2)) continue;
+
+    // Validate: the extrapolated line must be positive at the current date
+    const lineValue = lineAt(h1, h2, currentIdx);
+    if (lineValue > 0) return h2;
+    // Line goes negative → this H2 creates too steep a slope → try next candidate
+  }
+  return null;
+}
+
 function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
   { h1: Pivot; h2: Pivot | null; line: number | null } {
 
@@ -173,55 +214,53 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
   const globalMax = Math.max(...maxima.map(m => m.price));
   const thresh = globalMax * (1 - FUDGE);
 
-  // Candidates for H1 sorted by price descending (highest first), applying 8% fudge
-  const h1Candidates = maxima
-    .filter(m => m.price >= thresh)
-    .sort((a, b) => b.price - a.price || b.idx - a.idx); // highest price, rightmost if tied
+  // H1 = rightmost within 8% of global max (flat-top fudge rule)
+  const baseH1 = [...maxima].filter(m => m.price >= thresh).sort((a, b) => b.idx - a.idx)[0];
 
-  // H1 = rightmost within 8% of global max
-  const fudgeH1s = maxima.filter(m => m.price >= thresh).sort((a, b) => b.idx - a.idx);
-  const baseH1 = fudgeH1s[0];
+  // All H1 candidates: rightmost-within-8% first, then all maxima by price desc
+  const allH1Candidates = [baseH1, ...[...maxima].sort((a, b) => b.price - a.price)];
 
-  // Try each candidate for H1 starting from the highest
-  for (const h1 of [baseH1, ...h1Candidates]) {
-    const rightMaxima = maxima.filter(m => m.idx > h1.idx).sort((a, b) => b.price - a.price);
-    if (rightMaxima.length === 0) continue;
-
-    // Find H2: highest right maximum with valid (no-violation) H1→H2 line
-    // Iterative: start with highest right maximum, ratchet toward H1 on violations
-    let h2 = rightMaxima[0];
-
-    for (let iter = 0; iter < 20; iter++) {
-      if (noHighViolation(bars, h1, h2)) break; // Valid!
-      // Find the maximum between h1 and h2 that's above the current line
-      const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
-      let worstViol: Pivot | null = null;
-      for (const m of maxima) {
-        if (m.idx <= h1.idx || m.idx >= h2.idx) continue;
-        const lineAtM = h1.price + slope * (m.idx - h1.idx);
-        if (m.price > lineAtM && (worstViol === null || m.price > worstViol.price)) {
-          worstViol = m;
-        }
-      }
-      if (!worstViol) break;
-      h2 = worstViol;
-    }
-
-    if (noHighViolation(bars, h1, h2)) {
-      return { h1, h2, line: lineAt(h1, h2, currentIdx) };
-    }
+  for (const h1 of allH1Candidates) {
+    const h2 = findH2ForH1(maxima, h1, bars, currentIdx);
+    if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
   }
 
-  // Fallback: just use the two highest maxima
-  const sorted = [...maxima].sort((a, b) => b.price - a.price);
-  const h1 = sorted[0];
-  const h2 = maxima.filter(m => m.idx > h1.idx).sort((a, b) => b.price - a.price)[0] ?? null;
-  return { h1, h2, line: h2 ? lineAt(h1, h2, currentIdx) : null };
+  // Complete fallback: no valid pair found
+  return { h1: baseH1, h2: null, line: null };
 }
 
 /**
  * Find the sell line (L1→L2 through troughs). Mirror of findBuyLine.
  */
+function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
+  const rightMinima = minima.filter(m => m.idx > l1.idx);
+  if (rightMinima.length === 0) return null;
+
+  const byPrice  = [...rightMinima].sort((a, b) => a.price - b.price); // lowest first
+  const byRecent = [...rightMinima].sort((a, b) => b.idx - a.idx);     // most recent first
+  const candidates = [...byPrice, ...byRecent];
+
+  for (const l2Candidate of candidates) {
+    let l2 = l2Candidate;
+    for (let iter = 0; iter < 20; iter++) {
+      if (noLowViolation(bars, l1, l2)) break;
+      const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
+      let worstViol: Pivot | null = null;
+      for (const m of minima) {
+        if (m.idx <= l1.idx || m.idx >= l2.idx) continue;
+        const lineAtM = l1.price + slope * (m.idx - l1.idx);
+        if (m.price < lineAtM && (worstViol === null || m.price < worstViol.price)) worstViol = m;
+      }
+      if (!worstViol) break;
+      l2 = worstViol;
+    }
+    if (!noLowViolation(bars, l1, l2)) continue;
+    const lineValue = lineAt(l1, l2, currentIdx);
+    if (lineValue > 0) return l2;
+  }
+  return null;
+}
+
 function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
   { l1: Pivot; l2: Pivot | null; line: number | null } {
 
@@ -230,41 +269,15 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
   const globalMin = Math.min(...minima.map(m => m.price));
   const thresh = globalMin * (1 + FUDGE);
 
-  const fudgeL1s = minima.filter(m => m.price <= thresh).sort((a, b) => b.idx - a.idx);
-  const baseL1 = fudgeL1s[0];
+  const baseL1 = [...minima].filter(m => m.price <= thresh).sort((a, b) => b.idx - a.idx)[0];
+  const allL1Candidates = [baseL1, ...[...minima].sort((a, b) => a.price - b.price)];
 
-  const l1Candidates = [baseL1, ...minima.filter(m => m.price <= thresh).sort((a, b) => a.price - b.price)];
-
-  for (const l1 of l1Candidates) {
-    const rightMinima = minima.filter(m => m.idx > l1.idx).sort((a, b) => a.price - b.price);
-    if (rightMinima.length === 0) continue;
-
-    let l2 = rightMinima[0];
-
-    for (let iter = 0; iter < 20; iter++) {
-      if (noLowViolation(bars, l1, l2)) break;
-      const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
-      let worstViol: Pivot | null = null;
-      for (const m of minima) {
-        if (m.idx <= l1.idx || m.idx >= l2.idx) continue;
-        const lineAtM = l1.price + slope * (m.idx - l1.idx);
-        if (m.price < lineAtM && (worstViol === null || m.price < worstViol.price)) {
-          worstViol = m;
-        }
-      }
-      if (!worstViol) break;
-      l2 = worstViol;
-    }
-
-    if (noLowViolation(bars, l1, l2)) {
-      return { l1, l2, line: lineAt(l1, l2, currentIdx) };
-    }
+  for (const l1 of allL1Candidates) {
+    const l2 = findL2ForL1(minima, l1, bars, currentIdx);
+    if (l2) return { l1, l2, line: lineAt(l1, l2, currentIdx) };
   }
 
-  const sorted = [...minima].sort((a, b) => a.price - b.price);
-  const l1 = sorted[0];
-  const l2 = minima.filter(m => m.idx > l1.idx).sort((a, b) => a.price - b.price)[0] ?? null;
-  return { l1, l2, line: l2 ? lineAt(l1, l2, currentIdx) : null };
+  return { l1: baseL1, l2: null, line: null };
 }
 
 /**
