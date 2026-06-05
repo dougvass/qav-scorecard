@@ -296,6 +296,7 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
 
   const aboveBuy  = buyLine  !== null && currentPrice >= buyLine  * BREAKOUT_BUF;
   const aboveSell = sellLine !== null && currentPrice >= sellLine;
+  const belowSell = sellLine !== null && currentPrice < sellLine;
 
   if (aboveBuy && aboveSell) {
     // Above both lines — check for Josephine (month-on-month decline)
@@ -308,13 +309,27 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
     }
-  } else if (aboveSell) {
-    // Between lines (above sell, below buy) — Josephine / Schrodinger
-    sentiment = "Josephine";
-    note = `Josephine: above sell line ${sellLine?.toFixed(3)} but below buy line ${buyLine?.toFixed(3)} — between the lines`;
-  } else {
+  } else if (belowSell) {
+    // Definitively below the sell line — Bearish regardless of buy line
     sentiment = "Bearish";
-    note = `Bearish: price ${currentPrice.toFixed(3)} below sell line ${sellLine?.toFixed(3)}`;
+    note = `Bearish: price ${currentPrice.toFixed(3)} below sell line ${sellLine!.toFixed(3)}`;
+  } else if (aboveSell) {
+    // Above sell line but below buy line — Josephine (between the lines)
+    sentiment = "Josephine";
+    note = `Josephine: above sell line ${sellLine!.toFixed(3)} but below buy line ${buyLine?.toFixed(3) ?? "n/a"} — between the lines`;
+  } else if (aboveBuy && sellLine === null) {
+    // Above buy line, sell line not yet established (stock just bottomed)
+    // Can't confirm Bullish without a sell line — treat as Josephine
+    sentiment = "Josephine";
+    note = `Josephine: above buy line ${buyLine!.toFixed(3)} but sell line not yet established (recent trough, no second low yet)`;
+  } else if (!aboveBuy && buyLine !== null && sellLine === null) {
+    // Below buy line, no sell line — the stock has crashed below resistance
+    sentiment = "Bearish";
+    note = `Bearish: price ${currentPrice.toFixed(3)} below buy line ${buyLine.toFixed(3)} — sell line not yet established`;
+  } else {
+    // No lines calculable — can't determine trend
+    sentiment = "Josephine";
+    note = `Insufficient data to calculate trendlines — defaulting to Josephine`;
   }
 
   return { sentiment, buyLine, sellLine, h1, h2, l1, l2, note };
