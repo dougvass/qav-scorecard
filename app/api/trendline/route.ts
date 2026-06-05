@@ -397,6 +397,13 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
       // classic falling knives that were slipping past the 70% cutoff.
       sentiment = "Bearish";
       note = `Falling knife: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago). Long-term downtrend not reversed.`;
+    } else if (pctBelowHighest >= 0.35 && mthsSinceHighest >= 18) {
+      // Sustained long-term decline: >35% below major peak for >18 months.
+      // The stock has not recovered to a new high for over 1.5 years — structural
+      // downtrend is not yet confirmed reversed even if technically above both lines.
+      // BPT-type pattern: peaked 27mo ago, 38% below — classic cautionary.
+      sentiment = "Josephine";
+      note = `Caution: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago) — sustained decline, uptrend not confirmed.`;
     } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40) {
       // Significant recent decline — caution
       sentiment = "Josephine";
