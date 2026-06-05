@@ -384,8 +384,10 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
     const pctBelowHighest  = (highestPeak.price - currentPrice) / highestPeak.price;
     const pctBelowRecent   = (recentPeak.price  - currentPrice) / recentPeak.price;
 
-    if (pctBelowHighest >= 0.70) {
-      // Deep falling knife vs the major peak — override regardless of time elapsed.
+    if (pctBelowHighest >= 0.60) {
+      // Falling knife — 60%+ below the major peak in the 5yr dataset.
+      // Threshold lowered from 70%: SPK (-69%), AIZ (-65%), PPT (-62%) are all
+      // classic falling knives that were slipping past the 70% cutoff.
       sentiment = "Bearish";
       note = `Falling knife: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago). Long-term downtrend not reversed.`;
     } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40) {
