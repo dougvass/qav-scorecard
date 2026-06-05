@@ -357,6 +357,37 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
     note = `Insufficient data to calculate trendlines — defaulting to Josephine`;
   }
 
+  // ── Falling knife override ────────────────────────────────────────────────────
+  // Bible: "NEVER TRY TO CATCH A FALLING KNIFE. A stock that has been falling for
+  // a long period of time — it occasionally breaches its buy line, only to drop
+  // back below it. Best to avoid these stocks until they demonstrate a clear trend."
+  //
+  // If a Bullish signal came from CROSSING the downtrend buy line (not from a
+  // confirmed uptrend with 3 consecutive higher lows), and the stock is still
+  // deeply below a recent peak, it's a falling knife — override to Bearish.
+  //
+  // Rules:
+  //   >70% below most recent local peak → Bearish  (NO time limit — GRR/A1N type)
+  //   >40% below recent peak (≤36mo)    → Josephine (caution, partial confirmation)
+  //
+  // Only applies when sentiment is Bullish AND no formal 3PTL uptrend (uptrendActive).
+  // If 3 consecutive higher lows are confirmed, we trust that signal.
+  if (sentiment === "Bullish" && maxima.length >= 1) {
+    const recentPeak  = maxima[maxima.length - 1];
+    const mthsSincePeak = currentIdx - recentPeak.idx;
+    const pctBelow    = (recentPeak.price - currentPrice) / recentPeak.price;
+
+    if (pctBelow >= 0.70) {
+      // Deep falling knife — override regardless of how long ago the peak was.
+      // A 90% decline over 50 months is still a falling knife.
+      sentiment = "Bearish";
+      note = `Falling knife: ${(pctBelow * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSincePeak}mo ago). Crossed buy line but long-term downtrend not reversed.`;
+    } else if (mthsSincePeak <= 36 && pctBelow >= 0.40) {
+      sentiment = "Josephine";
+      note = `Caution: ${(pctBelow * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSincePeak}mo ago) — wait for 3 confirmed higher lows before buying.`;
+    }
+  }
+
   return { sentiment, buyLine, sellLine, h1, h2, l1, l2, note };
 }
 
