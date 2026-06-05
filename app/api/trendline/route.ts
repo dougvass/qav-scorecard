@@ -44,22 +44,38 @@ const YF_HEADERS = {
 };
 
 async function fetchMonthly(code: string): Promise<PriceBar[]> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1mo&range=5y&includePrePost=false`;
+  // Use the v8 chart API but request no dividend/split adjustment by fetching
+  // both adjusted and unadjusted close; we use the quote.high/low which are
+  // unadjusted in Yahoo's API, paired with the unadjusted close for consistency.
+  // For stocks with large dividend histories (e.g. PPC, ING), adjusted prices
+  // can differ by 30-50% from the actual traded price — which would distort 3PTL.
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - 5 * 365 * 24 * 3600; // 5 years ago
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1mo&period1=${start}&period2=${end}&includePrePost=false&events=div%2Csplit`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return [];
     const json = await res.json() as Record<string, unknown>;
     const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
     if (!result) return [];
-    const ts = result.timestamp as number[];
-    const q  = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
+    const ts   = result.timestamp as number[];
+    const q    = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
+    const adjQ = ((result.indicators as Record<string, unknown>)?.adjclose as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
     if (!ts || !q) return [];
-    return ts.map((t, i) => ({
-      date:  new Date(t * 1000).toISOString().slice(0, 7),
-      high:  q.high?.[i]  ?? 0,
-      low:   q.low?.[i]   ?? 0,
-      close: q.close?.[i] ?? 0,
-    })).filter(b => b.close > 0 && b.high > 0 && b.low > 0);
+
+    // Build unadjustment factor per bar: ratio of unadjusted to adjusted close.
+    // Apply this to high/low so all prices are on the same (unadjusted) scale.
+    return ts.map((t, i) => {
+      const adjClose = adjQ?.adjclose?.[i];
+      const rawClose = q.close?.[i];
+      const factor   = (adjClose && rawClose && adjClose > 0) ? rawClose / adjClose : 1;
+      return {
+        date:  new Date(t * 1000).toISOString().slice(0, 7),
+        high:  (q.high?.[i]  ?? 0) * factor,
+        low:   (q.low?.[i]   ?? 0) * factor,
+        close: rawClose ?? 0,
+      };
+    }).filter(b => b.close > 0 && b.high > 0 && b.low > 0);
   } catch { return []; }
 }
 
