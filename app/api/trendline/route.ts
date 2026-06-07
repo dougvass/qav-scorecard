@@ -319,6 +319,21 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   let sentiment: Sentiment = "Josephine";
   let note = "";
 
+  // Lines have crossed/converged: the descending resistance (buy) line has dropped
+  // below the ascending support (sell) line at the current date. This happens when
+  // a long downtrend is flattening out while a new uptrend builds from the lows —
+  // i.e. the stock has BASED OUT and is consolidating in a tight range (classic
+  // Josephine "about to confirm" pattern). It is NOT a falling knife: a falling
+  // knife is still actively making new lows, whereas crossed lines mean price has
+  // stabilised enough that resistance and support have met. (BRK-type pattern —
+  // our calculated lines crossed near $0.18-0.25 while price sits at $0.50, tightly
+  // banded — matches TradingView's own converged $0.495/$0.500 Josephine reading.)
+  if (buyLine !== null && sellLine !== null && buyLine < sellLine) {
+    sentiment = "Josephine";
+    note = `Josephine: buy/sell lines have converged (buy ${buyLine.toFixed(3)} / sell ${sellLine.toFixed(3)}) — long downtrend has flattened into a base; consolidating before next confirmed move`;
+    return { sentiment, buyLine, sellLine, h1, h2, l1, l2, note };
+  }
+
   const aboveBuy  = buyLine  !== null && currentPrice >= buyLine  * BREAKOUT_BUF;
   const aboveSell = sellLine !== null && currentPrice >= sellLine;
   const belowSell = sellLine !== null && currentPrice < sellLine;
