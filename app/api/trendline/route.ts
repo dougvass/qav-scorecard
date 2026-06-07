@@ -318,6 +318,16 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   // ── CLASSIFY ─────────────────────────────────────────────────────────────
   let sentiment: Sentiment = "Josephine";
   let note = "";
+  // True only for "Bullish" and "between the lines" Josephine paths — these are
+  // the cases where our calculated lines might be straddling a stock that is
+  // ACTUALLY in long-term structural decline (a falling knife whose own falling
+  // lines happen to bracket the current price). The falling-knife override below
+  // re-checks these against the major peak to catch cases like AQZ (88% below its
+  // 2022 high, "between the lines" only because both our lines are also collapsing).
+  // "Josephine ↗" (above both lines, dipped from last close) and crossed-lines
+  // basing patterns are explicitly NOT re-checked — those are genuine reversal/
+  // consolidation setups, not knives.
+  let checkFallingKnife = false;
 
   // Lines have crossed/converged: the descending resistance (buy) line has dropped
   // below the ascending support (sell) line at the current date. This happens when
@@ -356,14 +366,21 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
     }
+    checkFallingKnife = true;
   } else if (belowSell) {
     // Definitively below the sell line — Bearish regardless of buy line
     sentiment = "Bearish";
     note = `Bearish: price ${currentPrice.toFixed(3)} below sell line ${sellLine!.toFixed(3)}`;
   } else if (aboveSell) {
-    // Above sell line but below buy line — Josephine (between the lines)
+    // Above sell line but below buy line — Josephine (between the lines).
+    // CAUTION: this is exactly the bucket a falling knife lands in when its own
+    // collapsing trendlines happen to bracket the current price (AQZ: -88% off
+    // its 2022 high, yet "between" our two ever-falling lines). Flag it for the
+    // falling-knife re-check below — a real "between the lines" basing stock will
+    // pass through unchanged; an active multi-year collapse will be reclassified.
     sentiment = "Josephine";
     note = `Josephine: above sell line ${sellLine!.toFixed(3)} but below buy line ${buyLine?.toFixed(3) ?? "n/a"} — between the lines`;
+    checkFallingKnife = true;
   } else if (aboveBuy && sellLine === null) {
     // Above buy line, sell line not yet established (stock just bottomed)
     // Can't confirm Bullish without a sell line — treat as Josephine
@@ -392,9 +409,14 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   //   >70% below most recent local peak → Bearish  (NO time limit — GRR/A1N type)
   //   >40% below recent peak (≤36mo)    → Josephine (caution, partial confirmation)
   //
-  // Only applies when sentiment is Bullish AND no formal 3PTL uptrend (uptrendActive).
-  // If 3 consecutive higher lows are confirmed, we trust that signal.
-  if (sentiment === "Bullish" && maxima.length >= 1) {
+  // Applies whenever the path was flagged via checkFallingKnife — i.e. "Bullish"
+  // (crossed buy line) or "between the lines" Josephine (a bucket a falling knife
+  // can land in when its own collapsing trendlines bracket the price — AQZ was
+  // showing -88% off its 2022 high yet labelled a neutral "between the lines"
+  // Josephine because BOTH our calculated lines had also collapsed with it).
+  // "Josephine ↗" and crossed/converged-lines basing patterns are NOT re-checked —
+  // those are confirmed-positive or genuine-reversal setups, not knives.
+  if (checkFallingKnife && maxima.length >= 1) {
     // Use the HIGHEST local maximum in the dataset for the 70% Bearish check.
     // A stock 90% below its 2022 major peak is a falling knife even if there was
     // a minor rally to $0.305 in Nov 2025 — check against the true peak, not just
