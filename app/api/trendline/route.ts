@@ -160,6 +160,41 @@ function lineAt(p1: Pivot, p2: Pivot, targetIdx: number): number {
   return p1.price + slope * (targetIdx - p1.idx);
 }
 
+/** Tolerance for "touching" a trendline ray — small buffer to avoid float noise. */
+const TOUCH_EPS = 1e-9;
+
+/**
+ * Has any CONFIRMED peak after H2 retested (touched or crossed up through) the
+ * H1→H2 ray extended forward? Returns the earliest such peak, or null if the
+ * ray has held untouched all the way to the most recent confirmed maximum.
+ *
+ * This is the crux of redrawing a live trendline: a resistance line is only
+ * "current" if price hasn't come back up to test it since it was drawn. The
+ * moment a later peak touches/crosses it, THAT peak is the new, more relevant
+ * anchor — Tony would redraw the line from there forward, not keep extrapolating
+ * an old line that's already been broken and retested.
+ */
+function rayRetestedAbove(maxima: Pivot[], h1: Pivot, h2: Pivot): Pivot | null {
+  const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
+  const after = maxima.filter(m => m.idx > h2.idx).sort((a, b) => a.idx - b.idx);
+  for (const m of after) {
+    const lineAtM = h1.price + slope * (m.idx - h1.idx);
+    if (m.price >= lineAtM - TOUCH_EPS) return m;
+  }
+  return null;
+}
+
+/** Mirror of rayRetestedAbove for the sell (support) line through troughs. */
+function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
+  const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
+  const after = minima.filter(m => m.idx > l2.idx).sort((a, b) => a.idx - b.idx);
+  for (const m of after) {
+    const lineAtM = l1.price + slope * (m.idx - l1.idx);
+    if (m.price <= lineAtM + TOUCH_EPS) return m;
+  }
+  return null;
+}
+
 /**
  * Find the buy line (H1→H2 through peaks).
  *
@@ -185,18 +220,37 @@ const MIN_GAP_MONTHS = 6;
 function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
   // Require H2 to be at least MIN_GAP_MONTHS after H1.
   // Three-month gaps create slopes so steep they extrapolate to near-zero years later.
-  const rightMaxima = maxima.filter(m => m.idx > h1.idx + MIN_GAP_MONTHS);
+  const rightMaxima = [...maxima.filter(m => m.idx > h1.idx + MIN_GAP_MONTHS)]
+    .sort((a, b) => a.idx - b.idx); // chronological — start with the earliest candidate
   if (rightMaxima.length === 0) return null;
 
-  // Try candidates: highest price first (steepest valid line), then by index descending (shallower)
-  const byPrice  = [...rightMaxima].sort((a, b) => b.price - a.price);
-  const byRecent = [...rightMaxima].sort((a, b) => b.idx - a.idx);
-  const candidates = [...byPrice, ...byRecent];
+  // ── Live-line search ──────────────────────────────────────────────────────
+  // Start at the earliest valid H2 candidate, then ratchet in TWO directions
+  // until the line converges on "the most recent untested resistance":
+  //
+  //   1. BACKWARD (toward H1): if any intermediate peak between H1 and H2
+  //      punches THROUGH the line, that peak is the real ceiling — H2 must
+  //      become that peak (existing violation-ratchet, kept as-is).
+  //
+  //   2. FORWARD (away from H1): if any CONFIRMED peak AFTER H2 comes back up
+  //      and touches/crosses the extrapolated ray, that peak is a more recent
+  //      retest of resistance — Tony would redraw the line from there forward,
+  //      not keep extrapolating an old line that's already been re-tested.
+  //      H2 must move FORWARD to that peak.
+  //
+  // Converging this way always lands on the MOST RECENT pair of peaks whose
+  // line (a) isn't violated between them and (b) hasn't been touched since —
+  // i.e. the live resistance the current price is now testing/breaking out of.
+  // (Root cause of the BOL/BFL/BRK/AMI/CGF/JYC bug: our old code anchored H1/H2
+  // to the highest historical peaks from a PRIOR downtrend, producing a line
+  // far above where Tony's live, recently-redrawn resistance actually sits.)
+  let h2 = rightMaxima[0];
 
-  for (const h2Candidate of candidates) {
-    // Apply violation-check refinement: ratchet H2 left if any intermediate max is above the line
-    let h2 = h2Candidate;
-    for (let iter = 0; iter < 20; iter++) {
+  for (let iter = 0; iter < 40; iter++) {
+    let moved = false;
+
+    // (1) backward ratchet — fix any punch-through between H1 and H2
+    for (let inner = 0; inner < 20; inner++) {
       if (noHighViolation(bars, h1, h2)) break;
       const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
       let worstViol: Pivot | null = null;
@@ -207,15 +261,26 @@ function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: n
       }
       if (!worstViol) break;
       h2 = worstViol;
+      moved = true;
     }
-    if (!noHighViolation(bars, h1, h2)) continue;
+    if (!noHighViolation(bars, h1, h2)) return null; // no clean line possible from this H1
 
-    // Validate: the extrapolated line must be positive at the current date
-    const lineValue = lineAt(h1, h2, currentIdx);
-    if (lineValue > 0) return h2;
-    // Line goes negative → this H2 creates too steep a slope → try next candidate
+    // (2) forward ratchet — has a later confirmed peak retested the ray since H2?
+    const retest = rayRetestedAbove(maxima, h1, h2);
+    if (retest && retest.idx !== h2.idx) {
+      h2 = retest;
+      moved = true;
+    }
+
+    if (!moved) break; // converged: clean from H1, untested since H2 — this is live
   }
-  return null;
+
+  if (!noHighViolation(bars, h1, h2)) return null;
+  if (rayRetestedAbove(maxima, h1, h2)) return null; // still oscillating — no stable live line
+
+  // Validate: the extrapolated line must be positive at the current date
+  const lineValue = lineAt(h1, h2, currentIdx);
+  return lineValue > 0 ? h2 : null;
 }
 
 function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
@@ -245,16 +310,22 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
  * Find the sell line (L1→L2 through troughs). Mirror of findBuyLine.
  */
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const rightMinima = minima.filter(m => m.idx > l1.idx + MIN_GAP_MONTHS);
+  const rightMinima = [...minima.filter(m => m.idx > l1.idx + MIN_GAP_MONTHS)]
+    .sort((a, b) => a.idx - b.idx); // chronological — start with the earliest candidate
   if (rightMinima.length === 0) return null;
 
-  const byPrice  = [...rightMinima].sort((a, b) => a.price - b.price); // lowest first
-  const byRecent = [...rightMinima].sort((a, b) => b.idx - a.idx);     // most recent first
-  const candidates = [...byPrice, ...byRecent];
+  // Mirror of findH2ForH1's live-line search: ratchet L2 BACKWARD to fix any
+  // intermediate trough that punches through the L1→L2 support line, and
+  // FORWARD whenever a later confirmed trough comes back down and retests
+  // (touches/crosses below) the extrapolated ray. Converges on the most
+  // recent untested support — the live line price is now sitting on/above.
+  let l2 = rightMinima[0];
 
-  for (const l2Candidate of candidates) {
-    let l2 = l2Candidate;
-    for (let iter = 0; iter < 20; iter++) {
+  for (let iter = 0; iter < 40; iter++) {
+    let moved = false;
+
+    // (1) backward ratchet — fix any punch-through between L1 and L2
+    for (let inner = 0; inner < 20; inner++) {
       if (noLowViolation(bars, l1, l2)) break;
       const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
       let worstViol: Pivot | null = null;
@@ -265,12 +336,25 @@ function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: n
       }
       if (!worstViol) break;
       l2 = worstViol;
+      moved = true;
     }
-    if (!noLowViolation(bars, l1, l2)) continue;
-    const lineValue = lineAt(l1, l2, currentIdx);
-    if (lineValue > 0) return l2;
+    if (!noLowViolation(bars, l1, l2)) return null;
+
+    // (2) forward ratchet — has a later confirmed trough retested the ray since L2?
+    const retest = rayRetestedBelow(minima, l1, l2);
+    if (retest && retest.idx !== l2.idx) {
+      l2 = retest;
+      moved = true;
+    }
+
+    if (!moved) break; // converged: clean from L1, untested since L2 — this is live
   }
-  return null;
+
+  if (!noLowViolation(bars, l1, l2)) return null;
+  if (rayRetestedBelow(minima, l1, l2)) return null; // still oscillating — no stable live line
+
+  const lineValue = lineAt(l1, l2, currentIdx);
+  return lineValue > 0 ? l2 : null;
 }
 
 function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
