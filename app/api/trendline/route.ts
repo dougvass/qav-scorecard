@@ -107,6 +107,52 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
   } catch { return []; }
 }
 
+/**
+ * Derives the TRUE close of the last FULLY-COMPLETED calendar month from daily
+ * data — needed for the Bible's "Josephine" rule ("today's price is lower than
+ * the price at the end of the previous month").
+ *
+ * CONFIRMED BUG (found via KAR on 2026-06-08): `fetchMonthly`'s second-to-last
+ * bar — which `classify3PTL` used to treat as "last month's close" — is NOT
+ * reliable near a month boundary. Yahoo's `interval=1mo` endpoint backfills the
+ * live/current price into BOTH of the trailing two monthly bars once the new
+ * month has only a few trading days of data (confirmed across all 8 reference
+ * stocks: every one of them had `bars[n-2].close === regularMarketPrice`,
+ * exactly equal to the current live quote — not the prior month's actual close).
+ * For KAR specifically this masked a real signal: true May-2026 close = $1.955,
+ * live price = $1.945 (price IS below last month's close → Josephine per the
+ * Bible), but the corrupted monthly bar reported May's close as $1.945 too,
+ * making the two look identical (no decline detected → wrongly "Bullish").
+ *
+ * Fix: fetch ~2 months of DAILY bars and take the close of the last trading
+ * day whose calendar month is strictly before the current one — i.e. the
+ * genuine last trading day of the previous month.
+ */
+async function fetchLastCompletedMonthClose(code: string): Promise<number | null> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1d&range=2mo&includePrePost=false`;
+  try {
+    const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return null;
+    const json = await res.json() as Record<string, unknown>;
+    const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
+    if (!result) return null;
+    const ts = result.timestamp as number[];
+    const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
+    if (!ts || !closes) return null;
+    const now = new Date();
+    const curYear = now.getUTCFullYear(), curMonth = now.getUTCMonth();
+    let lastClose: number | null = null;
+    for (let i = 0; i < ts.length; i++) {
+      if (closes[i] == null || isNaN(closes[i]) || closes[i] <= 0) continue;
+      const d = new Date(ts[i] * 1000);
+      const y = d.getUTCFullYear(), m = d.getUTCMonth();
+      // keep the LATEST bar that falls strictly before the current calendar month
+      if (y < curYear || (y === curYear && m < curMonth)) lastClose = closes[i];
+    }
+    return lastClose;
+  } catch { return null; }
+}
+
 async function fetchCurrentPrice(code: string): Promise<number | null> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1d&range=5d&includePrePost=false`;
   try {
@@ -475,7 +521,7 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
 /**
  * Main 3PTL classification.
  */
-function classify3PTL(bars: PriceBar[], currentPrice: number): {
+function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOverride?: number | null): {
   sentiment: Sentiment;
   buyLine: number | null;
   sellLine: number | null;
@@ -529,19 +575,25 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
   const belowSell = sellLine !== null && currentPrice < sellLine;
 
   if (aboveBuy && aboveSell) {
-    // Above both lines — check for Josephine using Tony's Bible rule:
-    // "today's price is lower than the price at the end of the previous month."
-    // bars[n-1] is the CURRENT in-progress month bar (partial close, unreliable).
-    // bars[n-2] is the LAST COMPLETED month's close — the "end of previous month" reference.
-    // We compare the live currentPrice against bars[n-2] to detect a declining stock.
-    // This correctly catches stocks that spiked last month and are now pulling back
-    // (e.g. CTP spiked in May, now below May close in June → Josephine).
-    // It avoids the BFL false-positive because BFL's live price was not >3% below April's close.
-    const lastMonthClose = n >= 2 ? bars[n - 2].close : 0;
+    // Above both lines — check for Josephine using Tony's Bible rule, LITERALLY:
+    // "If a stock has positive sentiment ... BUT it's in a downward trend (ie
+    // today's price lower than the price at the end of the previous month),
+    // then it's a 'Josephine'." No magnitude threshold — ANY decline counts.
+    //
+    // `lastMonthCloseOverride` is derived from DAILY data by
+    // `fetchLastCompletedMonthClose` — NOT `bars[n-2].close`. CONFIRMED BUG
+    // (KAR, 2026-06-08): `fetchMonthly`'s trailing bars are corrupted near a
+    // month boundary — Yahoo backfills the live price into the "last month"
+    // slot too, so `bars[n-2].close` reads $1.945 (= live price) instead of
+    // May's true close of $1.955. That 0.5% difference IS the Josephine signal
+    // ("today's $1.945 < last month's $1.955") — the corrupted data hid it
+    // entirely. See `fetchLastCompletedMonthClose` for the full writeup.
+    // We fall back to `bars[n-2].close` only if the daily-data fetch failed.
+    const lastMonthClose = lastMonthCloseOverride ?? (n >= 2 ? bars[n - 2].close : 0);
     const priceVsLastMonth = lastMonthClose > 0 ? (currentPrice - lastMonthClose) / lastMonthClose : 0;
-    if (priceVsLastMonth < -0.03) {
+    if (lastMonthClose > 0 && currentPrice < lastMonthClose) {
       sentiment = "Josephine";
-      note = `Josephine ↗: above both lines but price ${currentPrice.toFixed(3)} is ${(priceVsLastMonth * 100).toFixed(1)}% below last month's close ${lastMonthClose.toFixed(3)} — wait for uptick`;
+      note = `Josephine ↗: above both lines but price ${currentPrice.toFixed(3)} is ${(priceVsLastMonth * 100).toFixed(1)}% below last month's close ${lastMonthClose.toFixed(3)} — "not tonight, Josephine"`;
     } else {
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
@@ -653,10 +705,12 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
 // ── Full pipeline ──────────────────────────────────────────────────────────────
 
 async function processCode(code: string) {
-  const [bars, currentPrice] = await Promise.all([fetchMonthly(code), fetchCurrentPrice(code)]);
+  const [bars, currentPrice, lastMonthClose] = await Promise.all([
+    fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
+  ]);
   if (bars.length < 12) return { sentiment: "Josephine" as Sentiment, error: "insufficient data", months: bars.length };
   const price = currentPrice ?? bars[bars.length - 1].close;
-  const result = classify3PTL(bars, price);
+  const result = classify3PTL(bars, price, lastMonthClose);
   return { ...result, months: bars.length };
 }
 
@@ -677,12 +731,14 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = (searchParams.get("code") ?? "FEX").toUpperCase();
-  const [bars, currentPrice] = await Promise.all([fetchMonthly(code), fetchCurrentPrice(code)]);
-  const base = { code, runtime: "edge", monthly_bars: bars.length, current_price: currentPrice };
+  const [bars, currentPrice, lastMonthClose] = await Promise.all([
+    fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
+  ]);
+  const base = { code, runtime: "edge", monthly_bars: bars.length, current_price: currentPrice, last_month_close: lastMonthClose };
   if (bars.length < 12) return Response.json({ ...base, error: "insufficient data" });
 
   const price = currentPrice ?? bars[bars.length - 1].close;
-  const result = classify3PTL(bars, price);
+  const result = classify3PTL(bars, price, lastMonthClose);
 
   return Response.json({
     ...base,
