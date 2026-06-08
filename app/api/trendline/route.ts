@@ -295,13 +295,39 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
 
   const globalMax = Math.max(...maxima.map(m => m.price));
   const thresh = globalMax * (1 - FUDGE);
-
-  // H1 = rightmost within 8% of global max (flat-top fudge rule)
   const baseH1 = [...maxima].filter(m => m.price >= thresh).sort((a, b) => b.idx - a.idx)[0];
 
-  // All H1 candidates: rightmost-within-8% first, then all maxima by price desc
-  const allH1Candidates = [baseH1, ...[...maxima].sort((a, b) => b.price - a.price)];
+  // ── Primary search: most-recent-pair-first ───────────────────────────────
+  // Anchor on H2 (working backward from "now"), not on the highest historical
+  // peak. An old all-time-high H1 from a PRIOR trend is irrelevant once price
+  // has moved on — Tony redraws his live resistance line from the two most
+  // recent compatible peaks. For each H2 candidate (most recent first), try
+  // H1 candidates nearest-in-time-to-H2 first (the tightest pair a chartist
+  // would actually draw), and accept the first clean, currently-untested ray
+  // with a positive extrapolated value. This is what "the most recent
+  // breakthrough that confirms a buying signal" means in practice.
+  //
+  // (Root cause of the BOL/BFL/BRK/AMI/CGF/JYC bug: anchoring H1 on the
+  // highest/oldest peak produced lines far above Tony's freshly-redrawn ones —
+  // e.g. BOL ours $1.94 vs Tony's $1.71, BFL ours $10.12 vs Tony's $7.30.)
+  const h2Candidates = [...maxima].sort((a, b) => b.idx - a.idx);
+  for (const h2 of h2Candidates) {
+    const h1Candidates = maxima
+      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS)
+      .sort((a, b) => b.idx - a.idx); // nearest-in-time-to-H2 first
 
+    for (const h1 of h1Candidates) {
+      if (!noHighViolation(bars, h1, h2)) continue;
+      if (rayRetestedAbove(maxima, h1, h2)) continue; // touched again since — not live
+      const lineValue = lineAt(h1, h2, currentIdx);
+      if (lineValue > 0) return { h1, h2, line: lineValue };
+    }
+  }
+
+  // ── Fallback: legacy anchor-on-H1 search ─────────────────────────────────
+  // Covers edge cases (very short histories, no clean "most-recent-pair" line)
+  // where the primary search above can't converge on anything.
+  const allH1Candidates = [baseH1, ...[...maxima].sort((a, b) => b.price - a.price)];
   for (const h1 of allH1Candidates) {
     const h2 = findH2ForH1(maxima, h1, bars, currentIdx);
     if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
@@ -372,10 +398,28 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
 
   const globalMin = Math.min(...minima.map(m => m.price));
   const thresh = globalMin * (1 + FUDGE);
-
   const baseL1 = [...minima].filter(m => m.price <= thresh).sort((a, b) => b.idx - a.idx)[0];
-  const allL1Candidates = [baseL1, ...[...minima].sort((a, b) => a.price - b.price)];
 
+  // ── Primary search: most-recent-pair-first (mirror of findBuyLine) ───────
+  // Anchor on L2 (most recent trough first); for each, try L1 candidates
+  // nearest-in-time first, accepting the first clean, currently-untested
+  // support ray with a positive extrapolated value — Tony's live support line.
+  const l2Candidates = [...minima].sort((a, b) => b.idx - a.idx);
+  for (const l2 of l2Candidates) {
+    const l1Candidates = minima
+      .filter(m => m.idx <= l2.idx - MIN_GAP_MONTHS)
+      .sort((a, b) => b.idx - a.idx); // nearest-in-time-to-L2 first
+
+    for (const l1 of l1Candidates) {
+      if (!noLowViolation(bars, l1, l2)) continue;
+      if (rayRetestedBelow(minima, l1, l2)) continue; // touched again since — not live
+      const lineValue = lineAt(l1, l2, currentIdx);
+      if (lineValue > 0) return { l1, l2, line: lineValue };
+    }
+  }
+
+  // ── Fallback: legacy anchor-on-L1 search ─────────────────────────────────
+  const allL1Candidates = [baseL1, ...[...minima].sort((a, b) => a.price - b.price)];
   for (const l1 of allL1Candidates) {
     const l2 = findL2ForL1(minima, l1, bars, currentIdx);
     if (l2) return { l1, l2, line: lineAt(l1, l2, currentIdx) };
