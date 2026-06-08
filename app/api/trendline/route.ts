@@ -50,7 +50,20 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
   // For stocks with large dividend histories (e.g. PPC, ING), adjusted prices
   // can differ by 30-50% from the actual traded price — which would distort 3PTL.
   const end = Math.floor(Date.now() / 1000);
-  const start = end - 5 * 365 * 24 * 3600; // 5 years ago
+  // Fetch 6 years (not 5): localMaxima/localMinima use a ±2-bar lookback window,
+  // so genuine pivots in the FIRST/LAST `lookback` bars of the fetched series can
+  // never be detected (there's no room to confirm them as the local extreme).
+  // CONFIRMED bug, found via BRK: Tony's chart anchor H1 = $1.75 @ "01 Jul 2021"
+  // (≈ Yahoo's 2021-06 bar, close=high=$1.75) sits at idx 0-1 in a 5-year window
+  // — and the true all-time high ($2.05, 2021-07) at idx 1 — both UNDETECTABLE
+  // as local maxima, forcing the algorithm onto a much-lower H1 ($1.35, 2022-02)
+  // that produces a buy line far below Tony's, wrongly converging with the sell
+  // line into "Josephine" instead of the correct "Bullish". One extra year of
+  // buffer pushes these bars to idx ~12-13 — comfortably confirmable — without
+  // materially changing which RECENT pivots end up driving the live H1/H2/L1/L2
+  // selection (CONFIRM_MONTHS=9 + most-recent-first search already favour recent
+  // anchors; the extra year only rescues genuinely-significant edge-of-window highs).
+  const start = end - 6 * 365 * 24 * 3600; // 6 years ago
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1mo&period1=${start}&period2=${end}&includePrePost=false&events=div%2Csplit`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(10_000) });
