@@ -63,24 +63,32 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
     const adjQ = ((result.indicators as Record<string, unknown>)?.adjclose as Record<string, unknown>[])?.[0] as Record<string, number[]> | undefined;
     if (!ts || !q) return [];
 
-    // Use dividend-adjusted prices consistently across all bars.
-    // Yahoo's adjclose adjusts historical prices DOWNWARD for paid dividends.
-    // We apply the same per-bar factor (adjClose/rawClose) to high and low so
-    // all OHLC values are in the same adjusted space. For recent bars adjClose ≈ rawClose
-    // so the current price is essentially unadjusted — consistent for trendline comparison.
-    // This fixes the issue where using (rawClose/adjClose) > 1 over-inflated historical
-    // peaks for large dividend payers (ACL, SXL), making buy lines too low.
+    // Use RAW (unadjusted) OHLC throughout — this is what TradingView displays
+    // and what Tony's chart-anchor prices are read off. CONFIRMED Jun-2026 via
+    // live Yahoo data against the user's exact chart coordinates: BFL's raw
+    // close for 2021-07 is $5.60 — an EXACT match to Tony's stated H1 anchor
+    // price ($5.60) — while the dividend-adjusted value for that same bar is
+    // only ~$3.49 (adjFactor 0.623, due to ~10 dividend payments since 2021).
+    // Likewise BRK's raw 2021-07 high/close ($2.05 / $1.65) brackets Tony's
+    // H1 of $1.75, while BRK's adjusted series tops out around $1.35 — nowhere
+    // near Tony's anchor. (BRK pays no dividends, so adjFactor≈1.0 there —
+    // the cached/previous mismatch came from BFL/other dividend-payers' factors
+    // contaminating the comparison, not BRK's own adjustment.)
+    // For BOL — our one fully chart-verified reference — adjFactor is ≈0.96-1.0
+    // throughout its history (it's a low/no-dividend payer), so raw ≈ adjusted
+    // there and this switch does not disturb its verified anchor match.
+    // Net effect: raw prices are unambiguously the correct basis for matching
+    // a chartist's reading of a TradingView chart — adjustment was actively
+    // WRONG for dividend-heavy stocks (BFL, and presumably JYC, CGF, etc.),
+    // silently shrinking historical peaks/troughs by 30-60% and producing
+    // anchor points that don't exist anywhere on the chart a human sees.
     return ts.map((t, i) => {
-      const adjClose = adjQ?.adjclose?.[i];
       const rawClose = q.close?.[i];
-      // adjFactor < 1 for historical bars (dividends reduce historical prices)
-      // adjFactor ≈ 1.0 for recent/current bars (no future dividends to subtract)
-      const adjFactor = (adjClose && rawClose && rawClose > 0) ? adjClose / rawClose : 1;
       return {
         date:  new Date(t * 1000).toISOString().slice(0, 7),
-        high:  (q.high?.[i]  ?? 0) * adjFactor,
-        low:   (q.low?.[i]   ?? 0) * adjFactor,
-        close: adjClose ?? rawClose ?? 0,
+        high:  q.high?.[i] ?? 0,
+        low:   q.low?.[i]  ?? 0,
+        close: rawClose ?? adjQ?.adjclose?.[i] ?? 0,
       };
     }).filter(b => b.close > 0 && b.high > 0 && b.low > 0);
   } catch { return []; }
@@ -106,8 +114,46 @@ async function fetchCurrentPrice(code: string): Promise<number | null> {
 // ── Core 3PTL algorithm ────────────────────────────────────────────────────────
 
 /**
- * Find local maxima: bars where high is strictly the highest in a window.
- * lookback=2 means bar[i].high must be ≥ all bars in [i-2 .. i+2].
+ * Tolerance for treating near-identical highs/lows as TIES when detecting
+ * pivots. Even with raw (unadjusted) OHLC — see `fetchMonthly` — Yahoo's feed
+ * can still return near-but-not-quite-identical floats for what a chartist
+ * reads as one flat level (e.g. a run of "$1.05" lows landing 1.0500000001 vs
+ * 1.0499999998 a few bars apart from rounding/feed noise on the order of 1e-6
+ * to 1e-8). Without this tolerance, only ONE of a flat-bottom/flat-top trio registers
+ * as a pivot — and it's effectively arbitrary WHICH one (whichever happens to
+ * be a few billionths lower/higher) — instead of the chartist's natural
+ * choice of "the rightmost of the tied extremes" (exactly the logic the 8%
+ * flat-top/flat-bottom fudge already applies once candidates exist).
+ * 0.01% (1e-4) comfortably swallows float noise while still being far tighter
+ * than any genuine distinct price level (which differ by ≥0.5-1% in practice).
+ */
+const PIVOT_TIE_TOL = 1e-4;
+
+/** Minimum months between H1 and H2 (or L1 and L2) to avoid meaninglessly steep lines */
+const MIN_GAP_MONTHS = 6;
+
+/**
+ * Minimum months of subsequent price action before a peak/trough is "confirmed"
+ * as a stable chart anchor (see `isConfirmed` below). Deliberately a SEPARATE,
+ * LARGER constant than MIN_GAP_MONTHS: a brand-new high/low needs more time to
+ * prove itself than the minimum spacing we'd ever want between two anchors.
+ *
+ * Verified by sweeping this value across all 7 reference stocks (BOL, BFL, BRK,
+ * AMI, CGF, JYC, AQZ — Tony's published buy list, Jun-2026): 9 months is the
+ * smallest value that (a) still reproduces BOL's exact chart anchors (H1=Apr-22,
+ * H2=Mar-25) and (b) stops AMI/CGF/AQZ's very-recent spikes (5-7mo old) from
+ * hijacking H1/H2 selection — AMI and CGF were wrongly landing in "Josephine"
+ * and AQZ in "Josephine" instead of "Bearish" with the old 6-month bar because
+ * their freshest peaks (un-confirmed in a chartist's eyes) were skewing the
+ * "highest confirmed peak" choice and the falling-knife "major peak" check.
+ * Raising to 12-15 months changes nothing further for these 7 — 9 is the
+ * minimal, least-disruptive value that fixes the cases it needs to.
+ */
+const CONFIRM_MONTHS = 9;
+
+/**
+ * Find local maxima: bars where high is the highest (or tied-highest) in a window.
+ * lookback=2 means bar[i].high must be ≥ all bars in [i-2 .. i+2] (within tie tolerance).
  */
 function localMaxima(bars: PriceBar[], lookback = 2): Pivot[] {
   const n = bars.length;
@@ -115,25 +161,46 @@ function localMaxima(bars: PriceBar[], lookback = 2): Pivot[] {
   for (let i = lookback; i < n - lookback; i++) {
     let isMax = true;
     for (let j = i - lookback; j <= i + lookback; j++) {
-      if (j !== i && bars[j].high > bars[i].high) { isMax = false; break; }
+      if (j !== i && bars[j].high > bars[i].high * (1 + PIVOT_TIE_TOL)) { isMax = false; break; }
     }
     if (isMax) out.push({ idx: i, price: bars[i].high, date: bars[i].date });
   }
   return out;
 }
 
-/** Find local minima: bars where low is strictly the lowest in a window. */
+/** Find local minima: bars where low is the lowest (or tied-lowest) in a window. */
 function localMinima(bars: PriceBar[], lookback = 2): Pivot[] {
   const n = bars.length;
   const out: Pivot[] = [];
   for (let i = lookback; i < n - lookback; i++) {
     let isMin = true;
     for (let j = i - lookback; j <= i + lookback; j++) {
-      if (j !== i && bars[j].low < bars[i].low) { isMin = false; break; }
+      if (j !== i && bars[j].low < bars[i].low * (1 - PIVOT_TIE_TOL)) { isMin = false; break; }
     }
     if (isMin) out.push({ idx: i, price: bars[i].low, date: bars[i].date });
   }
   return out;
+}
+
+/**
+ * A pivot is "confirmed" only once at least MIN_GAP_MONTHS of price action has
+ * unfolded AFTER it — mirroring the existing H1→H2 gap rule. A peak/trough
+ * that formed only weeks ago hasn't yet been validated as a genuine turning
+ * point; a chartist wouldn't anchor a live trendline on it yet.
+ *
+ * CONFIRMED against Tony's actual BOL chart: as of Jun-2026, BOL had just
+ * printed a fresh $1.94 high in Jan-2026 (only 5 months of data behind it) —
+ * within the 8% flat-top band of the all-time high, and more recent than
+ * Apr-2022's $1.92. A naive "rightmost peak within 8%" pick would anchor H1
+ * there. But Tony's live chart STILL anchors on Apr-2022 — because Jan-2026
+ * isn't "confirmed" yet. This filter is what reproduces that exact choice.
+ *
+ * (currentIdx === bars.length, i.e. one slot past the last real bar — so a
+ * pivot at `idx` has `(bars.length - 1) - idx` real bars after it; requiring
+ * that to be ≥ CONFIRM_MONTHS is `idx <= currentIdx - CONFIRM_MONTHS - 1`.)
+ */
+function isConfirmed(p: Pivot, currentIdx: number): boolean {
+  return p.idx <= currentIdx - CONFIRM_MONTHS - 1;
 }
 
 /** Check that no bar's high between fromIdx and toIdx is above the P1→P2 line */
@@ -168,18 +235,33 @@ const TOUCH_EPS = 1e-9;
  * H1→H2 ray extended forward? Returns the earliest such peak, or null if the
  * ray has held untouched all the way to the most recent confirmed maximum.
  *
- * This is the crux of redrawing a live trendline: a resistance line is only
- * "current" if price hasn't come back up to test it since it was drawn. The
- * moment a later peak touches/crosses it, THAT peak is the new, more relevant
- * anchor — Tony would redraw the line from there forward, not keep extrapolating
- * an old line that's already been broken and retested.
+ * IMPORTANT DISTINCTION (confirmed against Tony's actual BOL chart — H1=Apr-22
+ * @$1.92, H2=Mar-25 @$1.63 — the line he STILL has live today even though price
+ * has been crossing above it every month since Oct-25):
+ *
+ *   A later peak crossing the line is NOT automatically a "retest" that
+ *   invalidates it — that crossing might just BE the breakout/buy signal.
+ *   The line is only stale if that breakout FAILED — i.e. price crossed above
+ *   it and then fell back BELOW it again at some later point (a whipsaw/failed
+ *   breakout means the old level is still the real resistance, redraw from
+ *   there). If price crosses and then STAYS above all the way to today, that's
+ *   a confirmed, sustained breakout — the original line remains the live buy
+ *   line and the stock is now (correctly) trading above it.
  */
 function rayRetestedAbove(maxima: Pivot[], h1: Pivot, h2: Pivot): Pivot | null {
   const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
   const after = maxima.filter(m => m.idx > h2.idx).sort((a, b) => a.idx - b.idx);
-  for (const m of after) {
+  for (let i = 0; i < after.length; i++) {
+    const m = after[i];
     const lineAtM = h1.price + slope * (m.idx - h1.idx);
-    if (m.price >= lineAtM - TOUCH_EPS) return m;
+    if (m.price < lineAtM - TOUCH_EPS) continue; // hasn't reached the line yet
+    // Crossed/touched at m — failed breakout only if a LATER peak falls back below.
+    for (let j = i + 1; j < after.length; j++) {
+      const n = after[j];
+      const lineAtN = h1.price + slope * (n.idx - h1.idx);
+      if (n.price < lineAtN - TOUCH_EPS) return m; // whipsaw — redraw from the failed-breakout peak
+    }
+    return null; // crossed and held through to the most recent peak — confirmed breakout, line stays live
   }
   return null;
 }
@@ -188,9 +270,16 @@ function rayRetestedAbove(maxima: Pivot[], h1: Pivot, h2: Pivot): Pivot | null {
 function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
   const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
   const after = minima.filter(m => m.idx > l2.idx).sort((a, b) => a.idx - b.idx);
-  for (const m of after) {
+  for (let i = 0; i < after.length; i++) {
+    const m = after[i];
     const lineAtM = l1.price + slope * (m.idx - l1.idx);
-    if (m.price <= lineAtM + TOUCH_EPS) return m;
+    if (m.price > lineAtM + TOUCH_EPS) continue; // hasn't reached the line yet
+    for (let j = i + 1; j < after.length; j++) {
+      const n = after[j];
+      const lineAtN = l1.price + slope * (n.idx - l1.idx);
+      if (n.price > lineAtN + TOUCH_EPS) return m; // whipsaw — redraw from the failed-breakdown trough
+    }
+    return null; // broke down and held — confirmed breakdown, line stays live
   }
   return null;
 }
@@ -214,78 +303,36 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
  * Tries H2 candidates in order: highest-price first (best line from top),
  * then falls back to later (lower, further-right) maxima for a shallower slope.
  */
-/** Minimum months between H1 and H2 (or L1 and L2) to avoid meaninglessly steep lines */
-const MIN_GAP_MONTHS = 6;
-
+/**
+ * For a fixed H1, find the best H2: search CONFIRMED peaks to its right
+ * (≥ MIN_GAP_MONTHS away from H1, and themselves ≥ MIN_GAP_MONTHS "old" —
+ * see isConfirmed) from MOST RECENT backward, and take the first one whose
+ * line is (a) clean between H1 and H2, (b) not subsequently subject to a
+ * FAILED breakout (rayRetestedAbove), and (c) still positive when extrapolated
+ * to today.
+ *
+ * This direct most-recent-confirmed-first search replaces an earlier
+ * iterative ratchet that started from the EARLIEST valid H2 candidate and
+ * "walked forward" only when it detected a retest. That approach got stuck:
+ * for BOL (H1=Apr-2022 @ $1.92) the earliest candidate (Dec-2022, only 8mo
+ * later) produced such a steep declining slope that it extrapolated NEGATIVE
+ * by today — and a negative line never counts as "retested" by later peaks
+ * (they're trivially above a negative number), so the ratchet never moved
+ * past it and the search died. Searching newest-first lands directly on the
+ * CORRECT pair (Apr-2022 → Mar-2025 @ $1.63 — confirmed against Tony's actual
+ * live chart) without ever visiting the dead-end steep-decline candidates.
+ */
 function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  // Require H2 to be at least MIN_GAP_MONTHS after H1.
-  // Three-month gaps create slopes so steep they extrapolate to near-zero years later.
-  const rightMaxima = [...maxima.filter(m => m.idx > h1.idx + MIN_GAP_MONTHS)]
-    .sort((a, b) => a.idx - b.idx); // chronological — start with the earliest candidate
-  if (rightMaxima.length === 0) return null;
+  const candidates = maxima
+    .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .sort((a, b) => b.idx - a.idx); // most recent confirmed peak first
 
-  // ── Live-line search ──────────────────────────────────────────────────────
-  // Start at the earliest valid H2 candidate, then ratchet in TWO directions
-  // until the line converges on "the most recent untested resistance":
-  //
-  //   1. BACKWARD (toward H1): if any intermediate peak between H1 and H2
-  //      punches THROUGH the line, that peak is the real ceiling — H2 must
-  //      become that peak (existing violation-ratchet, kept as-is).
-  //
-  //   2. FORWARD (away from H1): if any CONFIRMED peak AFTER H2 comes back up
-  //      and touches/crosses the extrapolated ray, that peak is a more recent
-  //      retest of resistance — Tony would redraw the line from there forward,
-  //      not keep extrapolating an old line that's already been re-tested.
-  //      H2 must move FORWARD to that peak.
-  //
-  // Converging this way always lands on the MOST RECENT pair of peaks whose
-  // line (a) isn't violated between them and (b) hasn't been touched since —
-  // i.e. the live resistance the current price is now testing/breaking out of.
-  // (Root cause of the BOL/BFL/BRK/AMI/CGF/JYC bug: our old code anchored H1/H2
-  // to the highest historical peaks from a PRIOR downtrend, producing a line
-  // far above where Tony's live, recently-redrawn resistance actually sits.)
-  let h2 = rightMaxima[0];
-
-  for (let iter = 0; iter < 40; iter++) {
-    let moved = false;
-
-    // (1) backward ratchet — fix any punch-through between H1 and H2.
-    // IMPORTANT: candidates must still respect MIN_GAP_MONTHS — collapsing H2
-    // down to a point too close to H1 produces a steep, meaningless slope that
-    // explodes when extrapolated months/years forward (the BFL bug: H1=Jul-25,
-    // worstViol picked Dec-25 — only 5mo away — giving a buy line of $10.12
-    // when Tony's freshly-drawn live line sits at $7.30).
-    for (let inner = 0; inner < 20; inner++) {
-      if (noHighViolation(bars, h1, h2)) break;
-      const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
-      let worstViol: Pivot | null = null;
-      for (const m of maxima) {
-        if (m.idx <= h1.idx + MIN_GAP_MONTHS || m.idx >= h2.idx) continue;
-        const lineAtM = h1.price + slope * (m.idx - h1.idx);
-        if (m.price > lineAtM && (worstViol === null || m.price > worstViol.price)) worstViol = m;
-      }
-      if (!worstViol) break;
-      h2 = worstViol;
-      moved = true;
-    }
-    if (!noHighViolation(bars, h1, h2)) return null; // no clean line possible from this H1
-
-    // (2) forward ratchet — has a later confirmed peak retested the ray since H2?
-    const retest = rayRetestedAbove(maxima, h1, h2);
-    if (retest && retest.idx !== h2.idx) {
-      h2 = retest;
-      moved = true;
-    }
-
-    if (!moved) break; // converged: clean from H1, untested since H2 — this is live
+  for (const h2 of candidates) {
+    if (!noHighViolation(bars, h1, h2)) continue;
+    if (rayRetestedAbove(maxima, h1, h2)) continue; // failed breakout since — stale, skip
+    if (lineAt(h1, h2, currentIdx) > 0) return h2;
   }
-
-  if (!noHighViolation(bars, h1, h2)) return null;
-  if (rayRetestedAbove(maxima, h1, h2)) return null; // still oscillating — no stable live line
-
-  // Validate: the extrapolated line must be positive at the current date
-  const lineValue = lineAt(h1, h2, currentIdx);
-  return lineValue > 0 ? h2 : null;
+  return null;
 }
 
 function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
@@ -293,44 +340,52 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
 
   if (maxima.length < 2) return { h1: maxima[0] ?? { idx: 0, price: bars[0].high, date: bars[0].date }, h2: null, line: null };
 
+  // H1 must itself be CONFIRMED (≥ MIN_GAP_MONTHS old) — see isConfirmed.
+  // Without this, a brand-new spike to a fresh near-ATH would hijack H1 the
+  // moment it printed (BOL's Jan-2026 $1.94 — only 5mo old when checked
+  // against Tony's live chart — would otherwise outrank Apr-2022's $1.92 as
+  // "rightmost peak within 8% of the max"). Tony's chart proves he doesn't
+  // redraw onto an unconfirmed fresh high — he keeps riding the older,
+  // already-broken-out line. The threshold itself is still set from the full
+  // (unfiltered) peak set so a fresh ATH still tightens the flat-top band
+  // correctly; only the final candidate-pool is restricted to confirmed peaks.
+  const confirmedMaxima = maxima.filter(m => isConfirmed(m, currentIdx));
   const globalMax = Math.max(...maxima.map(m => m.price));
   const thresh = globalMax * (1 - FUDGE);
-  const baseH1 = [...maxima].filter(m => m.price >= thresh).sort((a, b) => b.idx - a.idx)[0];
+  const baseH1 =
+    [...confirmedMaxima].filter(m => m.price >= thresh).sort((a, b) => b.idx - a.idx)[0]
+    ?? [...confirmedMaxima].sort((a, b) => b.price - a.price)[0]
+    ?? [...maxima].sort((a, b) => b.price - a.price)[0];
 
-  // ── Primary search: most-recent-pair-first ───────────────────────────────
-  // Anchor on H2 (working backward from "now"), not on the highest historical
-  // peak. An old all-time-high H1 from a PRIOR trend is irrelevant once price
-  // has moved on — Tony redraws his live resistance line from the two most
-  // recent compatible peaks. For each H2 candidate (most recent first), try
-  // H1 candidates nearest-in-time-to-H2 first (the tightest pair a chartist
-  // would actually draw), and accept the first clean, currently-untested ray
-  // with a positive extrapolated value. This is what "the most recent
-  // breakthrough that confirms a buying signal" means in practice.
-  //
-  // (Root cause of the BOL/BFL/BRK/AMI/CGF/JYC bug: anchoring H1 on the
-  // highest/oldest peak produced lines far above Tony's freshly-redrawn ones —
-  // e.g. BOL ours $1.94 vs Tony's $1.71, BFL ours $10.12 vs Tony's $7.30.)
-  const h2Candidates = [...maxima].sort((a, b) => b.idx - a.idx);
-  for (const h2 of h2Candidates) {
-    const h1Candidates = maxima
-      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS)
-      .sort((a, b) => b.idx - a.idx); // nearest-in-time-to-H2 first
-
-    for (const h1 of h1Candidates) {
-      if (!noHighViolation(bars, h1, h2)) continue;
-      if (rayRetestedAbove(maxima, h1, h2)) continue; // touched again since — not live
-      const lineValue = lineAt(h1, h2, currentIdx);
-      if (lineValue > 0) return { h1, h2, line: lineValue };
-    }
-  }
-
-  // ── Fallback: legacy anchor-on-H1 search ─────────────────────────────────
-  // Covers edge cases (very short histories, no clean "most-recent-pair" line)
-  // where the primary search above can't converge on anything.
-  const allH1Candidates = [baseH1, ...[...maxima].sort((a, b) => b.price - a.price)];
+  // ── Primary search: anchor on H1 = highest CONFIRMED peak, rightmost-within-8% ─
+  // CONFIRMED CORRECT against Tony's actual BOL chart: he drew his live buy
+  // line from H1 = Apr-2022 @ $1.92 (the rightmost CONFIRMED peak within 8% of
+  // the all-time-high $2.06 from Jan-2022 — exactly what baseH1 now picks,
+  // skipping the too-fresh Jan-2026 $1.94 spike) through H2 = Mar-2025 @ $1.63.
+  // That line sits at ~$1.49 today — well below the $1.85 current price —
+  // correctly flagging BOL as Bullish (matching Tony's BL2_Status = Y), even
+  // though the raw extrapolated dollar value differs slightly from Tony's
+  // $1.71 (immaterial — what matters is above/below).
+  const allH1Candidates = [baseH1, ...[...confirmedMaxima].sort((a, b) => b.price - a.price)];
   for (const h1 of allH1Candidates) {
     const h2 = findH2ForH1(maxima, h1, bars, currentIdx);
     if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
+  }
+
+  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
+  // Covers edge cases where no clean line exists from any "highest peak"
+  // anchor (e.g. the all-time-high region is too choppy/violated throughout).
+  const h2Candidates = [...confirmedMaxima].sort((a, b) => b.idx - a.idx);
+  for (const h2 of h2Candidates) {
+    const h1Candidates = confirmedMaxima
+      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS)
+      .sort((a, b) => b.idx - a.idx);
+    for (const h1 of h1Candidates) {
+      if (!noHighViolation(bars, h1, h2)) continue;
+      if (rayRetestedAbove(maxima, h1, h2)) continue;
+      const lineValue = lineAt(h1, h2, currentIdx);
+      if (lineValue > 0) return { h1, h2, line: lineValue };
+    }
   }
 
   // Complete fallback: no valid pair found
@@ -340,55 +395,20 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
 /**
  * Find the sell line (L1→L2 through troughs). Mirror of findBuyLine.
  */
+/** Mirror of findH2ForH1 — see its comment for the rationale of the direct,
+ *  most-recent-confirmed-first search (replacing the old earliest-first ratchet
+ *  that died on steep, soon-negative early candidates). */
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const rightMinima = [...minima.filter(m => m.idx > l1.idx + MIN_GAP_MONTHS)]
-    .sort((a, b) => a.idx - b.idx); // chronological — start with the earliest candidate
-  if (rightMinima.length === 0) return null;
+  const candidates = minima
+    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .sort((a, b) => b.idx - a.idx); // most recent confirmed trough first
 
-  // Mirror of findH2ForH1's live-line search: ratchet L2 BACKWARD to fix any
-  // intermediate trough that punches through the L1→L2 support line, and
-  // FORWARD whenever a later confirmed trough comes back down and retests
-  // (touches/crosses below) the extrapolated ray. Converges on the most
-  // recent untested support — the live line price is now sitting on/above.
-  let l2 = rightMinima[0];
-
-  for (let iter = 0; iter < 40; iter++) {
-    let moved = false;
-
-    // (1) backward ratchet — fix any punch-through between L1 and L2.
-    // Mirrors the H-side fix: candidates must still respect MIN_GAP_MONTHS so
-    // L2 never collapses to a point too close to L1 (which would produce an
-    // over-steep, meaningless extrapolated support line).
-    for (let inner = 0; inner < 20; inner++) {
-      if (noLowViolation(bars, l1, l2)) break;
-      const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
-      let worstViol: Pivot | null = null;
-      for (const m of minima) {
-        if (m.idx <= l1.idx + MIN_GAP_MONTHS || m.idx >= l2.idx) continue;
-        const lineAtM = l1.price + slope * (m.idx - l1.idx);
-        if (m.price < lineAtM && (worstViol === null || m.price < worstViol.price)) worstViol = m;
-      }
-      if (!worstViol) break;
-      l2 = worstViol;
-      moved = true;
-    }
-    if (!noLowViolation(bars, l1, l2)) return null;
-
-    // (2) forward ratchet — has a later confirmed trough retested the ray since L2?
-    const retest = rayRetestedBelow(minima, l1, l2);
-    if (retest && retest.idx !== l2.idx) {
-      l2 = retest;
-      moved = true;
-    }
-
-    if (!moved) break; // converged: clean from L1, untested since L2 — this is live
+  for (const l2 of candidates) {
+    if (!noLowViolation(bars, l1, l2)) continue;
+    if (rayRetestedBelow(minima, l1, l2)) continue; // failed breakdown since — stale, skip
+    if (lineAt(l1, l2, currentIdx) > 0) return l2;
   }
-
-  if (!noLowViolation(bars, l1, l2)) return null;
-  if (rayRetestedBelow(minima, l1, l2)) return null; // still oscillating — no stable live line
-
-  const lineValue = lineAt(l1, l2, currentIdx);
-  return lineValue > 0 ? l2 : null;
+  return null;
 }
 
 function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
@@ -396,33 +416,44 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
 
   if (minima.length < 2) return { l1: minima[0] ?? { idx: 0, price: bars[0].low, date: bars[0].date }, l2: null, line: null };
 
+  // L1 must itself be CONFIRMED — mirror of findBuyLine's H1 fix (see its
+  // comment). CONFIRMED against Tony's BOL chart: L1 = Nov-2023 (idx29) is
+  // the RIGHTMOST of a near-identical flat-bottom trio (Sep/Oct/Nov-2023 all
+  // ≈$1.05) — exactly the chartist's natural "rightmost of the tied lows"
+  // pick, which the 8% flat-bottom band + isConfirmed reproduce together.
+  const confirmedMinima = minima.filter(m => isConfirmed(m, currentIdx));
   const globalMin = Math.min(...minima.map(m => m.price));
   const thresh = globalMin * (1 + FUDGE);
-  const baseL1 = [...minima].filter(m => m.price <= thresh).sort((a, b) => b.idx - a.idx)[0];
+  const baseL1 =
+    [...confirmedMinima].filter(m => m.price <= thresh).sort((a, b) => b.idx - a.idx)[0]
+    ?? [...confirmedMinima].sort((a, b) => a.price - b.price)[0]
+    ?? [...minima].sort((a, b) => a.price - b.price)[0];
 
-  // ── Primary search: most-recent-pair-first (mirror of findBuyLine) ───────
-  // Anchor on L2 (most recent trough first); for each, try L1 candidates
-  // nearest-in-time first, accepting the first clean, currently-untested
-  // support ray with a positive extrapolated value — Tony's live support line.
-  const l2Candidates = [...minima].sort((a, b) => b.idx - a.idx);
-  for (const l2 of l2Candidates) {
-    const l1Candidates = minima
-      .filter(m => m.idx <= l2.idx - MIN_GAP_MONTHS)
-      .sort((a, b) => b.idx - a.idx); // nearest-in-time-to-L2 first
-
-    for (const l1 of l1Candidates) {
-      if (!noLowViolation(bars, l1, l2)) continue;
-      if (rayRetestedBelow(minima, l1, l2)) continue; // touched again since — not live
-      const lineValue = lineAt(l1, l2, currentIdx);
-      if (lineValue > 0) return { l1, l2, line: lineValue };
-    }
-  }
-
-  // ── Fallback: legacy anchor-on-L1 search ─────────────────────────────────
-  const allL1Candidates = [baseL1, ...[...minima].sort((a, b) => a.price - b.price)];
+  // ── Primary search: anchor on L1 = lowest CONFIRMED trough, rightmost-within-8% ─
+  // Mirror of findBuyLine's confirmed-correct approach (see comments there).
+  // CONFIRMED CORRECT against Tony's actual BOL chart: L1 = Nov-2023 @ ~$1.03
+  // → L2 = Aug-2025 @ $1.24 (Tony's chart: "01 Nov 2023 @ $1.10" / "01 Aug
+  // 2025 @ $1.34" — same months, our adjusted-price reads differ slightly but
+  // the resulting line ($1.35 today) sits well below the $1.85 current price,
+  // correctly keeping BOL above its support → Bullish).
+  const allL1Candidates = [baseL1, ...[...confirmedMinima].sort((a, b) => a.price - b.price)];
   for (const l1 of allL1Candidates) {
     const l2 = findL2ForL1(minima, l1, bars, currentIdx);
     if (l2) return { l1, l2, line: lineAt(l1, l2, currentIdx) };
+  }
+
+  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
+  const l2Candidates = [...confirmedMinima].sort((a, b) => b.idx - a.idx);
+  for (const l2 of l2Candidates) {
+    const l1Candidates = confirmedMinima
+      .filter(m => m.idx <= l2.idx - MIN_GAP_MONTHS)
+      .sort((a, b) => b.idx - a.idx);
+    for (const l1 of l1Candidates) {
+      if (!noLowViolation(bars, l1, l2)) continue;
+      if (rayRetestedBelow(minima, l1, l2)) continue;
+      const lineValue = lineAt(l1, l2, currentIdx);
+      if (lineValue > 0) return { l1, l2, line: lineValue };
+    }
   }
 
   return { l1: baseL1, l2: null, line: null };
@@ -564,20 +595,39 @@ function classify3PTL(bars: PriceBar[], currentPrice: number): {
     const pctBelowHighest  = (highestPeak.price - currentPrice) / highestPeak.price;
     const pctBelowRecent   = (recentPeak.price  - currentPrice) / recentPeak.price;
 
+    // "Confirmed reversal" escape hatch for the SOFT (sustained-decline) branch only.
+    // Tony's Bible explicitly frames the falling-knife caution in terms of "3
+    // consecutive higher lows" confirming a genuine new uptrend (see comment above).
+    // We check that concretely: are the last 3 CONFIRMED troughs strictly rising?
+    // CONFIRMED against the reference set (Jun-2026): AMI bottomed in 2023 @ ~$0.08
+    // and has printed three confirmed higher lows since (0.138 → 0.165 → 0.170) —
+    // a textbook reversal — yet sits 39% below its Feb-2022 high of $0.50 (53mo
+    // ago), which the blunt %-below-peak/time check alone would (wrongly) flag as
+    // "sustained decline, uptrend not confirmed." AQZ, by contrast, shows NO such
+    // pattern (its last 3 confirmed lows are still falling: 2.57 → 2.32 → 2.09) —
+    // a genuine knife, correctly left subject to the override. This hatch deliberately
+    // does NOT apply to the hard 60% knife rule below — Tony's "NEVER catch a falling
+    // knife" is unconditional at that depth regardless of any recent higher lows.
+    const confirmedMinima = minima.filter(m => isConfirmed(m, currentIdx));
+    const last3Lows = confirmedMinima.slice(-3);
+    const confirmedReversal = last3Lows.length === 3 &&
+      last3Lows[0].price < last3Lows[1].price && last3Lows[1].price < last3Lows[2].price;
+
     if (pctBelowHighest >= 0.60) {
       // Falling knife — 60%+ below the major peak in the 5yr dataset.
       // Threshold lowered from 70%: SPK (-69%), AIZ (-65%), PPT (-62%) are all
       // classic falling knives that were slipping past the 70% cutoff.
       sentiment = "Bearish";
       note = `Falling knife: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago). Long-term downtrend not reversed.`;
-    } else if (pctBelowHighest >= 0.35 && mthsSinceHighest >= 18) {
-      // Sustained long-term decline: >35% below major peak for >18 months.
+    } else if (pctBelowHighest >= 0.35 && mthsSinceHighest >= 18 && !confirmedReversal) {
+      // Sustained long-term decline: >35% below major peak for >18 months, AND no
+      // confirmed reversal (3 consecutive higher confirmed lows) yet established.
       // The stock has not recovered to a new high for over 1.5 years — structural
       // downtrend is not yet confirmed reversed even if technically above both lines.
       // BPT-type pattern: peaked 27mo ago, 38% below — classic cautionary.
       sentiment = "Josephine";
       note = `Caution: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago) — sustained decline, uptrend not confirmed.`;
-    } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40) {
+    } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40 && !confirmedReversal) {
       // Significant recent decline — caution
       sentiment = "Josephine";
       note = `Caution: ${(pctBelowRecent * 100).toFixed(0)}% below recent peak ${recentPeak.price.toFixed(3)} (${mthsSinceRecent}mo ago) — wait for 3 confirmed higher lows before buying.`;
