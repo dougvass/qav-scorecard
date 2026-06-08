@@ -334,16 +334,32 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
  * past it and the search died. Searching newest-first lands directly on the
  * CORRECT pair (Apr-2022 → Mar-2025 @ $1.63 — confirmed against Tony's actual
  * live chart) without ever visiting the dead-end steep-decline candidates.
+ *
+ * TWO-PASS confirmation (added after BRK diagnosis, Jun-2026): pass 1 requires
+ * H2 to satisfy the full CONFIRM_MONTHS bar (matches BOL/AMI/CGF/AQZ, where the
+ * "right" H2 is comfortably old). But for a stock whose H1 sits at an old major
+ * peak it has fallen FAR below (BRK: H1=$2.05 @ 2021-07, now trading ~$0.50),
+ * EVERY CONFIRM_MONTHS-old peak between then and now is so much lower that the
+ * H1→H2 line always extrapolates negative by today — pass 1 finds nothing, full
+ * stop. Yet Tony's own BRK chart anchors H2 on a freshly-formed Dec-2025 peak
+ * (~$0.48, only ~6mo old) — proof that a chartist WILL anchor on a recent pivot
+ * once it's "the" pivot defining the live (rising-off-the-bottom) line, without
+ * waiting the full confirm window. Pass 2 relaxes the bar to MIN_GAP_MONTHS
+ * (still a real, spaced-out pivot — just not yet "battle-tested") and is tried
+ * ONLY when pass 1 comes up empty — so it can never steal H2 away from the
+ * stocks where the stricter, slower-to-update choice is the correct one.
  */
 function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const candidates = maxima
-    .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
-    .sort((a, b) => b.idx - a.idx); // most recent confirmed peak first
+  for (const minAge of [CONFIRM_MONTHS, MIN_GAP_MONTHS]) {
+    const candidates = maxima
+      .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS && m.idx <= currentIdx - minAge - 1)
+      .sort((a, b) => b.idx - a.idx); // most recent eligible peak first
 
-  for (const h2 of candidates) {
-    if (!noHighViolation(bars, h1, h2)) continue;
-    if (rayRetestedAbove(maxima, h1, h2)) continue; // failed breakout since — stale, skip
-    if (lineAt(h1, h2, currentIdx) > 0) return h2;
+    for (const h2 of candidates) {
+      if (!noHighViolation(bars, h1, h2)) continue;
+      if (rayRetestedAbove(maxima, h1, h2)) continue; // failed breakout since — stale, skip
+      if (lineAt(h1, h2, currentIdx) > 0) return h2;
+    }
   }
   return null;
 }
@@ -410,16 +426,23 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
  */
 /** Mirror of findH2ForH1 — see its comment for the rationale of the direct,
  *  most-recent-confirmed-first search (replacing the old earliest-first ratchet
- *  that died on steep, soon-negative early candidates). */
+ *  that died on steep, soon-negative early candidates) AND the two-pass
+ *  confirmation relaxation (pass 1: CONFIRM_MONTHS: matches BOL/AMI/CGF/AQZ;
+ *  pass 2, only if pass 1 finds nothing: MIN_GAP_MONTHS — rescues stocks like
+ *  BRK whose L1 sits so far from today that every CONFIRM_MONTHS-old trough
+ *  still produces a stale/negative line, while Tony's own chart anchors L2 on
+ *  a freshly-formed recent low). */
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  const candidates = minima
-    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
-    .sort((a, b) => b.idx - a.idx); // most recent confirmed trough first
+  for (const minAge of [CONFIRM_MONTHS, MIN_GAP_MONTHS]) {
+    const candidates = minima
+      .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && m.idx <= currentIdx - minAge - 1)
+      .sort((a, b) => b.idx - a.idx); // most recent eligible trough first
 
-  for (const l2 of candidates) {
-    if (!noLowViolation(bars, l1, l2)) continue;
-    if (rayRetestedBelow(minima, l1, l2)) continue; // failed breakdown since — stale, skip
-    if (lineAt(l1, l2, currentIdx) > 0) return l2;
+    for (const l2 of candidates) {
+      if (!noLowViolation(bars, l1, l2)) continue;
+      if (rayRetestedBelow(minima, l1, l2)) continue; // failed breakdown since — stale, skip
+      if (lineAt(l1, l2, currentIdx) > 0) return l2;
+    }
   }
   return null;
 }
