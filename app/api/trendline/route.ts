@@ -336,21 +336,9 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
  * live chart) without ever visiting the dead-end steep-decline candidates.
  */
 function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  // NOTE (Jun-2026, KAR diagnosis): H2 deliberately does NOT require isConfirmed/
-  // CONFIRM_MONTHS — only the structural MIN_GAP_MONTHS-after-H1 spacing. Tony's
-  // own KAR chart anchors H2 on a freshly-formed ~5mo-old lower-high (Jan-2026,
-  // ~$1.70) extending his EXISTING descending resistance line — exactly the kind
-  // of recent pivot a 9-month "battle-tested" bar would wrongly exclude (our old
-  // filter instead fell through to a much earlier H2, producing a stale line).
-  // This is safe for BOL (whose fresh Jan-2026 $1.94 spike is ABOVE the existing
-  // H1→H2 ray and so gets rejected by noHighViolation/rayRetestedAbove below,
-  // not by an artificial age cutoff) — the geometry itself is the correct guard,
-  // not a blanket time-based exclusion. H1 selection (baseH1/confirmedMaxima)
-  // still requires isConfirmed — that's what stops a fresh spike from hijacking
-  // the FAR anchor (see findBuyLine comment).
   const candidates = maxima
-    .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS)
-    .sort((a, b) => b.idx - a.idx); // most recent eligible peak first
+    .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .sort((a, b) => b.idx - a.idx); // most recent confirmed peak first
 
   for (const h2 of candidates) {
     if (!noHighViolation(bars, h1, h2)) continue;
@@ -424,14 +412,9 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
  *  most-recent-confirmed-first search (replacing the old earliest-first ratchet
  *  that died on steep, soon-negative early candidates). */
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
-  // Mirror of findH2ForH1 — see its comment. L2 needs only the structural
-  // MIN_GAP_MONTHS-after-L1 spacing, not isConfirmed/CONFIRM_MONTHS: Tony's KAR
-  // chart anchors L2 on a freshly-formed ~4mo-old higher-low (Feb-2026, ~$1.70)
-  // extending his live ascending support line. noLowViolation/rayRetestedBelow
-  // remain the real (geometric) guard against a too-fresh point hijacking L2.
   const candidates = minima
-    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS)
-    .sort((a, b) => b.idx - a.idx); // most recent eligible trough first
+    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .sort((a, b) => b.idx - a.idx); // most recent confirmed trough first
 
   for (const l2 of candidates) {
     if (!noLowViolation(bars, l1, l2)) continue;
