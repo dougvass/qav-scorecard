@@ -249,13 +249,18 @@ function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: n
   for (let iter = 0; iter < 40; iter++) {
     let moved = false;
 
-    // (1) backward ratchet — fix any punch-through between H1 and H2
+    // (1) backward ratchet — fix any punch-through between H1 and H2.
+    // IMPORTANT: candidates must still respect MIN_GAP_MONTHS — collapsing H2
+    // down to a point too close to H1 produces a steep, meaningless slope that
+    // explodes when extrapolated months/years forward (the BFL bug: H1=Jul-25,
+    // worstViol picked Dec-25 — only 5mo away — giving a buy line of $10.12
+    // when Tony's freshly-drawn live line sits at $7.30).
     for (let inner = 0; inner < 20; inner++) {
       if (noHighViolation(bars, h1, h2)) break;
       const slope = (h2.price - h1.price) / (h2.idx - h1.idx);
       let worstViol: Pivot | null = null;
       for (const m of maxima) {
-        if (m.idx <= h1.idx || m.idx >= h2.idx) continue;
+        if (m.idx <= h1.idx + MIN_GAP_MONTHS || m.idx >= h2.idx) continue;
         const lineAtM = h1.price + slope * (m.idx - h1.idx);
         if (m.price > lineAtM && (worstViol === null || m.price > worstViol.price)) worstViol = m;
       }
@@ -324,13 +329,16 @@ function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: n
   for (let iter = 0; iter < 40; iter++) {
     let moved = false;
 
-    // (1) backward ratchet — fix any punch-through between L1 and L2
+    // (1) backward ratchet — fix any punch-through between L1 and L2.
+    // Mirrors the H-side fix: candidates must still respect MIN_GAP_MONTHS so
+    // L2 never collapses to a point too close to L1 (which would produce an
+    // over-steep, meaningless extrapolated support line).
     for (let inner = 0; inner < 20; inner++) {
       if (noLowViolation(bars, l1, l2)) break;
       const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
       let worstViol: Pivot | null = null;
       for (const m of minima) {
-        if (m.idx <= l1.idx || m.idx >= l2.idx) continue;
+        if (m.idx <= l1.idx + MIN_GAP_MONTHS || m.idx >= l2.idx) continue;
         const lineAtM = l1.price + slope * (m.idx - l1.idx);
         if (m.price < lineAtM && (worstViol === null || m.price < worstViol.price)) worstViol = m;
       }
