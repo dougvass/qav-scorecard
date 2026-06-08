@@ -598,7 +598,19 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
     }
-    checkFallingKnife = true;
+    // Exempt "lines have crossed" breakouts from the falling-knife re-check below.
+    // CONFIRMED via BRK (2026-06-08): a declining resistance (buy) line meeting a
+    // rising support (sell) line, with price breaking cleanly above BOTH, is itself
+    // the GEOMETRIC signature of a confirmed reversal — exactly what the Bible's
+    // "3 consecutive higher lows" escape hatch is trying to detect from a different
+    // angle. BRK sits 76% below its 2021 ATH (would trip the unconditional 60%
+    // falling-knife rule, which has no confirmedReversal exemption) — yet Tony
+    // reads it as Bullish precisely because its own freshly-drawn lines (H1=$1.75
+    // Jul'21 -> H2=$0.48 Dec'25 buy line; L1=$0.37 Aug'25 -> L2=$0.41 Feb'26 sell
+    // line, both EXACT matches to raw monthly closes) have crossed and price has
+    // cleared both. Don't let the blunt %-below-major-peak rule override that.
+    const linesHaveCrossed = buyLine !== null && sellLine !== null && buyLine < sellLine;
+    checkFallingKnife = !linesHaveCrossed;
   } else if (belowSell) {
     // Definitively below the sell line — Bearish regardless of buy line
     sentiment = "Bearish";
