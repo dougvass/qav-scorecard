@@ -757,6 +757,9 @@ export async function GET(request: Request) {
     ...result,
     oldest: bars[0]?.date,
     newest: bars[bars.length - 1]?.date,
+    // &bars=1 — dump the full monthly series (lets local tooling reuse the
+    // server-side Yahoo fetch when Yahoo rate-limits direct client requests)
+    ...(searchParams.get("bars") ? { all_bars: bars } : {}),
     last_4: bars.slice(-4).map(b => ({ date: b.date, high: b.high, low: b.low, close: b.close })),
     h1_detail: result.h1 ? `${result.h1.date} @ ${result.h1.price.toFixed(3)}` : null,
     h2_detail: result.h2 ? `${result.h2.date} @ ${result.h2.price.toFixed(3)}` : null,
