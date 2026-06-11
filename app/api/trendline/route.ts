@@ -30,6 +30,18 @@ export const runtime = "edge";
 const FUDGE        = 0.08;  // 8% flat top/bottom fudge (Bible rule)
 const BREAKOUT_BUF = 1.02;  // price must be 2% above BUY line for confirmed breakout
 
+/**
+ * Crossed-lines (buyLine < sellLine) breakouts are only treated as a genuine
+ * confirmed reversal — and exempted from the falling-knife re-check — when
+ * price has bounced at least this multiple of its lowest monthly CLOSE of the
+ * past 12 months. A real reversal (BRK: 1.27x off its base) has visibly lifted
+ * off its lows; a falling knife whose degenerate fallback lines happen to
+ * cross sits right on top of them (CCX 1.02x, LAU 1.03x, BRI 1.02x, PPE 1.12x
+ * — all five were sailing through the previous unconditional exemption onto
+ * the buy list, confirmed against Tony's readings 2026-06-11).
+ */
+const REVERSAL_BOUNCE = 1.20;
+
 // ── Data types ─────────────────────────────────────────────────────────────────
 
 interface PriceBar { date: string; high: number; low: number; close: number }
@@ -457,9 +469,10 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
 /** Mirror of findH2ForH1 — see its comment for the rationale of the direct,
  *  most-recent-confirmed-first search (replacing the old earliest-first ratchet
  *  that died on steep, soon-negative early candidates). */
-function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
+function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number, requireRising: boolean): Pivot | null {
   const candidates = minima
-    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx)
+              && (!requireRising || m.price > l1.price))
     .sort((a, b) => b.idx - a.idx); // most recent confirmed trough first
 
   for (const l2 of candidates) {
@@ -467,6 +480,41 @@ function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: n
     if (rayRetestedBelow(minima, l1, l2)) continue; // failed breakdown since — stale, skip
     if (lineAt(l1, l2, currentIdx) > 0) return l2;
   }
+  return null;
+}
+
+/** One pass of the sell-line search; when `requireRising`, only L1→L2 pairs
+ *  with L2 ABOVE L1 (a genuinely rising support line) are considered. */
+function searchSellLine(bars: PriceBar[], minima: Pivot[], confirmedMinima: Pivot[], baseL1: Pivot, currentIdx: number, requireRising: boolean):
+  { l1: Pivot; l2: Pivot; line: number } | null {
+
+  // ── Primary search: anchor on L1 = lowest CONFIRMED trough, rightmost-within-8% ─
+  // Mirror of findBuyLine's confirmed-correct approach (see comments there).
+  // CONFIRMED CORRECT against Tony's actual BOL chart: L1 = Nov-2023 @ ~$1.03
+  // → L2 = Aug-2025 @ $1.24 (Tony's chart: "01 Nov 2023 @ $1.10" / "01 Aug
+  // 2025 @ $1.34" — same months, our adjusted-price reads differ slightly but
+  // the resulting line ($1.35 today) sits well below the $1.85 current price,
+  // correctly keeping BOL above its support → Bullish).
+  const allL1Candidates = [baseL1, ...[...confirmedMinima].sort((a, b) => a.price - b.price)];
+  for (const l1 of allL1Candidates) {
+    const l2 = findL2ForL1(minima, l1, bars, currentIdx, requireRising);
+    if (l2) return { l1, l2, line: lineAt(l1, l2, currentIdx) };
+  }
+
+  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
+  const l2Candidates = [...confirmedMinima].sort((a, b) => b.idx - a.idx);
+  for (const l2 of l2Candidates) {
+    const l1Candidates = confirmedMinima
+      .filter(m => m.idx <= l2.idx - MIN_GAP_MONTHS && (!requireRising || m.price < l2.price))
+      .sort((a, b) => b.idx - a.idx);
+    for (const l1 of l1Candidates) {
+      if (!noLowViolation(bars, l1, l2)) continue;
+      if (rayRetestedBelow(minima, l1, l2)) continue;
+      const lineValue = lineAt(l1, l2, currentIdx);
+      if (lineValue > 0) return { l1, l2, line: lineValue };
+    }
+  }
+
   return null;
 }
 
@@ -488,32 +536,19 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
     ?? [...confirmedMinima].sort((a, b) => a.price - b.price)[0]
     ?? [...minima].sort((a, b) => a.price - b.price)[0];
 
-  // ── Primary search: anchor on L1 = lowest CONFIRMED trough, rightmost-within-8% ─
-  // Mirror of findBuyLine's confirmed-correct approach (see comments there).
-  // CONFIRMED CORRECT against Tony's actual BOL chart: L1 = Nov-2023 @ ~$1.03
-  // → L2 = Aug-2025 @ $1.24 (Tony's chart: "01 Nov 2023 @ $1.10" / "01 Aug
-  // 2025 @ $1.34" — same months, our adjusted-price reads differ slightly but
-  // the resulting line ($1.35 today) sits well below the $1.85 current price,
-  // correctly keeping BOL above its support → Bullish).
-  const allL1Candidates = [baseL1, ...[...confirmedMinima].sort((a, b) => a.price - b.price)];
-  for (const l1 of allL1Candidates) {
-    const l2 = findL2ForL1(minima, l1, bars, currentIdx);
-    if (l2) return { l1, l2, line: lineAt(l1, l2, currentIdx) };
-  }
-
-  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
-  const l2Candidates = [...confirmedMinima].sort((a, b) => b.idx - a.idx);
-  for (const l2 of l2Candidates) {
-    const l1Candidates = confirmedMinima
-      .filter(m => m.idx <= l2.idx - MIN_GAP_MONTHS)
-      .sort((a, b) => b.idx - a.idx);
-    for (const l1 of l1Candidates) {
-      if (!noLowViolation(bars, l1, l2)) continue;
-      if (rayRetestedBelow(minima, l1, l2)) continue;
-      const lineValue = lineAt(l1, l2, currentIdx);
-      if (lineValue > 0) return { l1, l2, line: lineValue };
-    }
-  }
+  // The Bible's sell line is RISING support (L2 above L1) — a "support" line
+  // that slopes DOWN is not a sell line a chartist would draw, and being
+  // "above" it is meaningless (BRI was passing sentiment by floating above a
+  // declining L1=$1.24 Nov-20 → L2=$1.14 Apr-25 line; its true rising support
+  // had already been broken). Prefer a rising pair; fall back to the old
+  // unrestricted search only when NO rising pair exists anywhere (e.g. BFL,
+  // whose intra-month low spikes violate every rising close-basis line — a
+  // low-vs-close artefact, not a real breakdown — and which sits far above
+  // either version of the line anyway).
+  const risingResult = searchSellLine(bars, minima, confirmedMinima, baseL1, currentIdx, true);
+  if (risingResult) return risingResult;
+  const anyResult = searchSellLine(bars, minima, confirmedMinima, baseL1, currentIdx, false);
+  if (anyResult) return anyResult;
 
   return { l1: baseL1, l2: null, line: null };
 }
@@ -540,6 +575,30 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
 
   // ── SELL LINE ─────────────────────────────────────────────────────────────
   const { l1, l2, line: sellLine } = findSellLine(bars, minima, currentIdx);
+
+  // ── SELL SIGNAL IN FORCE — "the buy line follows the sell line" ──────────
+  // Bible rule, confirmed via FRI (2026-06-11, Tony's reading): once a monthly
+  // CLOSE breaches the sell line, the stock is a SELL and STAYS a sell until a
+  // NEW buy line can be drawn that follows that sell signal — popping back
+  // above the line (FRI: Apr-26 closed $0.675 under its $0.683 support, then
+  // recovered to $0.695) does NOT reinstate positive sentiment. Concretely: if
+  // the most recent close-breach of the live sell ray is more recent than the
+  // current buy line's H2, no buy line has "followed" the breakdown yet →
+  // Bearish. This also covers true breakdowns where the only drawable RISING
+  // support is one price collapsed through long ago and never re-tested on a
+  // confirmed-trough basis (BRI, PPE — every recent close sits below the ray).
+  if (l2 !== null && sellLine !== null) {
+    let lastBreach = -1;
+    for (let k = l2.idx + 1; k < n; k++) {
+      if (bars[k].close < lineAt(l1, l2, k) - 1e-9) lastBreach = k;
+    }
+    if (lastBreach >= 0 && (h2 === null || h2.idx < lastBreach)) {
+      return {
+        sentiment: "Bearish", buyLine, sellLine, h1, h2, l1, l2,
+        note: `Bearish: sell signal in force — monthly close ${bars[lastBreach].close.toFixed(3)} (${bars[lastBreach].date}) breached the sell line; no new buy line drawn since`,
+      };
+    }
+  }
 
   // ── CLASSIFY ─────────────────────────────────────────────────────────────
   let sentiment: Sentiment = "Josephine";
@@ -598,19 +657,24 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
       sentiment = "Bullish";
       note = `Bullish: price ${currentPrice.toFixed(3)} above buy line ${buyLine?.toFixed(3)} and sell line ${sellLine?.toFixed(3)}`;
     }
-    // Exempt "lines have crossed" breakouts from the falling-knife re-check below.
-    // CONFIRMED via BRK (2026-06-08): a declining resistance (buy) line meeting a
-    // rising support (sell) line, with price breaking cleanly above BOTH, is itself
-    // the GEOMETRIC signature of a confirmed reversal — exactly what the Bible's
-    // "3 consecutive higher lows" escape hatch is trying to detect from a different
-    // angle. BRK sits 76% below its 2021 ATH (would trip the unconditional 60%
-    // falling-knife rule, which has no confirmedReversal exemption) — yet Tony
-    // reads it as Bullish precisely because its own freshly-drawn lines (H1=$1.75
-    // Jul'21 -> H2=$0.48 Dec'25 buy line; L1=$0.37 Aug'25 -> L2=$0.41 Feb'26 sell
-    // line, both EXACT matches to raw monthly closes) have crossed and price has
-    // cleared both. Don't let the blunt %-below-major-peak rule override that.
+    // "Lines have crossed" breakouts are exempt from the falling-knife re-check
+    // ONLY when price has genuinely lifted off its lows (≥ REVERSAL_BOUNCE x the
+    // minimum monthly close of the past 12 months). The original unconditional
+    // exemption (added for BRK 2026-06-08: 76% below its 2021 ATH, yet Tony reads
+    // it Bullish — its declining buy line and rising sell line crossed and price
+    // broke decisively above both, +27% off its base) turned out to be the exact
+    // hole CCX, LAU, BRI and PPE escaped through (confirmed against Tony's
+    // readings 2026-06-11): a collapsing stock's degenerate fallback lines also
+    // cross, with price sitting right on its lows (1.02-1.12x) — that's the knife
+    // still falling, not a reversal. The bounce gate keeps BRK's genuine breakout
+    // exempt while sending the knives to the %-below-major-peak re-check.
     const linesHaveCrossed = buyLine !== null && sellLine !== null && buyLine < sellLine;
-    checkFallingKnife = !linesHaveCrossed;
+    if (linesHaveCrossed) {
+      const min12Close = Math.min(...bars.slice(-12).map(b => b.close));
+      checkFallingKnife = currentPrice < min12Close * REVERSAL_BOUNCE;
+    } else {
+      checkFallingKnife = true;
+    }
   } else if (belowSell) {
     // Definitively below the sell line — Bearish regardless of buy line
     sentiment = "Bearish";
@@ -627,9 +691,14 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     checkFallingKnife = true;
   } else if (aboveBuy && sellLine === null) {
     // Above buy line, sell line not yet established (stock just bottomed)
-    // Can't confirm Bullish without a sell line — treat as Josephine
+    // Can't confirm Bullish without a sell line — treat as Josephine.
+    // A stock with NO drawable support structure can also be a deep collapse
+    // that merely cut up through its (steeply falling) buy line — run the
+    // falling-knife re-check on this path too (PPE-type: "not had a drawable
+    // sell line in 5 years even though it technically cuts a buy line").
     sentiment = "Josephine";
     note = `Josephine: above buy line ${buyLine!.toFixed(3)} but sell line not yet established (recent trough, no second low yet)`;
+    checkFallingKnife = true;
   } else if (!aboveBuy && buyLine !== null && sellLine === null) {
     // Below buy line, no sell line — the stock has crashed below resistance
     sentiment = "Bearish";
