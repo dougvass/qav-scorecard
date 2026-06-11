@@ -393,9 +393,10 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
  * CORRECT pair (Apr-2022 → Mar-2025 @ $1.63 — confirmed against Tony's actual
  * live chart) without ever visiting the dead-end steep-decline candidates.
  */
-function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number): Pivot | null {
+function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number, gap: number, requireDeclining: boolean): Pivot | null {
   const candidates = maxima
-    .filter(m => m.idx > h1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx))
+    .filter(m => m.idx > h1.idx + gap && isConfirmed(m, currentIdx)
+              && (!requireDeclining || m.price < h1.price))
     .sort((a, b) => b.idx - a.idx); // most recent confirmed peak first
 
   for (const h2 of candidates) {
@@ -403,6 +404,58 @@ function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: n
     if (rayRetestedAbove(maxima, h1, h2)) continue; // failed breakout since — stale, skip
     if (lineAt(h1, h2, currentIdx) > 0) return h2;
   }
+  return null;
+}
+
+/** One pass of the buy-line search; when `requireDeclining`, only H1→H2 pairs
+ *  with H2 BELOW H1 (genuinely falling resistance) are considered. */
+function searchBuyLine(bars: PriceBar[], maxima: Pivot[], confirmedMaxima: Pivot[], baseH1: Pivot, currentIdx: number, requireDeclining: boolean):
+  { h1: Pivot; h2: Pivot; line: number } | null {
+
+  // ── Primary search: anchor on H1 = highest CONFIRMED peak, rightmost-within-8% ─
+  // CONFIRMED CORRECT against Tony's actual BOL chart: he drew his live buy
+  // line from H1 = Apr-2022 @ $1.92 (the rightmost CONFIRMED peak within 8% of
+  // the all-time-high $2.06 from Jan-2022 — exactly what baseH1 now picks,
+  // skipping the too-fresh Jan-2026 $1.94 spike) through H2 = Mar-2025 @ $1.63.
+  // That line sits at ~$1.49 today — well below the $1.85 current price —
+  // correctly flagging BOL as Bullish (matching Tony's BL2_Status = Y), even
+  // though the raw extrapolated dollar value differs slightly from Tony's
+  // $1.71 (immaterial — what matters is above/below).
+  const allH1Candidates = [baseH1, ...[...confirmedMaxima].sort((a, b) => b.price - a.price)];
+  for (const h1 of allH1Candidates) {
+    let h2 = findH2ForH1(maxima, h1, bars, currentIdx, MIN_GAP_MONTHS, requireDeclining);
+    // Gap relaxation for the DEFINITIVE anchor only: when the global-max/
+    // flat-top H1 is recent, every confirmable peak after it can sit closer
+    // than the standard spacing — and Tony demonstrably draws those pairs
+    // rather than abandoning the highest peak. CONFIRMED via SUN (2026-06-11,
+    // Tony's chart): H1 = Jan-2025 ATH $25.26 → H2 = Jun-2025 $22.14, only
+    // 5 months apart (rejected by the ≥7-month spacing), line ≈ $14 today —
+    // price $18.38 broke up through it, Bullish. Without this, H1 walked back
+    // to an ancient 2021 peak whose long-broken line couldn't register the
+    // fresh buy signal. Only baseH1 gets the relaxation — relaxing every H1
+    // breeds meaninglessly steep 3-month micro-lines (BFL/LAU/PPE checked).
+    if (!h2 && requireDeclining && h1.idx === baseH1.idx) {
+      h2 = findH2ForH1(maxima, h1, bars, currentIdx, 1, requireDeclining);
+    }
+    if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
+  }
+
+  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
+  // Covers edge cases where no clean line exists from any "highest peak"
+  // anchor (e.g. the all-time-high region is too choppy/violated throughout).
+  const h2Candidates = [...confirmedMaxima].sort((a, b) => b.idx - a.idx);
+  for (const h2 of h2Candidates) {
+    const h1Candidates = confirmedMaxima
+      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS && (!requireDeclining || m.price > h2.price))
+      .sort((a, b) => b.idx - a.idx);
+    for (const h1 of h1Candidates) {
+      if (!noHighViolation(bars, h1, h2)) continue;
+      if (rayRetestedAbove(maxima, h1, h2)) continue;
+      const lineValue = lineAt(h1, h2, currentIdx);
+      if (lineValue > 0) return { h1, h2, line: lineValue };
+    }
+  }
+
   return null;
 }
 
@@ -428,36 +481,18 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
     ?? [...confirmedMaxima].sort((a, b) => b.price - a.price)[0]
     ?? [...maxima].sort((a, b) => b.price - a.price)[0];
 
-  // ── Primary search: anchor on H1 = highest CONFIRMED peak, rightmost-within-8% ─
-  // CONFIRMED CORRECT against Tony's actual BOL chart: he drew his live buy
-  // line from H1 = Apr-2022 @ $1.92 (the rightmost CONFIRMED peak within 8% of
-  // the all-time-high $2.06 from Jan-2022 — exactly what baseH1 now picks,
-  // skipping the too-fresh Jan-2026 $1.94 spike) through H2 = Mar-2025 @ $1.63.
-  // That line sits at ~$1.49 today — well below the $1.85 current price —
-  // correctly flagging BOL as Bullish (matching Tony's BL2_Status = Y), even
-  // though the raw extrapolated dollar value differs slightly from Tony's
-  // $1.71 (immaterial — what matters is above/below).
-  const allH1Candidates = [baseH1, ...[...confirmedMaxima].sort((a, b) => b.price - a.price)];
-  for (const h1 of allH1Candidates) {
-    const h2 = findH2ForH1(maxima, h1, bars, currentIdx);
-    if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
-  }
-
-  // ── Fallback: most-recent-confirmed-pair-first search ────────────────────
-  // Covers edge cases where no clean line exists from any "highest peak"
-  // anchor (e.g. the all-time-high region is too choppy/violated throughout).
-  const h2Candidates = [...confirmedMaxima].sort((a, b) => b.idx - a.idx);
-  for (const h2 of h2Candidates) {
-    const h1Candidates = confirmedMaxima
-      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS)
-      .sort((a, b) => b.idx - a.idx);
-    for (const h1 of h1Candidates) {
-      if (!noHighViolation(bars, h1, h2)) continue;
-      if (rayRetestedAbove(maxima, h1, h2)) continue;
-      const lineValue = lineAt(h1, h2, currentIdx);
-      if (lineValue > 0) return { h1, h2, line: lineValue };
-    }
-  }
+  // The buy line is FALLING resistance (H2 below H1) — a "resistance" line
+  // that slopes UP is not a 3PTL buy line, and extrapolating one produces
+  // garbage that price can never cross (SUN: rising 2023-06 $16.93 → 2025-01
+  // $25.26 pair projected a $33 "buy line" over an $18 stock; JYC's rising
+  // pair projected $6.11 over a $5.91 stock, silently exiling it to "between
+  // the lines" — the long-standing JYC mystery). Prefer a declining pair;
+  // fall back to the old unrestricted search only when NO declining pair
+  // exists anywhere. Mirror of findSellLine's rising-support rule.
+  const declining = searchBuyLine(bars, maxima, confirmedMaxima, baseH1, currentIdx, true);
+  if (declining) return declining;
+  const any = searchBuyLine(bars, maxima, confirmedMaxima, baseH1, currentIdx, false);
+  if (any) return any;
 
   // Complete fallback: no valid pair found
   return { h1: baseH1, h2: null, line: null };
@@ -593,10 +628,29 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
       if (bars[k].close < lineAt(l1, l2, k) - 1e-9) lastBreach = k;
     }
     if (lastBreach >= 0 && (h2 === null || h2.idx < lastBreach)) {
-      return {
-        sentiment: "Bearish", buyLine, sellLine, h1, h2, l1, l2,
-        note: `Bearish: sell signal in force — monthly close ${bars[lastBreach].close.toFixed(3)} (${bars[lastBreach].date}) breached the sell line; no new buy line drawn since`,
-      };
+      // A fresh BUY SIGNAL after the sell signal releases the hold: if a later
+      // monthly close crossed UP through the declining buy line (from below it
+      // to ≥ BREAKOUT_BUF above it), the buy line has "followed" the sell
+      // signal in the Bible's sense. CONFIRMED via SUN vs FRI (2026-06-11,
+      // Tony's readings): SUN's Jan-26 breach took price below BOTH lines,
+      // then Mar-26 closed back up through the buy line — a new buy signal,
+      // Bullish. FRI's close was ALREADY above its (long-broken-out) buy line
+      // when it breached the sell line — no new crossing is possible from that
+      // old line, so no buy signal has followed and the hold stands until a
+      // new buy line can be drawn.
+      let buySignalSince = false;
+      if (h2 !== null && buyLine !== null) {
+        for (let k = lastBreach + 1; k < n; k++) {
+          if (bars[k - 1].close < lineAt(h1, h2, k - 1) &&
+              bars[k].close >= lineAt(h1, h2, k) * BREAKOUT_BUF) { buySignalSince = true; break; }
+        }
+      }
+      if (!buySignalSince) {
+        return {
+          sentiment: "Bearish", buyLine, sellLine, h1, h2, l1, l2,
+          note: `Bearish: sell signal in force — monthly close ${bars[lastBreach].close.toFixed(3)} (${bars[lastBreach].date}) breached the sell line; no new buy signal since`,
+        };
+      }
     }
   }
 
