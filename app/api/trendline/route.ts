@@ -93,6 +93,11 @@ function yahooSymbol(code: string): string {
   return /[=^.]/.test(code) ? code : `${code}.AX`;
 }
 
+/** Commodity aliases and raw non-ASX symbols get commodity-mode 3PTL rules. */
+function isCommodityCode(code: string): boolean {
+  return COMMODITY_SYMBOLS[code.toUpperCase()] !== undefined || /[=^.]/.test(code);
+}
+
 async function fetchMonthly(code: string): Promise<PriceBar[]> {
   // Use the v8 chart API but request no dividend/split adjustment by fetching
   // both adjusted and unadjusted close; we use the quote.high/low which are
@@ -145,7 +150,7 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
     // WRONG for dividend-heavy stocks (BFL, and presumably JYC, CGF, etc.),
     // silently shrinking historical peaks/troughs by 30-60% and producing
     // anchor points that don't exist anywhere on the chart a human sees.
-    return ts.map((t, i) => {
+    const raw = ts.map((t, i) => {
       const rawClose = q.close?.[i];
       return {
         date:  new Date(t * 1000).toISOString().slice(0, 7),
@@ -154,7 +159,50 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
         close: rawClose ?? adjQ?.adjclose?.[i] ?? 0,
       };
     }).filter(b => b.close > 0 && b.high > 0 && b.low > 0);
+    return normalizeMonthly(raw);
   } catch { return []; }
+}
+
+/**
+ * Yahoo's CONTINUOUS-FUTURES monthly series (GC=F, CL=F, ...) is not clean:
+ * contract rolls leave whole months MISSING (confirmed 2026-07: gold/WTI/
+ * Brent all jump 2026-01 → 2026-04) and the current month can appear TWICE
+ * (a full month-to-date bar plus a trailing latest-days stub). The 3PTL
+ * engine does slope/window math on ARRAY INDEX assuming index == calendar
+ * month, so gaps silently distort every extrapolated line. Fix at the
+ * source: merge duplicate month labels (widest range, latest close) and
+ * fill missing months by linear interpolation of close (high=low=close so
+ * synthetic bars can never become pivots or violate a real line). ASX
+ * equity data is contiguous — this is a no-op for stocks (verified across
+ * the 14-stock reference set).
+ */
+function normalizeMonthly(bars: PriceBar[]): PriceBar[] {
+  const monthNum = (d: string) => parseInt(d.slice(0, 4)) * 12 + parseInt(d.slice(5, 7)) - 1;
+  const monthStr = (n: number) => `${String(Math.floor(n / 12)).padStart(4, "0")}-${String((n % 12) + 1).padStart(2, "0")}`;
+  const merged: PriceBar[] = [];
+  for (const b of bars) {
+    const last = merged[merged.length - 1];
+    if (last && last.date === b.date) {
+      last.high = Math.max(last.high, b.high);
+      last.low = Math.min(last.low, b.low);
+      last.close = b.close;
+    } else {
+      merged.push({ ...b });
+    }
+  }
+  const out: PriceBar[] = [];
+  for (const b of merged) {
+    const prev = out[out.length - 1];
+    if (prev) {
+      const gap = monthNum(b.date) - monthNum(prev.date);
+      for (let g = 1; g < gap; g++) {
+        const c = prev.close + (b.close - prev.close) * (g / gap);
+        out.push({ date: monthStr(monthNum(prev.date) + g), high: c, low: c, close: c });
+      }
+    }
+    out.push(b);
+  }
+  return out;
 }
 
 /**
@@ -308,8 +356,20 @@ function localMinima(bars: PriceBar[], lookback = 2): Pivot[] {
  * pivot at `idx` has `(bars.length - 1) - idx` real bars after it; requiring
  * that to be ≥ CONFIRM_MONTHS is `idx <= currentIdx - CONFIRM_MONTHS - 1`.)
  */
+/**
+ * Commodities confirm pivots FASTER than stocks (3 months, not 9): QAV HQ's
+ * own commodity engine (buy-list workbook, CommStatusCode tab) anchors lines
+ * on 2-5 month-old peaks/troughs, and commodities' spike-and-crash structure
+ * (oil Apr-2026: +70% spike, -40% crash inside 3 months) is invisible to a
+ * 9-month confirmation window. Stocks keep 9 (tuned against BOL/AMI/CGF/AQZ).
+ * `confirmMonthsActive` is set at the top of every classify3PTL call and the
+ * body is fully synchronous, so concurrent requests cannot interleave it.
+ */
+const COMMODITY_CONFIRM_MONTHS = 3;
+let confirmMonthsActive = CONFIRM_MONTHS;
+
 function isConfirmed(p: Pivot, currentIdx: number): boolean {
-  return p.idx <= currentIdx - CONFIRM_MONTHS - 1;
+  return p.idx <= currentIdx - confirmMonthsActive - 1;
 }
 
 /** Check that no bar's high between fromIdx and toIdx is above the P1→P2 line */
@@ -629,7 +689,7 @@ function findSellLine(bars: PriceBar[], minima: Pivot[], currentIdx: number):
 /**
  * Main 3PTL classification.
  */
-function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOverride?: number | null): {
+function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOverride?: number | null, isCommodity = false): {
   sentiment: Sentiment;
   buyLine: number | null;
   sellLine: number | null;
@@ -637,6 +697,19 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
   l1: Pivot; l2: Pivot | null;
   note: string;
 } {
+  // Commodity mode (matches QAV HQ's commodity engine, validated against
+  // their CommStatusCode anchor table 2026-07-09):
+  //  - pivots/violations on CLOSES (their L1/L2/H1/H2 are exact monthly
+  //    closes — Tony's line-chart read), done by collapsing bars to closes
+  //    so the identical hilo engine becomes close-based with no logic forks;
+  //  - 3-month pivot confirmation (see COMMODITY_CONFIRM_MONTHS);
+  //  - NO falling-knife override: commodities mean-revert — HQ reads lithium
+  //    as BUY while 87% below its 2022 ATH, natgas as JOSEPHINE 65% below
+  //    its war spike. "% below peak" is a stock concept; for commodities the
+  //    lines alone decide.
+  confirmMonthsActive = isCommodity ? COMMODITY_CONFIRM_MONTHS : CONFIRM_MONTHS;
+  if (isCommodity) bars = bars.map(b => ({ ...b, high: b.close, low: b.close }));
+
   const n = bars.length;
   const currentIdx = n;
 
@@ -763,7 +836,21 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     const linesHaveCrossed = buyLine !== null && sellLine !== null && buyLine < sellLine;
     if (linesHaveCrossed) {
       const min12Close = Math.min(...bars.slice(-12).map(b => b.close));
-      checkFallingKnife = currentPrice < min12Close * REVERSAL_BOUNCE;
+      let genuineBounce = currentPrice >= min12Close * REVERSAL_BOUNCE;
+      // ...AND the bounce must be off an ESTABLISHED base, not a fresh hole:
+      // a stock that printed its multi-year LOW within the last 12 months is
+      // still falling whatever its % bounce. CONFIRMED via CCX (2026-07-09):
+      // a 24% two-cent bounce (0.038→0.047) cleared the 1.20x bar and
+      // re-exempted a stock 99% below its peak whose all-time low printed
+      // THREE months earlier. BRK — the case this exemption exists for —
+      // passes easily: its 6-year low is from 2020, its base held ~a year.
+      if (genuineBounce) {
+        const globalMinLow = Math.min(...bars.map(b => b.low));
+        let gminIdx = -1;
+        bars.forEach((b, i) => { if (b.low <= globalMinLow * (1 + PIVOT_TIE_TOL)) gminIdx = i; });
+        genuineBounce = (n - 1 - gminIdx) >= 12;
+      }
+      checkFallingKnife = !genuineBounce;
     } else {
       checkFallingKnife = true;
     }
@@ -821,7 +908,7 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
   // Josephine because BOTH our calculated lines had also collapsed with it).
   // "Josephine ↗" and crossed/converged-lines basing patterns are NOT re-checked —
   // those are confirmed-positive or genuine-reversal setups, not knives.
-  if (checkFallingKnife && maxima.length >= 1) {
+  if (checkFallingKnife && !isCommodity && maxima.length >= 1) {
     // Use the HIGHEST local maximum in the dataset for the 70% Bearish check.
     // A stock 90% below its 2022 major peak is a falling knife even if there was
     // a minor rally to $0.305 in Nov 2025 — check against the true peak, not just
@@ -883,7 +970,7 @@ async function processCode(code: string) {
   ]);
   if (bars.length < 12) return { sentiment: "Josephine" as Sentiment, error: "insufficient data", months: bars.length };
   const price = currentPrice ?? bars[bars.length - 1].close;
-  const result = classify3PTL(bars, price, lastMonthClose);
+  const result = classify3PTL(bars, price, lastMonthClose, isCommodityCode(code));
   return { ...result, months: bars.length };
 }
 
@@ -924,7 +1011,7 @@ export async function GET(request: Request) {
   if (bars.length < 12) return Response.json({ ...base, error: "insufficient data" });
 
   const price = currentPrice ?? bars[bars.length - 1].close;
-  const result = classify3PTL(bars, price, lastMonthClose);
+  const result = classify3PTL(bars, price, lastMonthClose, isCommodityCode(code));
 
   return Response.json({
     ...base,
