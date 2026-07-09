@@ -55,6 +55,42 @@ const YF_HEADERS = {
   Accept: "application/json",
 };
 
+/**
+ * Commodity aliases → Yahoo Finance continuous-futures symbols (USD, same
+ * monthly OHLC shape as equities, so the identical 3PTL engine applies).
+ * QAV rule: a stock whose UNDERLYING commodity is in Sell status is itself a
+ * sell / do-not-buy, regardless of its own chart — these sentiments gate the
+ * buy list client-side. Values chart-checked against tradingeconomics.com
+ * (e.g. /commodity/gold) — Yahoo futures and TE track the same contracts.
+ * Commodities Yahoo can't chart with 6y of monthly history (lithium
+ * carbonate, SGX iron ore, Newcastle coal) are handled by proxy or omitted —
+ * see lib/commodities.ts for the stock mapping and manual-override path.
+ */
+const COMMODITY_SYMBOLS: Record<string, string> = {
+  GOLD:      "GC=F",
+  SILVER:    "SI=F",
+  COPPER:    "HG=F",
+  OIL:       "CL=F",   // WTI crude
+  BRENT:     "BZ=F",
+  NATGAS:    "NG=F",   // Henry Hub
+  ALUMINIUM: "ALI=F",
+  PLATINUM:  "PL=F",
+  PALLADIUM: "PA=F",
+  IRONORE:   "TIO=F",  // 62% Fe CFR China
+  URANIUM:   "UX=F",
+  COAL:      "MTF=F",  // Rotterdam; Newcastle not on Yahoo
+  NICKEL:    "NI=F",
+};
+
+/** Resolve a request code to a Yahoo symbol: commodity aliases map to their
+ *  futures symbol; anything already symbol-like (contains =, ^ or .) passes
+ *  through unchanged; bare codes are ASX equities and get the .AX suffix. */
+function yahooSymbol(code: string): string {
+  const alias = COMMODITY_SYMBOLS[code.toUpperCase()];
+  if (alias) return alias;
+  return /[=^.]/.test(code) ? code : `${code}.AX`;
+}
+
 async function fetchMonthly(code: string): Promise<PriceBar[]> {
   // Use the v8 chart API but request no dividend/split adjustment by fetching
   // both adjusted and unadjusted close; we use the quote.high/low which are
@@ -76,7 +112,7 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
   // selection (CONFIRM_MONTHS=9 + most-recent-first search already favour recent
   // anchors; the extra year only rescues genuinely-significant edge-of-window highs).
   const start = end - 6 * 365 * 24 * 3600; // 6 years ago
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1mo&period1=${start}&period2=${end}&includePrePost=false&events=div%2Csplit`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1mo&period1=${start}&period2=${end}&includePrePost=false&events=div%2Csplit`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return [];
@@ -141,7 +177,7 @@ async function fetchMonthly(code: string): Promise<PriceBar[]> {
  * genuine last trading day of the previous month.
  */
 async function fetchLastCompletedMonthClose(code: string): Promise<number | null> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1d&range=2mo&includePrePost=false`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=2mo&includePrePost=false`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return null;
@@ -166,7 +202,7 @@ async function fetchLastCompletedMonthClose(code: string): Promise<number | null
 }
 
 async function fetchCurrentPrice(code: string): Promise<number | null> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.AX?interval=1d&range=5d&includePrePost=false`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=5d&includePrePost=false`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return null;
@@ -865,6 +901,19 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+
+  // &commodities=1 — classify every mapped commodity in one call (feeds the
+  // buy-list commodity gate: stock's underlying commodity Bearish → don't buy)
+  if (searchParams.get("commodities")) {
+    const names = Object.keys(COMMODITY_SYMBOLS);
+    const results = await Promise.all(names.map(processCode));
+    const out: Record<string, object> = {};
+    names.forEach((name, i) => {
+      out[name] = { ...results[i], symbol: COMMODITY_SYMBOLS[name] };
+    });
+    return Response.json({ commodities: out });
+  }
+
   const code = (searchParams.get("code") ?? "FEX").toUpperCase();
   const [bars, currentPrice, lastMonthClose] = await Promise.all([
     fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
