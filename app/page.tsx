@@ -14,8 +14,16 @@ import {
 import {
   TRENDLINE_STORAGE_KEY,
   StoredTrendlines,
+  TrendlineSentiment,
   TRENDLINE_SCORES,
 } from "@/lib/trendline-storage";
+import {
+  COMMODITIES,
+  STOCK_COMMODITY,
+  COMMODITY_STORAGE_KEY,
+  StoredCommodities,
+  effectiveCommoditySentiment,
+} from "@/lib/commodities";
 import {
   scoreStocks,
   makeBuyList,
@@ -117,6 +125,42 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
       // Flag positive Josephines (was Bullish, just a monthly dip) for teal badge (1=yes, null=no)
       _positiveJosephine: isPositiveJosephine ? 1 : null,
+    } as ScoredStock;
+    const vals = SCORE_KEYS
+      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
+      .filter((v): v is number => v !== null);
+    enriched.Count = vals.length;
+    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
+    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
+    enriched.QAV =
+      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
+        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
+        : null;
+    return enriched;
+  });
+}
+
+/**
+ * Apply the QAV commodity gate: a stock whose underlying commodity is in Sell
+ * (Bearish) status is itself a sell / do-not-buy, regardless of its own chart
+ * — force sentiment to Bearish and flag it for the table badge. Runs AFTER
+ * the auto 3PTL layer and BEFORE manual per-stock overrides (manual wins).
+ */
+function enrichWithCommodityGate(stocks: ScoredStock[], commodities: StoredCommodities): ScoredStock[] {
+  return stocks.map((stock) => {
+    const commodityKey = STOCK_COMMODITY[stock.Code];
+    if (!commodityKey) return stock;
+    const sentiment = effectiveCommoditySentiment(commodities, commodityKey);
+    const label = COMMODITIES.find((c) => c.key === commodityKey)?.label ?? commodityKey;
+    if (sentiment !== "Bearish") {
+      // Not gated — still annotate the commodity for display
+      return { ...stock, _commodity: label, _commoditySell: null } as ScoredStock;
+    }
+    const enriched = {
+      ...stock,
+      S_sentiment_long: TRENDLINE_SCORES.Bearish,
+      _commodity: label,
+      _commoditySell: 1,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -286,6 +330,9 @@ export default function HomePage() {
   const [trendlineChecking, setTrendlineChecking] = useState(false);
   const [trendlineProgress, setTrendlineProgress] = useState<{ done: number; total: number } | null>(null);
   const [trendlineLoaded, setTrendlineLoaded] = useState(false);
+  const [commodityData, setCommodityData] = useState<StoredCommodities | null>(null);
+  const [commodityChecking, setCommodityChecking] = useState(false);
+  const [showCommodityPanel, setShowCommodityPanel] = useState(false);
   const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
@@ -342,6 +389,13 @@ export default function HomePage() {
     } catch { /* corrupt — ignore */ }
   }
 
+  function loadCommoditiesFromStorage() {
+    try {
+      const raw = localStorage.getItem(COMMODITY_STORAGE_KEY);
+      if (raw) setCommodityData(JSON.parse(raw) as StoredCommodities);
+    } catch { /* corrupt — ignore */ }
+  }
+
   function loadSentimentsFromStorage() {
     try {
       const raw = localStorage.getItem(SENTIMENT_STORAGE_KEY);
@@ -377,12 +431,14 @@ export default function HomePage() {
     loadBuybacksFromStorage();
     loadSentimentsFromStorage();
     loadTrendlineFromStorage();
+    loadCommoditiesFromStorage();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
       if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
       if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
       if (e.key === TRENDLINE_STORAGE_KEY) loadTrendlineFromStorage();
+      if (e.key === COMMODITY_STORAGE_KEY) loadCommoditiesFromStorage();
     }
 
     window.addEventListener("storage", onStorageChange);
@@ -401,12 +457,13 @@ export default function HomePage() {
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
     if (trendlineData) scored = enrichWithTrendlines(scored, trendlineData);   // auto 3PTL
+    if (commodityData) scored = enrichWithCommodityGate(scored, commodityData); // commodity sell → gate
     if (Object.keys(sentimentOverrides).length > 0)
       scored = enrichWithSentimentOverrides(scored, sentimentOverrides);        // manual wins
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, trendlineData, sentimentOverrides]);
+  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -540,6 +597,56 @@ export default function HomePage() {
       setTrendlineProgress(null);
     }
   }, [rawRows]);
+
+  /** Run the 3PTL calculation for the commodity complex (QAV commodity gate). */
+  const checkCommodities = useCallback(async () => {
+    setCommodityChecking(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/trendline?commodities=1");
+      if (!res.ok) throw new Error(`Commodity API error ${res.status}`);
+      const json = await res.json() as { commodities: Record<string, { sentiment?: string; note?: string; error?: string }> };
+      const auto: StoredCommodities["auto"] = {};
+      for (const [key, entry] of Object.entries(json.commodities)) {
+        if (entry.error || !entry.sentiment) continue;
+        auto[key] = {
+          sentiment: entry.sentiment as TrendlineSentiment,
+          note: entry.note,
+        };
+      }
+      const stored: StoredCommodities = {
+        timestamp: new Date().toISOString(),
+        auto,
+        manual: commodityData?.manual ?? {},
+      };
+      localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
+      setCommodityData(stored);
+      setShowCommodityPanel(true);
+    } catch (e) {
+      setError(e instanceof Error ? `Commodity check: ${e.message}` : "Commodity check failed.");
+    } finally {
+      setCommodityChecking(false);
+    }
+  }, [commodityData]);
+
+  /** Cycle a commodity's manual sentiment: (unset) → Bullish → Josephine → Bearish → (unset).
+   *  Manual settings win over the auto calculation — used for the feedless
+   *  commodities (iron ore, coal, lithium, nickel: read the TE chart) and to
+   *  overrule the algorithm on any other. */
+  const cycleCommodityOverride = useCallback((key: string) => {
+    setCommodityData((prev) => {
+      const base: StoredCommodities = prev ?? { timestamp: null, auto: {}, manual: {} };
+      const order: (TrendlineSentiment | undefined)[] = [undefined, "Bullish", "Josephine", "Bearish"];
+      const current = base.manual[key];
+      const next = order[(order.indexOf(current) + 1) % order.length];
+      const manual = { ...base.manual };
+      if (next === undefined) delete manual[key];
+      else manual[key] = next;
+      const stored: StoredCommodities = { ...base, manual };
+      localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
+      return stored;
+    });
+  }, []);
 
   /** Set or clear a manual 3PTL sentiment override for one stock. */
   const saveSentimentOverride = useCallback((code: string, value: SentimentOverride | null) => {
@@ -687,6 +794,21 @@ export default function HomePage() {
                   </div>
                 )}
 
+                {/* Commodity 3PTL gate — underlying commodity in Sell = don't buy the stock */}
+                <button
+                  onClick={commodityData && !commodityChecking ? () => setShowCommodityPanel((v) => !v) : checkCommodities}
+                  disabled={commodityChecking}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                    commodityData
+                      ? "text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100"
+                      : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  title="3PTL sentiment for the commodity complex — stocks whose underlying commodity is Bearish are gated off the buy list"
+                >
+                  <BarChart2 className={`w-4 h-4 ${commodityChecking ? "animate-pulse" : ""}`} />
+                  {commodityChecking ? "Commodities…" : commodityData ? "Commodities ✓" : "Commodities"}
+                </button>
+
                 {/* Buyback — auto-check + manual fallback */}
                 {!buybackChecking && (
                   <button
@@ -733,6 +855,51 @@ export default function HomePage() {
             )}
           </div>
         </div>
+
+        {/* Commodity 3PTL panel */}
+        {showCommodityPanel && (
+          <div className="border-t border-amber-100 bg-amber-50/60 px-6 py-3">
+            <div className="max-w-screen-2xl mx-auto space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {COMMODITIES.map((c) => {
+                  const manual = commodityData?.manual[c.key];
+                  const auto = commodityData?.auto[c.key];
+                  const eff = effectiveCommoditySentiment(commodityData, c.key);
+                  const palette =
+                    eff === "Bullish"   ? "bg-emerald-100 text-emerald-800 border-emerald-300" :
+                    eff === "Bearish"   ? "bg-red-100 text-red-800 border-red-300" :
+                    eff === "Josephine" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
+                                          "bg-white text-gray-400 border-dashed border-gray-300";
+                  return (
+                    <button
+                      key={c.key}
+                      onClick={() => cycleCommodityOverride(c.key)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette}`}
+                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Josephine → Bearish → auto`}
+                    >
+                      {c.label} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Josephine" ? "◆" : "—"}
+                      {manual && <span className="ml-1 opacity-60">✎</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-4 text-xs text-amber-700">
+                <span>
+                  Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
+                  Feedless commodities (Iron Ore, Coal, Lithium, Nickel) — read{" "}
+                  <a href="https://tradingeconomics.com/commodities" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>{" "}
+                  and click the chip to set. Click any chip to override; ✎ = manual.
+                </span>
+                <button onClick={checkCommodities} disabled={commodityChecking} className="underline hover:text-amber-900">
+                  {commodityChecking ? "Refreshing…" : "Refresh auto 3PTL"}
+                </button>
+                {commodityData?.timestamp && (
+                  <span className="text-amber-500">updated {new Date(commodityData.timestamp).toLocaleDateString()}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Buyback manual entry panel */}
         {showBuybackPanel && (

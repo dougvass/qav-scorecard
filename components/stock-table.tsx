@@ -92,6 +92,11 @@ function SentimentBadge({
   const isOverridden = override !== undefined;
   const isPositiveJosephine = v === 0 &&
     (stock as Record<string, unknown>)._positiveJosephine === 1;
+  // Commodity gate: underlying commodity is in Sell status (QAV rule) —
+  // sentiment was forced Bearish by enrichWithCommodityGate unless overridden
+  const commodity = (stock as Record<string, unknown>)._commodity as string | undefined;
+  const commoditySell = !isOverridden &&
+    (stock as Record<string, unknown>)._commoditySell === 1;
 
   let label = "Josephine";
   let colorCls = SENTIMENT_COLORS["josephine"];
@@ -101,13 +106,18 @@ function SentimentBadge({
     label = "Josephine ↗";   // teal — was Bullish, just a monthly dip
     colorCls = SENTIMENT_COLORS["positive_josephine"];
   }
+  if (commoditySell) label = `Bearish ⛏`;
 
   return (
     <div ref={ref} className="relative inline-block">
       <button
         onClick={() => setOpen((x) => !x)}
         className={`text-xs px-2 py-0.5 rounded-full font-medium transition-opacity hover:opacity-80 ${colorCls}`}
-        title={isOverridden ? `Manual override: ${override}. Click to change.` : "Click to manually set 3PTL sentiment"}
+        title={
+          commoditySell
+            ? `Commodity gate: ${commodity} is in Sell status — stock forced Bearish (QAV rule). Manual override still available.`
+            : isOverridden ? `Manual override: ${override}. Click to change.` : "Click to manually set 3PTL sentiment"
+        }
       >
         {label}{isOverridden && " ✎"}
       </button>

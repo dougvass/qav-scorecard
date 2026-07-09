@@ -62,24 +62,26 @@ const YF_HEADERS = {
  * sell / do-not-buy, regardless of its own chart — these sentiments gate the
  * buy list client-side. Values chart-checked against tradingeconomics.com
  * (e.g. /commodity/gold) — Yahoo futures and TE track the same contracts.
- * Commodities Yahoo can't chart with 6y of monthly history (lithium
- * carbonate, SGX iron ore, Newcastle coal) are handled by proxy or omitted —
- * see lib/commodities.ts for the stock mapping and manual-override path.
+ * Commodities Yahoo can't chart with CURRENT 6y monthly history are NOT
+ * listed here — probed 2026-07-09: TIO=F (iron ore) frozen since Aug-2021,
+ * MTF=F (coal) stale since Jan-2025, NI=F (nickel) 404, UX=F (uranium
+ * futures) has a single data point. Iron ore / coal / lithium / nickel are
+ * therefore MANUAL commodities: the user reads the tradingeconomics.com
+ * chart and sets their sentiment in the UI (see lib/commodities.ts).
+ * Uranium uses the Sprott Physical Uranium Trust (U-UN.TO, holds physical
+ * U3O8) as its price proxy — actively traded, history through today.
  */
 const COMMODITY_SYMBOLS: Record<string, string> = {
   GOLD:      "GC=F",
   SILVER:    "SI=F",
   COPPER:    "HG=F",
-  OIL:       "CL=F",   // WTI crude
+  OIL:       "CL=F",     // WTI crude
   BRENT:     "BZ=F",
-  NATGAS:    "NG=F",   // Henry Hub
+  NATGAS:    "NG=F",     // Henry Hub
   ALUMINIUM: "ALI=F",
   PLATINUM:  "PL=F",
   PALLADIUM: "PA=F",
-  IRONORE:   "TIO=F",  // 62% Fe CFR China
-  URANIUM:   "UX=F",
-  COAL:      "MTF=F",  // Rotterdam; Newcastle not on Yahoo
-  NICKEL:    "NI=F",
+  URANIUM:   "U-UN.TO",  // Sprott physical trust proxy (CAD; trend is what matters)
 };
 
 /** Resolve a request code to a Yahoo symbol: commodity aliases map to their
