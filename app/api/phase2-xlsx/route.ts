@@ -17,12 +17,34 @@ import * as XLSX from "xlsx";
 interface Phase2Result {
   S_equity_inc: number | null;
   S_pe_hi_lo: number | null;
+  /** Balance date of the last reported numbers (col D "Last Period Analysed"),
+   *  ISO yyyy-mm-dd. Drives the data-freshness rule: don't buy on numbers
+   *  older than 6 months — hold off during reporting season until new data. */
+  lastPeriod: string | null;
 }
 
 function toScore(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return isFinite(n) ? n : null;
+}
+
+/** Excel date cell → ISO yyyy-mm-dd. Handles Date objects (cellDates), Excel
+ *  serial numbers, and pre-formatted strings. */
+function toIsoDate(v: unknown): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  if (typeof v === "number" && isFinite(v) && v > 20000 && v < 80000) {
+    // Excel serial (1900 epoch): days since 1899-12-30
+    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+  if (typeof v === "string") {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+  return null;
 }
 
 export async function POST(request: Request) {
@@ -34,7 +56,8 @@ export async function POST(request: Request) {
     }
 
     const buffer = await file.arrayBuffer();
-    const wb = XLSX.read(new Uint8Array(buffer), { type: "array" });
+    // cellDates so "Last Period Analysed" comes through as Date, not serial
+    const wb = XLSX.read(new Uint8Array(buffer), { type: "array", cellDates: true });
 
     const ws = wb.Sheets["QAV_updated"];
     if (!ws) {
@@ -54,6 +77,7 @@ export async function POST(request: Request) {
     const sampleHeaders = Object.keys(rows[0] ?? {});
     const peHiLoKey   = sampleHeaders.find(h => h.includes("PE Hi/Lo"))   ?? "6. PE Hi/Lo";
     const equityIncKey = sampleHeaders.find(h => h.includes("Equity Inc")) ?? "7. Equity Inc";
+    const lastPeriodKey = sampleHeaders.find(h => h.includes("Last Period Analysed")) ?? "Last Period Analysed";
 
     const results: Record<string, Phase2Result> = {};
 
@@ -64,6 +88,7 @@ export async function POST(request: Request) {
       results[code] = {
         S_pe_hi_lo:   toScore(row[peHiLoKey]),
         S_equity_inc: toScore(row[equityIncKey]),
+        lastPeriod:   toIsoDate(row[lastPeriodKey]),
       };
     }
 

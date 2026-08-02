@@ -347,7 +347,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                     }`}
                   >
                     <td className="px-3 py-3 text-xs text-gray-400">{idx + 1}</td>
-                    <td className="px-3 py-3 font-bold">
+                    <td className="px-3 py-3 font-bold whitespace-nowrap">
                       <a
                         href={`https://finance.yahoo.com/quote/${stock.Code}.AX/`}
                         target="_blank"
@@ -358,6 +358,14 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       >
                         {stock.Code}
                       </a>
+                      {(stock as Record<string, unknown>)._staleData === 1 && (
+                        <span
+                          className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 align-middle"
+                          title={`HOLD — last reported numbers are ${((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)} months old (period ${(stock as Record<string, unknown>)._lastPeriod}). Reporting-season rule: don't buy on data older than 6 months — check Stock Doctor for fresh numbers.`}
+                        >
+                          📅 {((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)}mo
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-3 text-gray-700 max-w-[220px] truncate" title={stock.Name}>
                       {stock.Name}

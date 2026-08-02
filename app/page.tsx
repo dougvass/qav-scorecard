@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
-import { PHASE2_STORAGE_KEY, StoredPhase2 } from "@/lib/phase2-storage";
+import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS } from "@/lib/phase2-storage";
 import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
   SENTIMENT_STORAGE_KEY,
@@ -57,8 +57,8 @@ const SCORE_KEYS = [
   "S_fh_rating", "S_fh_trend", "S_ownership", "S_buyback", "S_new_upturn",
 ] as const;
 
-// Phase 2 payload: Code → { S_equity_inc, S_pe_hi_lo }
-type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null }>;
+// Phase 2 payload: Code → { S_equity_inc, S_pe_hi_lo, lastPeriod }
+type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null; lastPeriod?: string | null }>;
 
 // Buyback payload: Code → active flag
 type BuybackMap = Record<string, boolean>;
@@ -94,6 +94,15 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     const enriched = { ...stock } as ScoredStock;
     if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
     if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+    // Data-freshness rule: numbers older than 6 months = HOLD OFF buying
+    // until the company reports (reporting-season rule). Flag, don't score —
+    // staleness says nothing about quality, only about buy timing.
+    if (data.lastPeriod) {
+      const age = monthsOld(data.lastPeriod);
+      (enriched as Record<string, unknown>)._lastPeriod = data.lastPeriod;
+      (enriched as Record<string, unknown>)._dataMonthsOld = age;
+      (enriched as Record<string, unknown>)._staleData = age !== null && age > STALE_MONTHS ? 1 : null;
+    }
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -977,6 +986,36 @@ export default function HomePage() {
             {error}
           </div>
         )}
+
+        {/* Reporting-season data-freshness reminder: numbers > 6 months old */}
+        {(() => {
+          if (!allStocks) return null;
+          const stale = allStocks
+            .filter((s) => (s as Record<string, unknown>)._staleData === 1)
+            .map((s) => ({
+              code: s.Code,
+              age: (s as Record<string, unknown>)._dataMonthsOld as number,
+              onBuyList: buyList.some((b) => b.Code === s.Code),
+            }))
+            .sort((a, b) => b.age - a.age);
+          if (stale.length === 0) return null;
+          const staleOnBuyList = stale.filter((s) => s.onBuyList);
+          return (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-xl text-sm space-y-1">
+              <p className="font-semibold">
+                📅 Reporting-season hold: {stale.length} stock{stale.length !== 1 ? "s" : ""} running on numbers
+                older than {STALE_MONTHS} months{staleOnBuyList.length > 0 && (
+                  <> — {staleOnBuyList.length} on your buy list</>
+                )}. Check Stock Doctor for fresh data before buying.
+              </p>
+              {staleOnBuyList.length > 0 && (
+                <p className="font-mono text-xs">
+                  Buy list: {staleOnBuyList.map((s) => `${s.code} (${s.age.toFixed(1)}mo)`).join(", ")}
+                </p>
+              )}
+            </div>
+          );
+        })()}
 
         {!allStocks && (
           <div className="flex flex-col items-center gap-8 py-16">
