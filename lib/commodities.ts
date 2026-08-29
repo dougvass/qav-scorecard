@@ -2,10 +2,11 @@
  * Commodity 3PTL gate — QAV rule: a stock whose UNDERLYING commodity is in
  * Sell (Bearish) status is itself a sell / do-not-buy, regardless of its own
  * chart. Commodity sentiment comes from the same 3PTL engine as stocks
- * (/api/trendline?commodities=1) where Yahoo Finance has a live monthly feed;
- * commodities with no reliable feed (probed 2026-07-09: iron ore, coal,
- * lithium, nickel) are MANUAL — read the tradingeconomics.com chart and set
- * their sentiment by hand in the UI.
+ * (/api/trendline?commodities=1) where Yahoo Finance has a live monthly feed.
+ * Iron ore has no reachable feed but IS auto-classified, from a monthly series
+ * embedded in the API off the Market Index workbook (refresh it when a new
+ * workbook is downloaded). Coal, lithium and nickel remain MANUAL — read the
+ * tradingeconomics.com chart and set their sentiment by hand in the UI.
  */
 
 import type { TrendlineSentiment } from "./trendline-storage";
@@ -13,7 +14,8 @@ import type { TrendlineSentiment } from "./trendline-storage";
 export interface CommodityDef {
   key: string;
   label: string;
-  /** Yahoo symbol served by /api/trendline?commodities=1 — null means manual-only */
+  /** Yahoo symbol served by /api/trendline?commodities=1; "embedded" for a
+   *  series carried inside the API; null means manual-only */
   symbol: string | null;
   /** Reference chart for the human read (Tony's 3PTL by eye) */
   teUrl: string;
@@ -30,8 +32,12 @@ export const COMMODITIES: CommodityDef[] = [
   { key: "PLATINUM",  label: "Platinum",   symbol: "PL=F",    teUrl: "https://tradingeconomics.com/commodity/platinum" },
   { key: "PALLADIUM", label: "Palladium",  symbol: "PA=F",    teUrl: "https://tradingeconomics.com/commodity/palladium" },
   { key: "URANIUM",   label: "Uranium",    symbol: "U-UN.TO", teUrl: "https://tradingeconomics.com/commodity/uranium" },
-  // Manual-only: no live Yahoo series — set sentiment from the TE chart
-  { key: "IRONORE",   label: "Iron Ore",   symbol: null,      teUrl: "https://tradingeconomics.com/commodity/iron-ore" },
+  // Iron ore has no reachable live feed (Yahoo's TIO=F froze in 2021,
+  // marketindex.com.au 403s server-side), so the API classifies it from a
+  // monthly series embedded from the Market Index workbook — auto, but lagged
+  // by up to a month. The chip still accepts a manual override.
+  { key: "IRONORE",   label: "Iron Ore",   symbol: "embedded", teUrl: "https://tradingeconomics.com/commodity/iron-ore" },
+  // Manual-only: no series available at all — set sentiment from the TE chart
   { key: "COAL",      label: "Coal",       symbol: null,      teUrl: "https://tradingeconomics.com/commodity/coal" },
   { key: "LITHIUM",   label: "Lithium",    symbol: null,      teUrl: "https://tradingeconomics.com/commodity/lithium" },
   { key: "NICKEL",    label: "Nickel",     symbol: null,      teUrl: "https://tradingeconomics.com/commodity/nickel" },

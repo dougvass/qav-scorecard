@@ -84,6 +84,46 @@ const COMMODITY_SYMBOLS: Record<string, string> = {
   URANIUM:   "U-UN.TO",  // Sprott physical trust proxy (CAD; trend is what matters)
 };
 
+
+/**
+ * Commodities with NO live feed anywhere we can reach, carried as an embedded
+ * monthly series instead of a manual chip.
+ *
+ * IRON ORE (USD/t, 62pc Fe CFR China, month-end): Yahoo's TIO=F has been frozen
+ * since Aug-2021 and marketindex.com.au returns 403 to server-side fetches, so
+ * the series is lifted from the user's monthly Market Index workbook
+ * (Commodities tab, column G). Sanity-checked against QAV HQ's own commodity
+ * engine: our L1 anchor lands on 2022-10 @ 92.43 — the exact month and value
+ * HQ's CommStatusCode tab records — and both read Iron Ore as JOSEPHINE.
+ *
+ * REFRESH: re-run the extract when a new Market Index workbook is downloaded.
+ * `asOf` is returned by the API so a stale series is visible rather than silent;
+ * a month's lag rarely flips a trend read, but it is real.
+ */
+const EMBEDDED_MONTHLY: Record<string, { asOf: string; bars: [string, number][] }> = {
+  IRONORE: {
+    asOf: "2026-06",
+    bars: [
+      ["2018-07",67.67], ["2018-08",66.03], ["2018-09",68.11], ["2018-10",73.96], ["2018-11",64.77], ["2018-12",71.3],
+      ["2019-01",84.45], ["2019-02",83.43], ["2019-03",86.37], ["2019-04",93.79], ["2019-05",97.76], ["2019-06",112.9],
+      ["2019-07",115.55], ["2019-08",84.64], ["2019-09",92.24], ["2019-10",82.75], ["2019-11",86.01], ["2019-12",90.92],
+      ["2020-01",81.35], ["2020-02",82.93], ["2020-03",82.69], ["2020-04",82.37], ["2020-05",99.5], ["2020-06",98.45],
+      ["2020-07",108.9], ["2020-08",122.53], ["2020-09",123.98], ["2020-10",120.19], ["2020-11",129.31], ["2020-12",158.15],
+      ["2021-01",168.13], ["2021-02",165.61], ["2021-03",166.9], ["2021-04",179.63], ["2021-05",205.73], ["2021-06",214.55],
+      ["2021-07",211.99], ["2021-08",159.25], ["2021-09",119.65], ["2021-10",121.23], ["2021-11",94.97], ["2021-12",112.5],
+      ["2022-01",131.15], ["2022-02",141.99], ["2022-03",150.84], ["2022-04",150.77], ["2022-05",133.51], ["2022-06",130.0],
+      ["2022-07",107.22], ["2022-08",104.76], ["2022-09",98.31], ["2022-10",92.43], ["2022-11",93.25], ["2022-12",111.28],
+      ["2023-01",123.37], ["2023-02",125.75], ["2023-03",127.06], ["2023-04",116.14], ["2023-05",105.07], ["2023-06",112.57],
+      ["2023-07",112.46], ["2023-08",109.4], ["2023-09",120.79], ["2023-10",118.91], ["2023-11",130.46], ["2023-12",139.92],
+      ["2024-01",135.13], ["2024-02",114.57], ["2024-03",109.53], ["2024-04",110.91], ["2024-05",117.52], ["2024-06",106.31],
+      ["2024-07",105.94], ["2024-08",98.7], ["2024-09",93.83], ["2024-10",103.78], ["2024-11",102.44], ["2024-12",103.61],
+      ["2025-01",101.59], ["2025-02",106.9], ["2025-03",102.51], ["2025-04",99.76], ["2025-05",99.12], ["2025-06",94.17],
+      ["2025-07",99.12], ["2025-08",101.81], ["2025-09",105.29], ["2025-10",105.83], ["2025-11",104.84], ["2025-12",107.13],
+      ["2026-01",105.62], ["2026-02",99.06], ["2026-03",106.38], ["2026-04",107.18], ["2026-05",104.52], ["2026-06",100.2]
+    ],
+  },
+};
+
 /** Resolve a request code to a Yahoo symbol: commodity aliases map to their
  *  futures symbol; anything already symbol-like (contains =, ^ or .) passes
  *  through unchanged; bare codes are ASX equities and get the .AX suffix. */
@@ -95,7 +135,8 @@ function yahooSymbol(code: string): string {
 
 /** Commodity aliases and raw non-ASX symbols get commodity-mode 3PTL rules. */
 function isCommodityCode(code: string): boolean {
-  return COMMODITY_SYMBOLS[code.toUpperCase()] !== undefined || /[=^.]/.test(code);
+  const u = code.toUpperCase();
+  return COMMODITY_SYMBOLS[u] !== undefined || EMBEDDED_MONTHLY[u] !== undefined || /[=^.]/.test(code);
 }
 
 async function fetchMonthly(code: string): Promise<PriceBar[]> {
@@ -965,6 +1006,14 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
 // ── Full pipeline ──────────────────────────────────────────────────────────────
 
 async function processCode(code: string) {
+  const embedded = EMBEDDED_MONTHLY[code.toUpperCase()];
+  if (embedded) {
+    const bars: PriceBar[] = embedded.bars.map(([date, v]) => ({ date, high: v, low: v, close: v }));
+    const price = bars[bars.length - 1].close;
+    const prev  = bars.length >= 2 ? bars[bars.length - 2].close : null;
+    const result = classify3PTL(bars, price, prev, true);
+    return { ...result, months: bars.length, asOf: embedded.asOf, source: "Market Index workbook" };
+  }
   const [bars, currentPrice, lastMonthClose] = await Promise.all([
     fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
   ]);
@@ -994,11 +1043,11 @@ export async function GET(request: Request) {
   // &commodities=1 — classify every mapped commodity in one call (feeds the
   // buy-list commodity gate: stock's underlying commodity Bearish → don't buy)
   if (searchParams.get("commodities")) {
-    const names = Object.keys(COMMODITY_SYMBOLS);
+    const names = [...Object.keys(COMMODITY_SYMBOLS), ...Object.keys(EMBEDDED_MONTHLY)];
     const results = await Promise.all(names.map(processCode));
     const out: Record<string, object> = {};
     names.forEach((name, i) => {
-      out[name] = { ...results[i], symbol: COMMODITY_SYMBOLS[name] };
+      out[name] = { ...results[i], symbol: COMMODITY_SYMBOLS[name] ?? "embedded" };
     });
     return Response.json({ commodities: out });
   }
