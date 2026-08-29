@@ -90,10 +90,21 @@ function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredS
 function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock[] {
   return stocks.map((stock) => {
     const data = phase2[stock.Code];
-    if (!data) return stock;
+    // A stock with NO Phase 2 row at all still needs flagging — that is exactly
+    // the case that matters: a new name has appeared on the buy list and its
+    // PE Hi/Lo and Equity scores have never been collected from Stock Doctor.
+    if (!data) {
+      return { ...stock, _missingPhase2: 1, _missingWhich: "PE Hi/Lo + Equity" } as ScoredStock;
+    }
     const enriched = { ...stock } as ScoredStock;
     if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
     if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+    const gaps = [
+      data.S_pe_hi_lo === null ? "PE Hi/Lo" : null,
+      data.S_equity_inc === null ? "Equity" : null,
+    ].filter(Boolean);
+    (enriched as Record<string, unknown>)._missingPhase2 = gaps.length ? 1 : null;
+    (enriched as Record<string, unknown>)._missingWhich = gaps.join(" + ") || null;
     // Data-freshness rule: numbers older than 6 months = HOLD OFF buying
     // until the company reports (reporting-season rule). Flag, don't score —
     // staleness says nothing about quality, only about buy timing.
@@ -1013,6 +1024,46 @@ export default function HomePage() {
                   Buy list: {staleOnBuyList.map((s) => `${s.code} (${s.age.toFixed(1)}mo)`).join(", ")}
                 </p>
               )}
+            </div>
+          );
+        })()}
+
+        {/* Phase 2 collection prompt: buy-list stocks with no PE Hi/Lo or Equity
+            score yet. These are the names that have newly surfaced on the list
+            since the last Stock Doctor collection round — the sheet fills in
+            over time as stocks come on and off. */}
+        {(() => {
+          if (!allStocks || !phase2Loaded) return null;
+          const gaps = buyList
+            .filter((s) => (s as Record<string, unknown>)._missingPhase2 === 1)
+            .map((s) => ({
+              code: s.Code,
+              which: (s as Record<string, unknown>)._missingWhich as string,
+              qav: s.QAV,
+            }))
+            .sort((a, b) => (b.qav ?? 0) - (a.qav ?? 0));
+          if (gaps.length === 0) return null;
+          return (
+            <div className="bg-sky-50 border border-sky-200 text-sky-900 px-5 py-3 rounded-xl text-sm space-y-2">
+              <p className="font-semibold">
+                🔎 Phase 2 data needed: {gaps.length} buy-list stock{gaps.length !== 1 ? "s" : ""}{" "}
+                {gaps.length !== 1 ? "have" : "has"} no PE Hi/Lo or Equity score yet — collect from Stock
+                Doctor and add to the Phase 2 sheet (columns D/E), then re-upload.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {gaps.map((g) => (
+                  <a
+                    key={g.code}
+                    href={`https://www.stockdoctor.com.au/Company/${g.code}?page=financials`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-2 py-0.5 rounded-full bg-white border border-sky-300 text-xs font-medium hover:bg-sky-100 transition-colors"
+                    title={`${g.code} — missing ${g.which}. Opens Stock Doctor financials: PE row for 'lowest in 3 years', Equity row for 'increasing YoY'.`}
+                  >
+                    {g.code} <span className="text-sky-500">{g.which}</span> ↗
+                  </a>
+                ))}
+              </div>
             </div>
           );
         })()}

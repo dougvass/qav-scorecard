@@ -358,6 +358,18 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       >
                         {stock.Code}
                       </a>
+                      {(stock as Record<string, unknown>)._missingPhase2 === 1 && (
+                        <a
+                          href={`https://www.stockdoctor.com.au/Company/${stock.Code}?page=financials`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 border border-sky-300 align-middle hover:bg-sky-200"
+                          title={`No Phase 2 score yet for ${(stock as Record<string, unknown>)._missingWhich}. Open Stock Doctor financials to collect it, then add to the Phase 2 sheet.`}
+                        >
+                          🔎 P2
+                        </a>
+                      )}
                       {(stock as Record<string, unknown>)._staleData === 1 && (
                         <span
                           className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 align-middle"
