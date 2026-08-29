@@ -1053,6 +1053,30 @@ export async function GET(request: Request) {
   }
 
   const code = (searchParams.get("code") ?? "FEX").toUpperCase();
+
+  // Embedded-series commodities (iron ore) have no Yahoo symbol to fetch —
+  // the debug view has its own fetch path, so route them the same way the
+  // batch endpoint does rather than letting fetchMonthly return nothing.
+  const embeddedDebug = EMBEDDED_MONTHLY[code];
+  if (embeddedDebug) {
+    const eBars: PriceBar[] = embeddedDebug.bars.map(([date, v]) => ({ date, high: v, low: v, close: v }));
+    const ePrice = eBars[eBars.length - 1].close;
+    const ePrev  = eBars.length >= 2 ? eBars[eBars.length - 2].close : null;
+    const eResult = classify3PTL(eBars, ePrice, ePrev, true);
+    return Response.json({
+      code, runtime: "edge", monthly_bars: eBars.length, current_price: ePrice,
+      last_month_close: ePrev, asOf: embeddedDebug.asOf, source: "Market Index workbook",
+      ...eResult,
+      oldest: eBars[0]?.date, newest: eBars[eBars.length - 1]?.date,
+      ...(searchParams.get("bars") ? { all_bars: eBars } : {}),
+      last_4: eBars.slice(-4).map(b => ({ date: b.date, high: b.high, low: b.low, close: b.close })),
+      h1_detail: eResult.h1 ? `${eResult.h1.date} @ ${eResult.h1.price.toFixed(3)}` : null,
+      h2_detail: eResult.h2 ? `${eResult.h2.date} @ ${eResult.h2.price.toFixed(3)}` : null,
+      l1_detail: eResult.l1 ? `${eResult.l1.date} @ ${eResult.l1.price.toFixed(3)}` : null,
+      l2_detail: eResult.l2 ? `${eResult.l2.date} @ ${eResult.l2.price.toFixed(3)}` : null,
+    });
+  }
+
   const [bars, currentPrice, lastMonthClose] = await Promise.all([
     fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
   ]);
