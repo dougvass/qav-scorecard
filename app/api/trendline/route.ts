@@ -472,8 +472,29 @@ function rayRetestedAbove(maxima: Pivot[], h1: Pivot, h2: Pivot): Pivot | null {
   return null;
 }
 
-/** Mirror of rayRetestedAbove for the sell (support) line through troughs. */
-function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
+/**
+ * A support line that price fell through and never regained is DEAD after this
+ * many months — a chartist would long since have redrawn from the newer lows.
+ * CONFIRMED via ALK (2026-08-30): its sell line ran from L1 Feb-2021 @$0.655 to
+ * L2 Nov-2021 @$0.760 — a 9-month baseline extrapolated 58 months to $1.437 —
+ * and EVERY one of the twelve troughs since 2021 sat below it, none recovering.
+ * That dead line still generated "breaches", which pinned ALK to Bearish under
+ * the sell-signal hold while it rallied to $1.925, far above both its lines.
+ * A RECENT unrecovered pierce is the live sell signal and must be kept, so only
+ * long-failed lines are discarded. Any threshold from 12 to 36 months leaves
+ * the 15-stock reference set fully correct; 36 is the most conservative choice
+ * that still fixes ALK, and it changed only 1 of a 40-stock sample of
+ * currently-held stocks.
+ */
+const DEAD_SUPPORT_MONTHS = 36;
+
+/**
+ * Near-mirror of rayRetestedAbove for the sell (support) line through troughs.
+ * NOT a pure mirror: "pierced and never recovered" means opposite things for
+ * the two lines — a held breakout keeps a RESISTANCE line as the reference,
+ * whereas a held breakdown means a SUPPORT line has failed.
+ */
+function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot, currentIdx?: number): Pivot | null {
   const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
   const after = minima.filter(m => m.idx > l2.idx).sort((a, b) => a.idx - b.idx);
   for (let i = 0; i < after.length; i++) {
@@ -485,7 +506,11 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot): Pivot | null {
       const lineAtN = l1.price + slope * (n.idx - l1.idx);
       if (n.price > lineAtN + TOUCH_EPS) return m; // whipsaw — redraw from the failed-breakdown trough
     }
-    return null; // broke down and held — confirmed breakdown, line stays live
+    // Broke down and stayed down. If that happened long ago the line stopped
+    // being support years back — discard it. If it is recent, it IS the live
+    // sell signal, so keep the line and let the breach-hold act on it.
+    if (currentIdx !== undefined && (currentIdx - m.idx) > DEAD_SUPPORT_MONTHS) return m;
+    return null;
   }
   return null;
 }
@@ -647,7 +672,7 @@ function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: n
 
   for (const l2 of candidates) {
     if (!noLowViolation(bars, l1, l2)) continue;
-    if (rayRetestedBelow(minima, l1, l2)) continue; // failed breakdown since — stale, skip
+    if (rayRetestedBelow(minima, l1, l2, currentIdx)) continue; // failed breakdown since — stale, skip
     if (lineAt(l1, l2, currentIdx) > 0) return l2;
   }
   return null;
@@ -679,7 +704,7 @@ function searchSellLine(bars: PriceBar[], minima: Pivot[], confirmedMinima: Pivo
       .sort((a, b) => b.idx - a.idx);
     for (const l1 of l1Candidates) {
       if (!noLowViolation(bars, l1, l2)) continue;
-      if (rayRetestedBelow(minima, l1, l2)) continue;
+      if (rayRetestedBelow(minima, l1, l2, currentIdx)) continue;
       const lineValue = lineAt(l1, l2, currentIdx);
       if (lineValue > 0) return { l1, l2, line: lineValue };
     }
