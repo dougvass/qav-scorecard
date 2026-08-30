@@ -86,6 +86,50 @@ function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredS
   });
 }
 
+/** Stock Doctor writes dates as dd/mm/yyyy; Date.parse() reads that as US
+ *  mm/dd/yyyy and silently mangles anything past the 12th. */
+function parseSdDate(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const m = v.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const [, d, mo, y] = m;
+    return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  const iso = v.trim().match(/^\d{4}-\d{2}-\d{2}/);
+  return iso ? iso[0] : null;
+}
+
+/**
+ * Data-freshness straight from the Phase 1 CSV's "Last Period Analysed".
+ *
+ * This is the RIGHT source for the 6-month reporting-season rule: the CSV is
+ * re-exported often, so its dates are current, and it covers every stock in the
+ * universe rather than only those in the Phase 2 workbook. The Phase 2 date is
+ * a snapshot frozen at whenever that workbook was last built — it can only lag.
+ * (Found via LAU: reported FY26 on 24-Aug-2026, but the Phase 2 column still
+ * read 31/12/2025 from a 13-Jul export and flagged it 8 months stale, not 2.)
+ * enrichWithPhase2 may still move the date FORWARD if it holds something newer,
+ * never backward.
+ */
+function enrichWithCsvFreshness(stocks: ScoredStock[], rows: StockRow[]): ScoredStock[] {
+  const byCode = new Map<string, string | null>();
+  for (const r of rows) {
+    const code = String((r as Record<string, unknown>).Code ?? "").trim().toUpperCase();
+    if (code) byCode.set(code, parseSdDate((r as Record<string, unknown>)["Last Period Analysed"]));
+  }
+  return stocks.map((stock) => {
+    const iso = byCode.get(stock.Code.toUpperCase());
+    if (!iso) return stock;
+    const age = monthsOld(iso);
+    return {
+      ...stock,
+      _lastPeriod: iso,
+      _dataMonthsOld: age,
+      _staleData: age !== null && age > STALE_MONTHS ? 1 : null,
+    } as ScoredStock;
+  });
+}
+
 /** Apply Phase 2 scores (equity trend + PE hi-lo) and recompute derived stats. */
 function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock[] {
   return stocks.map((stock) => {
@@ -108,7 +152,11 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     // Data-freshness rule: numbers older than 6 months = HOLD OFF buying
     // until the company reports (reporting-season rule). Flag, don't score —
     // staleness says nothing about quality, only about buy timing.
-    if (data.lastPeriod) {
+    // The CSV (enrichWithCsvFreshness) is the primary source because it is
+    // re-exported often; only take the Phase 2 date when it is NEWER, which
+    // happens when the financials pages were scraped after the last CSV run.
+    const existing = (enriched as Record<string, unknown>)._lastPeriod as string | undefined;
+    if (data.lastPeriod && (!existing || data.lastPeriod > existing)) {
       const age = monthsOld(data.lastPeriod);
       (enriched as Record<string, unknown>)._lastPeriod = data.lastPeriod;
       (enriched as Record<string, unknown>)._dataMonthsOld = age;
@@ -473,6 +521,7 @@ export default function HomePage() {
       ? Object.fromEntries(Object.entries(msRatings).map(([k, v]) => [k, v.starRating ?? null]))
       : undefined;
     let scored = scoreStocks(rawRows, msMap, rates);
+    scored = enrichWithCsvFreshness(scored, rawRows);   // freshness from the CSV first
     if (msRatings)   scored = enrichWithMsRatings(scored, msRatings);
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
