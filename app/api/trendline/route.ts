@@ -405,15 +405,57 @@ function localMinima(bars: PriceBar[], lookback = 2): Pivot[] {
 const COMMODITY_CONFIRM_MONTHS = 3;
 let confirmMonthsActive = CONFIRM_MONTHS;
 
-function isConfirmed(p: Pivot, currentIdx: number): boolean {
-  return p.idx <= currentIdx - confirmMonthsActive - 1;
+/**
+ * Confirmation window, scaled down for SHORT LISTING HISTORIES.
+ *
+ * CONFIRM_MONTHS = 9 assumes the ~6 years of monthly bars a long-listed stock
+ * has. On a recent listing it silently disqualifies almost every pivot: CCL
+ * (Cuscal, listed Nov-2024) has just 22 bars, so a 9-month window left exactly
+ * ONE confirmed trough — and you need two to draw a line at all, so CCL came
+ * back "insufficient data" and defaulted to Josephine while trading at $5.49
+ * against a support line at $4.56.
+ *
+ * Scaling as bars/6 keeps the full 9 months for anything with ≥54 bars (i.e.
+ * every normal history — unchanged behaviour) and relaxes only for genuinely
+ * short ones, with a floor of 3 so a pivot always needs SOME confirmation.
+ * The 18-stock reference set is correct for divisors 4–8; 10 breaks CCL.
+ */
+const SHORT_HISTORY_DIVISOR = 6;
+const MIN_CONFIRM_MONTHS = 3;
+
+function confirmMonthsFor(currentIdx: number): number {
+  return Math.min(confirmMonthsActive,
+                  Math.max(MIN_CONFIRM_MONTHS, Math.floor(currentIdx / SHORT_HISTORY_DIVISOR)));
 }
+
+function isConfirmed(p: Pivot, currentIdx: number): boolean {
+  return p.idx <= currentIdx - confirmMonthsFor(currentIdx) - 1;
+}
+
+/**
+ * Wick tolerance when testing whether intervening bars violate a trendline.
+ *
+ * Tony draws his lines on a LINE CHART of closes, so a wick that poked a few
+ * cents through a line he'd never have seen at all. Our tick-exact test threw
+ * away the correct line on SRV (2026-08-30): his L1 Sep-2023 @$2.83 → L2
+ * Mar-2025 @$4.80 was rejected because two lows grazed it — Oct-2023 low 2.880
+ * vs line 2.939 (2.0%) and Jan-2024 low 3.250 vs line 3.268 (0.55%). With the
+ * pair gone the search fell back to a 2020 anchor giving a line at $3.42, so a
+ * stock trading at $6.10 UNDER its real support read as Josephine.
+ *
+ * 3.5% sits mid-band: SRV needs ≥2.1%, and the set breaks somewhere above 5%
+ * (at 8% KAR and LAU both flip). This is the pragmatic stand-in for the
+ * close-based-pivot rewrite noted in the methodology memo — not a fudge factor
+ * to widen further without re-running the reference set.
+ */
+const PIERCE_TOL = 0.035;
 
 /** Check that no bar's high between fromIdx and toIdx is above the P1→P2 line */
 function noHighViolation(bars: PriceBar[], p1: Pivot, p2: Pivot): boolean {
   const slope = (p2.price - p1.price) / (p2.idx - p1.idx);
   for (let k = p1.idx + 1; k < p2.idx; k++) {
-    if (bars[k].high > p1.price + slope * (k - p1.idx) + 1e-9) return false;
+    const line = p1.price + slope * (k - p1.idx);
+    if (bars[k].high > line * (1 + PIERCE_TOL) + 1e-9) return false;
   }
   return true;
 }
@@ -422,7 +464,8 @@ function noHighViolation(bars: PriceBar[], p1: Pivot, p2: Pivot): boolean {
 function noLowViolation(bars: PriceBar[], p1: Pivot, p2: Pivot): boolean {
   const slope = (p2.price - p1.price) / (p2.idx - p1.idx);
   for (let k = p1.idx + 1; k < p2.idx; k++) {
-    if (bars[k].low < p1.price + slope * (k - p1.idx) - 1e-9) return false;
+    const line = p1.price + slope * (k - p1.idx);
+    if (bars[k].low < line * (1 - PIERCE_TOL) - 1e-9) return false;
   }
   return true;
 }
@@ -553,10 +596,10 @@ function rayRetestedBelow(minima: Pivot[], l1: Pivot, l2: Pivot, currentIdx?: nu
  * CORRECT pair (Apr-2022 → Mar-2025 @ $1.63 — confirmed against Tony's actual
  * live chart) without ever visiting the dead-end steep-decline candidates.
  */
-function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number, gap: number, requireDeclining: boolean): Pivot | null {
+function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: number, gap: number): Pivot | null {
   const candidates = maxima
     .filter(m => m.idx > h1.idx + gap && isConfirmed(m, currentIdx)
-              && (!requireDeclining || m.price < h1.price))
+              && m.price < h1.price) // a buy line may NEVER rise — see BUY_LINES_NEVER_RISE
     .sort((a, b) => b.idx - a.idx); // most recent confirmed peak first
 
   for (const h2 of candidates) {
@@ -567,8 +610,10 @@ function findH2ForH1(maxima: Pivot[], h1: Pivot, bars: PriceBar[], currentIdx: n
   return null;
 }
 
-/** One pass of the buy-line search; when `requireDeclining`, only H1→H2 pairs
- *  with H2 BELOW H1 (genuinely falling resistance) are considered. */
+/** One pass of the buy-line search. H2 must always be BELOW H1 (a buy line can
+ *  never slope up — see BUY_LINES_NEVER_RISE); `requireDeclining` now only gates
+ *  the relaxed-spacing retry on the primary anchor, so the second, unrestricted
+ *  pass differs from the first purely in which H1 anchors it will consider. */
 function searchBuyLine(bars: PriceBar[], maxima: Pivot[], confirmedMaxima: Pivot[], baseH1: Pivot, currentIdx: number, requireDeclining: boolean):
   { h1: Pivot; h2: Pivot; line: number } | null {
 
@@ -583,7 +628,7 @@ function searchBuyLine(bars: PriceBar[], maxima: Pivot[], confirmedMaxima: Pivot
   // $1.71 (immaterial — what matters is above/below).
   const allH1Candidates = [baseH1, ...[...confirmedMaxima].sort((a, b) => b.price - a.price)];
   for (const h1 of allH1Candidates) {
-    let h2 = findH2ForH1(maxima, h1, bars, currentIdx, MIN_GAP_MONTHS, requireDeclining);
+    let h2 = findH2ForH1(maxima, h1, bars, currentIdx, MIN_GAP_MONTHS);
     // Gap relaxation for the DEFINITIVE anchor only: when the global-max/
     // flat-top H1 is recent, every confirmable peak after it can sit closer
     // than the standard spacing — and Tony demonstrably draws those pairs
@@ -595,7 +640,7 @@ function searchBuyLine(bars: PriceBar[], maxima: Pivot[], confirmedMaxima: Pivot
     // fresh buy signal. Only baseH1 gets the relaxation — relaxing every H1
     // breeds meaninglessly steep 3-month micro-lines (BFL/LAU/PPE checked).
     if (!h2 && requireDeclining && h1.idx === baseH1.idx) {
-      h2 = findH2ForH1(maxima, h1, bars, currentIdx, 1, requireDeclining);
+      h2 = findH2ForH1(maxima, h1, bars, currentIdx, 1);
     }
     if (h2) return { h1, h2, line: lineAt(h1, h2, currentIdx) };
   }
@@ -606,7 +651,15 @@ function searchBuyLine(bars: PriceBar[], maxima: Pivot[], confirmedMaxima: Pivot
   const h2Candidates = [...confirmedMaxima].sort((a, b) => b.idx - a.idx);
   for (const h2 of h2Candidates) {
     const h1Candidates = confirmedMaxima
-      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS && (!requireDeclining || m.price > h2.price))
+      // BUY_LINES_NEVER_RISE: the unrestricted fallback pass relaxes the H1
+      // ANCHOR choice, but never the slope. A "resistance" line sloping UP is
+      // meaningless (methodology rule 3), and letting the fallback draw one
+      // invented overhead resistance where there is none: CCL rose 2.79 → 4.55
+      // across its only two peaks, so the fallback drew that as a buy line,
+      // extrapolated it to $6.31, and filed a stock trading at $5.49 above its
+      // support as "between the lines". No stock in the reference set relies on
+      // a rising buy line, so this costs nothing elsewhere.
+      .filter(m => m.idx <= h2.idx - MIN_GAP_MONTHS && m.price > h2.price)
       .sort((a, b) => b.idx - a.idx);
     for (const h1 of h1Candidates) {
       if (!noHighViolation(bars, h1, h2)) continue;
@@ -664,6 +717,34 @@ function findBuyLine(bars: PriceBar[], maxima: Pivot[], currentIdx: number):
 /** Mirror of findH2ForH1 — see its comment for the rationale of the direct,
  *  most-recent-confirmed-first search (replacing the old earliest-first ratchet
  *  that died on steep, soon-negative early candidates). */
+/**
+ * Has the market left this support line far behind?
+ *
+ * The companion to DEAD_SUPPORT_MONTHS, for the opposite failure. That rule
+ * discards a line price has sat BELOW for years; this one discards a line price
+ * has sat far ABOVE — an ancient, shallow pair that no recent low comes near is
+ * not the operative support, it's a historical artefact.
+ *
+ * Found via SRV (2026-08-30): the search anchors L1 on the global-minimum band
+ * first, which for SRV is Oct-2020 @$2.26, and the first valid pair off that
+ * anchor gives a line at $3.42 — with every confirmed trough since (4.80, 6.55,
+ * 6.03) sitting 40-90% above it. Returning that immediately hid the line Tony
+ * actually draws (Sep-2023 → Mar-2025, ~$6.77 today) and turned a stock trading
+ * $0.67 BELOW its support into a Josephine.
+ *
+ * Requires two confirmed troughs after L2 so a single outlier can't discard a
+ * live line. The 18-stock reference set is correct for 15-50%; 60% breaks it.
+ */
+const SUPERSEDED_SUPPORT_PCT = 0.40;
+
+function supportSuperseded(minima: Pivot[], l1: Pivot, l2: Pivot, currentIdx: number): boolean {
+  const slope = (l2.price - l1.price) / (l2.idx - l1.idx);
+  const after = minima.filter(m => m.idx > l2.idx && isConfirmed(m, currentIdx));
+  if (after.length < 2) return false;
+  return after.every(m =>
+    m.price >= (l1.price + slope * (m.idx - l1.idx)) * (1 + SUPERSEDED_SUPPORT_PCT));
+}
+
 function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: number, requireRising: boolean): Pivot | null {
   const candidates = minima
     .filter(m => m.idx > l1.idx + MIN_GAP_MONTHS && isConfirmed(m, currentIdx)
@@ -673,6 +754,7 @@ function findL2ForL1(minima: Pivot[], l1: Pivot, bars: PriceBar[], currentIdx: n
   for (const l2 of candidates) {
     if (!noLowViolation(bars, l1, l2)) continue;
     if (rayRetestedBelow(minima, l1, l2, currentIdx)) continue; // failed breakdown since — stale, skip
+    if (supportSuperseded(minima, l1, l2, currentIdx)) continue; // market left it far behind — skip
     if (lineAt(l1, l2, currentIdx) > 0) return l2;
   }
   return null;
@@ -920,6 +1002,19 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     // Definitively below the sell line — Bearish regardless of buy line
     sentiment = "Bearish";
     note = `Bearish: price ${currentPrice.toFixed(3)} below sell line ${sellLine!.toFixed(3)}`;
+  } else if (aboveSell && buyLine === null) {
+    // Above a valid rising sell line with NO buy line at all — Bullish.
+    // "Between the lines" needs two lines. When no buy line is drawable there is
+    // no overhead resistance to break through, so price holding above rising
+    // support is simply an uptrend. CCL (2026-08-30) is the case: the user's read
+    // was "should only have a sell line and is crazy bullish" — its two peaks
+    // rise (2.79 → 4.55) so no buy line exists, and at $5.49 it sits well above
+    // support at $4.56. Lumping this in with "between the lines" made a stock
+    // with nothing above it look like it was capped by something.
+    // Still routed through the falling-knife re-check below.
+    sentiment = "Bullish";
+    note = `Bullish: price ${currentPrice.toFixed(3)} above sell line ${sellLine!.toFixed(3)}, no buy line (no overhead resistance)`;
+    checkFallingKnife = true;
   } else if (aboveSell) {
     // Above sell line but below buy line — Josephine (between the lines).
     // CAUTION: this is exactly the bucket a falling knife lands in when its own
@@ -1000,18 +1095,32 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     const confirmedReversal = last3Lows.length === 3 &&
       last3Lows[0].price < last3Lows[1].price && last3Lows[1].price < last3Lows[2].price;
 
+    // How old the "major peak" may be and still gate a breakout via the soft
+    // sustained-decline tier below. The 60% hard falling-knife tier is NOT
+    // capped — a 60%+ collapse stays disqualifying however long ago it started.
+    const SOFT_CAUTION_PEAK_MAX_AGE = 48;
+
     if (pctBelowHighest >= 0.60) {
       // Falling knife — 60%+ below the major peak in the 5yr dataset.
       // Threshold lowered from 70%: SPK (-69%), AIZ (-65%), PPT (-62%) are all
       // classic falling knives that were slipping past the 70% cutoff.
       sentiment = "Bearish";
       note = `Falling knife: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago). Long-term downtrend not reversed.`;
-    } else if (pctBelowHighest >= 0.35 && mthsSinceHighest >= 18 && !confirmedReversal) {
+    } else if (pctBelowHighest >= 0.35 && mthsSinceHighest >= 18
+               && mthsSinceHighest <= SOFT_CAUTION_PEAK_MAX_AGE && !confirmedReversal) {
       // Sustained long-term decline: >35% below major peak for >18 months, AND no
       // confirmed reversal (3 consecutive higher confirmed lows) yet established.
       // The stock has not recovered to a new high for over 1.5 years — structural
       // downtrend is not yet confirmed reversed even if technically above both lines.
       // BPT-type pattern: peaked 27mo ago, 38% below — classic cautionary.
+      //
+      // ...but the peak must still be RELEVANT. With no upper bound this rule
+      // let a peak from the far edge of the 6-year window veto a live breakout
+      // forever: ACL (2026-08-30) is above BOTH its lines (2.80 vs buy 2.588,
+      // sell 2.575) yet was held at Josephine purely because it sits 56% under a
+      // Nov-2021 high from 58 months ago. A five-year-old peak describes a
+      // different cycle, not the trend being traded. Reference set is correct
+      // for caps of 30-54 months; ACL needs ≤57 and 60 reinstates the bug.
       sentiment = "Josephine";
       note = `Caution: ${(pctBelowHighest * 100).toFixed(0)}% below major peak ${highestPeak.price.toFixed(3)} (${mthsSinceHighest}mo ago) — sustained decline, uptrend not confirmed.`;
     } else if (mthsSinceRecent <= 36 && pctBelowRecent >= 0.40 && !confirmedReversal) {
