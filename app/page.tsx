@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
-import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS } from "@/lib/phase2-storage";
+import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS, scorePeHiLoLive } from "@/lib/phase2-storage";
 import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
   SENTIMENT_STORAGE_KEY,
@@ -62,7 +62,7 @@ const SCORE_KEYS = [
 ] as const;
 
 // Phase 2 payload: Code → { S_equity_inc, S_pe_hi_lo, lastPeriod }
-type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null; lastPeriod?: string | null }>;
+type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: number | null; lastPeriod?: string | null; peHistory?: number[] }>;
 
 // Buyback payload: Code → active flag
 type BuybackMap = Record<string, boolean>;
@@ -147,6 +147,16 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     const enriched = { ...stock } as ScoredStock;
     if (data.S_equity_inc !== null) enriched.S_equity_inc = data.S_equity_inc;
     if (data.S_pe_hi_lo !== null) enriched.S_pe_hi_lo = data.S_pe_hi_lo;
+    // Prefer PE Hi/Lo scored against TODAY's PE. The workbook's stored score is
+    // frozen at scrape time, but PE moves with the price daily — see
+    // scorePeHiLoLive for the measured damage. Falls back to the stored value
+    // when there is too little history to judge.
+    const livePe = Number(String((stock as Record<string, unknown>).PE ?? "").replace(/,/g, ""));
+    const liveScore = scorePeHiLoLive(isFinite(livePe) ? livePe : null, data.peHistory);
+    if (liveScore !== null) {
+      enriched.S_pe_hi_lo = liveScore;
+      (enriched as Record<string, unknown>)._peHiLoLive = 1;
+    }
     const gaps = [
       data.S_pe_hi_lo === null ? "PE Hi/Lo" : null,
       data.S_equity_inc === null ? "Equity" : null,

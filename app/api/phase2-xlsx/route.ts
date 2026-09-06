@@ -17,6 +17,19 @@ import * as XLSX from "xlsx";
 interface Phase2Result {
   S_equity_inc: number | null;
   S_pe_hi_lo: number | null;
+  /**
+   * The REPORTED historical PEs from the PE_Equity_History sheet, oldest
+   * first, with any "Current" slot excluded.
+   *
+   * Carried so the client can re-derive PE Hi/Lo against TODAY's PE instead of
+   * the frozen one baked into the workbook. PE moves with the share price
+   * daily, so a stored score goes stale the moment the price moves — measured
+   * 2026-09-06, we scored "+2, lowest PE in 6" on stocks whose live PE had
+   * since become the HIGHEST (A1M stored 7.11 vs live 16.33; AAL 9.81 vs
+   * 25.42), inflating Quality on exactly the stocks that had already run up.
+   * Agreement with QAV HQ on this criterion was 47%.
+   */
+  peHistory?: number[];
   /** Balance date of the last reported numbers (col D "Last Period Analysed"),
    *  ISO yyyy-mm-dd. Drives the data-freshness rule: don't buy on numbers
    *  older than 6 months — hold off during reporting season until new data. */
@@ -133,6 +146,32 @@ export async function POST(request: Request) {
     const codeKey = Object.keys(rows[0]).find(isCode) ?? "Code";
     const results: Record<string, Phase2Result> = {};
 
+    // ── PE history, so the client can score against TODAY's PE ───────────────
+    // Sheet layout (see the QAV Phase 2 workbook memo): A=Code, then six
+    // label/value PE pairs at columns D..O. A label is a reported period like
+    // "Jun 25 (A)"; the literal "Current" marks the frozen live PE captured at
+    // scrape time, which is precisely the value we must NOT reuse.
+    const peHistory: Record<string, number[]> = {};
+    const histSheet = wb.Sheets["PE_Equity_History"];
+    if (histSheet) {
+      const hist = XLSX.utils.sheet_to_json<unknown[]>(histSheet, { header: 1, blankrows: false });
+      for (const r of hist.slice(1)) {
+        const code = String(r?.[0] ?? "").trim().toUpperCase();
+        if (!code || code === "CODE") continue;
+        const vals: number[] = [];
+        for (let i = 0; i < 6; i++) {
+          const label = r[3 + 2 * i];
+          const value = r[4 + 2 * i];
+          const n = Number(value);
+          if (label === null || label === undefined || String(label).trim() === "") continue;
+          if (/current/i.test(String(label))) continue;   // frozen — skip
+          if (!isFinite(n) || n === 0) continue;
+          vals.push(n);
+        }
+        if (vals.length >= 2) peHistory[code] = vals;
+      }
+    }
+
     for (const row of rows) {
       const code = String(row[codeKey] ?? "").trim().toUpperCase();
       if (!code || code === "CODE") continue;
@@ -142,10 +181,11 @@ export async function POST(request: Request) {
         S_equity_inc: toScore(row[equityIncKey]),
         lastPeriod:   toIsoDate(row[lastPeriodKey]),
       };
+      if (peHistory[code]) entry.peHistory = peHistory[code];
       // The Market Index sheet lists every ASX line (~2,700 rows, most with no
       // QAV data yet). Keep only rows carrying at least one value, so a mostly
       // empty sheet doesn't wipe existing scores or bloat localStorage.
-      if (entry.S_pe_hi_lo !== null || entry.S_equity_inc !== null || entry.lastPeriod !== null) {
+      if (entry.S_pe_hi_lo !== null || entry.S_equity_inc !== null || entry.lastPeriod !== null || entry.peHistory) {
         results[code] = entry;
       }
     }
