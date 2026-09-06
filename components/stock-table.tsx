@@ -5,6 +5,8 @@ import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
 import { qavColor, scoreColor, isEtfOrFund } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
 import { StoredSentiments, SentimentOverride } from "@/lib/sentiment-storage";
+import { HistorySeries } from "@/lib/history-storage";
+import { QavSparkline } from "@/components/qav-sparkline";
 
 interface StockTableProps {
   stocks: ScoredStock[];
@@ -17,6 +19,8 @@ interface StockTableProps {
   phase2Loaded?: boolean;
   sentimentOverrides?: StoredSentiments;
   onSentimentOverride?: (code: string, value: SentimentOverride | null) => void;
+  /** QAV-over-time series per code; drives the Trend sparkline column. */
+  history?: HistorySeries;
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt";
@@ -158,7 +162,7 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -317,6 +321,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
               <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 2 — Forecast EPS ÷ 10.1% (market hurdle)">IV2</th>
               <Th label="ADT $k" col="adt" title="Average Daily Traded (3 month, $000)" className="text-right" />
               <Th label="QAV" col="QAV" title="Quality / PCF × 100 — the main ranking score" className="text-center" />
+              <th className="px-2 py-2 text-center font-semibold text-gray-600" title="QAV over time — click for the full history">Trend</th>
               <Th label="Quality" col="Quality" title="Average score per column (TotalScore ÷ Count) — green ≥ 75%" className="text-center" />
               <Th label="PCF" col="PCF" title="Price to Cash Flow — lower is cheaper" className="text-center" />
               <th className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Sentiment</th>
@@ -402,6 +407,9 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                         {stock.QAV !== null ? stock.QAV.toFixed(1) : "—"}
                       </span>
                     </td>
+                    <td className="px-2 py-3 text-center">
+                      <QavSparkline code={stock.Code} points={history?.[stock.Code]} />
+                    </td>
                     <td className="px-3 py-3 text-center">
                       {stock.Quality !== null ? (
                         <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -449,7 +457,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                   </tr>
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
-                      <td colSpan={15} className="px-6 py-4">
+                      <td colSpan={16} className="px-6 py-4">
                         <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} phase2Loaded={phase2Loaded} />
                       </td>
                     </tr>

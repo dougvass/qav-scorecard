@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS } from "@/lib/phase2-storage";
@@ -34,6 +34,10 @@ import {
   ScoringRates,
 } from "@/lib/qav-scoring";
 import { StockRow, ScoredStock, MSRatings } from "@/lib/types";
+import {
+  HistorySeries, HistoryPoint, todayIso, mergeSeries,
+  loadLocalHistory, saveLocalHistory,
+} from "@/lib/history-storage";
 import { UploadZone } from "@/components/upload-zone";
 import { SummaryStats } from "@/components/summary-stats";
 import { StockTable } from "@/components/stock-table";
@@ -386,6 +390,10 @@ export default function HomePage() {
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
   const [allStocks, setAllStocks] = useState<ScoredStock[] | null>(null);
   const [buyList, setBuyList] = useState<ScoredStock[]>([]);
+  const [history, setHistory] = useState<HistorySeries>({});
+  /** null = not yet known; false = no POSTGRES_URL, running on the local mirror only. */
+  const [historyConfigured, setHistoryConfigured] = useState<boolean | null>(null);
+  const snapshotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
@@ -514,6 +522,83 @@ export default function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── QAV score history ──────────────────────────────────────────────────────
+  // Load the local mirror immediately (so sparklines render on first paint),
+  // then merge in whatever the server has. See lib/history-storage.ts for why
+  // there are two tiers.
+  useEffect(() => {
+    const local = loadLocalHistory();
+    if (local) setHistory(local.data);
+    (async () => {
+      try {
+        const res = await fetch("/api/history");
+        if (!res.ok) return;
+        const json = await res.json() as { configured: boolean; data: HistorySeries };
+        setHistoryConfigured(json.configured);
+        if (json.configured && json.data) {
+          setHistory((prev) => {
+            const merged = mergeSeries(prev, json.data);  // server wins on conflict
+            saveLocalHistory(merged);
+            return merged;
+          });
+        }
+      } catch { /* offline or not deployed yet — the local mirror still works */ }
+    })();
+  }, []);
+
+  /**
+   * Persist today's scores. Debounced because the re-score effect fires on
+   * every rate-slider tick and every manual override — without this a single
+   * drag would push dozens of writes. Re-running on the same day simply
+   * upserts, so the last (most complete) run of the day is what sticks.
+   */
+  const recordSnapshot = useCallback((scored: ScoredStock[]) => {
+    if (!scored.length) return;
+    if (snapshotTimer.current) clearTimeout(snapshotTimer.current);
+    snapshotTimer.current = setTimeout(() => {
+      const d = todayIso();
+      const rows = scored
+        .filter((s) => s.QAV !== null)
+        .map((s) => ({
+          code: s.Code,
+          qav: s.QAV,
+          quality: s.Quality ?? null,
+          pcf: s.PCF ?? null,
+          sentiment: s.S_sentiment_long === 2 ? "Bullish"
+                   : s.S_sentiment_long === -1 ? "Bearish"
+                   : s.S_sentiment_long === 0 ? "Josephine" : null,
+          price: typeof s["Share Price ($)"] === "number"
+            ? (s["Share Price ($)"] as number)
+            : parseFloat(String(s["Share Price ($)"] ?? "").replace(/,/g, "")) || null,
+        }));
+      if (!rows.length) return;
+
+      const todays: HistorySeries = {};
+      for (const r of rows) {
+        todays[r.code] = [{
+          d, qav: r.qav, quality: r.quality, pcf: r.pcf,
+          sentiment: r.sentiment, price: r.price,
+        } as HistoryPoint];
+      }
+      setHistory((prev) => {
+        const merged = mergeSeries(prev, todays);
+        saveLocalHistory(merged);
+        return merged;
+      });
+
+      // Best-effort server write; failure is silent by design — the local
+      // mirror already holds the snapshot and the next run re-sends it.
+      fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: d, rows }),
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((j) => { if (j && typeof j.configured === "boolean") setHistoryConfigured(j.configured); })
+        .catch(() => {});
+    }, 2500);
+  }, []);
+
   // Re-score whenever raw rows, rates, or enrichment data changes
   useEffect(() => {
     if (!rawRows) return;
@@ -531,6 +616,7 @@ export default function HomePage() {
       scored = enrichWithSentimentOverrides(scored, sentimentOverrides);        // manual wins
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
+    recordSnapshot(scored);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
 
@@ -1195,6 +1281,7 @@ export default function HomePage() {
               phase2Loaded={phase2Loaded}
               sentimentOverrides={sentimentOverrides}
               onSentimentOverride={saveSentimentOverride}
+              history={history}
             />
 
             <div className="bg-white border border-gray-200 rounded-xl p-5 text-sm text-gray-500 space-y-2">
