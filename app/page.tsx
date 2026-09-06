@@ -565,12 +565,18 @@ export default function HomePage() {
           // Migrate anything the server has never seen. Without this, history
           // accumulated before the database existed (and the bundled seed)
           // would stay trapped in one browser forever.
-          const serverDates = new Set<string>();
-          for (const pts of Object.values(json.data ?? {}))
-            for (const p of pts) serverDates.add(p.d);
+          //
+          // Keyed per CODE+DATE, not per date. Keying on date alone silently
+          // stranded 52 stocks (2026-09-06): the server already held that date
+          // from the seed, so the whole day counted as "seen" and codes present
+          // only in the local mirror — single-point stocks the seed excludes —
+          // were never pushed.
+          const seen = new Set<string>();
+          for (const [code, pts] of Object.entries(json.data ?? {}))
+            for (const p of pts) seen.add(`${code}|${p.d}`);
           const missing: Record<string, HistoryPoint[]> = {};
           for (const [code, pts] of Object.entries(merged)) {
-            const gap = pts.filter((p) => !serverDates.has(p.d));
+            const gap = pts.filter((p) => !seen.has(`${code}|${p.d}`));
             if (gap.length) missing[code] = gap;
           }
           const byDate: Record<string, { code: string; qav: number | null; quality: number | null;
