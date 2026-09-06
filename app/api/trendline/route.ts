@@ -263,46 +263,47 @@ function normalizeMonthly(bars: PriceBar[]): PriceBar[] {
  * day whose calendar month is strictly before the current one — i.e. the
  * genuine last trading day of the previous month.
  */
-async function fetchLastCompletedMonthClose(code: string): Promise<number | null> {
+/**
+ * ONE daily fetch serving BOTH the current price and the prior month's close.
+ *
+ * These were two separate requests — `range=2mo` for the month close and
+ * `range=5d` for the live price — against the same endpoint, parsing the same
+ * response shape. The 2mo window is a strict superset of the 5d one, so the
+ * second call was pure duplication: a third of all Yahoo traffic (456 wasted
+ * requests on a full 456-stock run). Merged 2026-09-06.
+ *
+ * Minor deliberate behaviour change: a stock that has not traded for over a
+ * week now yields its last real daily close rather than null (the old 5d
+ * window would miss it and processCode would fall back to the monthly bar).
+ * The daily close is the more precise of the two.
+ */
+async function fetchDaily(code: string): Promise<{ price: number | null; prevMonthClose: number | null }> {
+  const empty = { price: null, prevMonthClose: null };
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=2mo&includePrePost=false`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
+    if (!res.ok) return empty;
     const json = await res.json() as Record<string, unknown>;
     const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
-    if (!result) return null;
+    if (!result) return empty;
     const ts = result.timestamp as number[];
     const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
-    if (!ts || !closes) return null;
+    if (!ts || !closes) return empty;
+
     const now = new Date();
     const curYear = now.getUTCFullYear(), curMonth = now.getUTCMonth();
-    let lastClose: number | null = null;
+    let price: number | null = null;        // latest valid close in the window
+    let prevMonthClose: number | null = null; // latest valid close before this month
     for (let i = 0; i < ts.length; i++) {
-      if (closes[i] == null || isNaN(closes[i]) || closes[i] <= 0) continue;
+      const c = closes[i];
+      if (c == null || isNaN(c) || c <= 0) continue;
+      price = c;
       const d = new Date(ts[i] * 1000);
       const y = d.getUTCFullYear(), m = d.getUTCMonth();
-      // keep the LATEST bar that falls strictly before the current calendar month
-      if (y < curYear || (y === curYear && m < curMonth)) lastClose = closes[i];
+      if (y < curYear || (y === curYear && m < curMonth)) prevMonthClose = c;
     }
-    return lastClose;
-  } catch { return null; }
-}
-
-async function fetchCurrentPrice(code: string): Promise<number | null> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=5d&includePrePost=false`;
-  try {
-    const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
-    const json = await res.json() as Record<string, unknown>;
-    const result = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
-    if (!result) return null;
-    const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
-    if (!closes) return null;
-    for (let i = closes.length - 1; i >= 0; i--) {
-      if (closes[i] != null && !isNaN(closes[i]) && closes[i] > 0) return closes[i];
-    }
-    return null;
-  } catch { return null; }
+    return { price, prevMonthClose };
+  } catch { return empty; }
 }
 
 // ── Core 3PTL algorithm ────────────────────────────────────────────────────────
@@ -957,13 +958,13 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     // then it's a 'Josephine'." No magnitude threshold — ANY decline counts.
     //
     // `lastMonthCloseOverride` is derived from DAILY data by
-    // `fetchLastCompletedMonthClose` — NOT `bars[n-2].close`. CONFIRMED BUG
+    // `fetchDaily().prevMonthClose` — NOT `bars[n-2].close`. CONFIRMED BUG
     // (KAR, 2026-06-08): `fetchMonthly`'s trailing bars are corrupted near a
     // month boundary — Yahoo backfills the live price into the "last month"
     // slot too, so `bars[n-2].close` reads $1.945 (= live price) instead of
     // May's true close of $1.955. That 0.5% difference IS the Josephine signal
     // ("today's $1.945 < last month's $1.955") — the corrupted data hid it
-    // entirely. See `fetchLastCompletedMonthClose` for the full writeup.
+    // entirely. See `fetchDaily` for the full writeup.
     // We fall back to `bars[n-2].close` only if the daily-data fetch failed.
     const lastMonthClose = lastMonthCloseOverride ?? (n >= 2 ? bars[n - 2].close : 0);
     const priceVsLastMonth = lastMonthClose > 0 ? (currentPrice - lastMonthClose) / lastMonthClose : 0;
@@ -1152,9 +1153,8 @@ async function processCode(code: string) {
     const result = classify3PTL(bars, price, prev, true);
     return { ...result, months: bars.length, asOf: embedded.asOf, source: "Market Index workbook" };
   }
-  const [bars, currentPrice, lastMonthClose] = await Promise.all([
-    fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
-  ]);
+  const [bars, daily] = await Promise.all([fetchMonthly(code), fetchDaily(code)]);
+  const currentPrice = daily.price, lastMonthClose = daily.prevMonthClose;
   if (bars.length < 12) return { sentiment: "Josephine" as Sentiment, error: "insufficient data", months: bars.length };
   const price = currentPrice ?? bars[bars.length - 1].close;
   const result = classify3PTL(bars, price, lastMonthClose, isCommodityCode(code));
@@ -1215,9 +1215,8 @@ export async function GET(request: Request) {
     });
   }
 
-  const [bars, currentPrice, lastMonthClose] = await Promise.all([
-    fetchMonthly(code), fetchCurrentPrice(code), fetchLastCompletedMonthClose(code),
-  ]);
+  const [bars, daily] = await Promise.all([fetchMonthly(code), fetchDaily(code)]);
+  const currentPrice = daily.price, lastMonthClose = daily.prevMonthClose;
   const base = { code, runtime: "edge", monthly_bars: bars.length, current_price: currentPrice, last_month_close: lastMonthClose };
   if (bars.length < 12) return Response.json({ ...base, error: "insufficient data" });
 
