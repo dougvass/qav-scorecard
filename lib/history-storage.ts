@@ -48,7 +48,9 @@ export function mergeSeries(a: HistorySeries, b: HistorySeries): HistorySeries {
     for (const [code, pts] of Object.entries(src)) {
       const byDate = new Map((out[code] ?? []).map((p) => [p.d, p]));
       for (const p of pts) byDate.set(p.d, p);   // later source wins
-      out[code] = [...byDate.values()].sort((x, y) => x.d.localeCompare(y.d));
+      // Array.from, not [...spread]: tsconfig sets no "target", so it defaults
+      // to ES5 and spreading a Map iterator is a compile error there.
+      out[code] = Array.from(byDate.values()).sort((x, y) => x.d.localeCompare(y.d));
     }
   }
   return out;
