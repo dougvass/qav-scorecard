@@ -537,20 +537,56 @@ export default function HomePage() {
   // then merge in whatever the server has. See lib/history-storage.ts for why
   // there are two tiers.
   useEffect(() => {
-    const local = loadLocalHistory();
-    if (local) setHistory(local.data);
     (async () => {
+      // Precedence, lowest first: bundled seed -> local mirror -> server.
+      // The seed (public/history-seed.json) is QAV re-scored from every Stock
+      // Doctor CSV export we have, 2026-05-25 onward. Without it the Trend
+      // column is empty until you have loaded a CSV on two separate days,
+      // which is weeks of waiting for a feature that should work immediately.
+      let base: HistorySeries = {};
+      try {
+        const seedRes = await fetch("/history-seed.json");
+        if (seedRes.ok) base = await seedRes.json() as HistorySeries;
+      } catch { /* seed is a convenience, never a requirement */ }
+
+      const local = loadLocalHistory();
+      if (local) base = mergeSeries(base, local.data);
+      setHistory(base);
+
       try {
         const res = await fetch("/api/history");
         if (!res.ok) return;
         const json = await res.json() as { configured: boolean; data: HistorySeries };
         setHistoryConfigured(json.configured);
-        if (json.configured && json.data) {
-          setHistory((prev) => {
-            const merged = mergeSeries(prev, json.data);  // server wins on conflict
-            saveLocalHistory(merged);
-            return merged;
-          });
+        if (json.configured) {
+          const merged = mergeSeries(base, json.data ?? {});   // server wins
+          setHistory(merged);
+          saveLocalHistory(merged);
+          // Migrate anything the server has never seen. Without this, history
+          // accumulated before the database existed (and the bundled seed)
+          // would stay trapped in one browser forever.
+          const serverDates = new Set<string>();
+          for (const pts of Object.values(json.data ?? {}))
+            for (const p of pts) serverDates.add(p.d);
+          const missing: Record<string, HistoryPoint[]> = {};
+          for (const [code, pts] of Object.entries(merged)) {
+            const gap = pts.filter((p) => !serverDates.has(p.d));
+            if (gap.length) missing[code] = gap;
+          }
+          const byDate: Record<string, { code: string; qav: number | null; quality: number | null;
+                                         pcf: number | null; sentiment: string | null; price: number | null }[]> = {};
+          for (const [code, pts] of Object.entries(missing))
+            for (const p of pts)
+              (byDate[p.d] ??= []).push({ code, qav: p.qav, quality: p.quality,
+                                          pcf: p.pcf, sentiment: p.sentiment, price: p.price });
+          for (const [d, rows] of Object.entries(byDate)) {
+            fetch("/api/history", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ date: d, rows }),
+            }).catch(() => {});
+          }
+        } else {
+          saveLocalHistory(base);
         }
       } catch { /* offline or not deployed yet — the local mirror still works */ }
     })();
