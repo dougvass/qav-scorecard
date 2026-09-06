@@ -58,33 +58,45 @@ async function fetchMonthly(code: string): Promise<V2Bar[]> {
   } catch { return []; }
 }
 
-async function fetchPrice(code: string): Promise<number | null> {
+/** Live price plus the previous month's close (the Bible's uptick test). */
+async function fetchDaily(code: string): Promise<{ price: number | null; prevMonthClose: number | null }> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}` +
               `?interval=1d&range=2mo&includePrePost=false`;
+  const empty = { price: null, prevMonthClose: null };
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
+    if (!res.ok) return empty;
     const json = await res.json() as Record<string, unknown>;
     const r = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
-    const closes = ((r?.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
-    if (!closes) return null;
-    for (let i = closes.length - 1; i >= 0; i--) {
+    if (!r) return empty;
+    const ts = r.timestamp as number[];
+    const closes = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
+    if (!ts || !closes) return empty;
+    const now = new Date();
+    const cy = now.getUTCFullYear(), cm = now.getUTCMonth();
+    let price: number | null = null, prevMonthClose: number | null = null;
+    for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
-      if (c != null && !isNaN(c) && c > 0) return c;
+      if (c == null || isNaN(c) || c <= 0) continue;
+      price = c;
+      const d = new Date(ts[i] * 1000);
+      if (d.getUTCFullYear() < cy || (d.getUTCFullYear() === cy && d.getUTCMonth() < cm)) prevMonthClose = c;
     }
-    return null;
-  } catch { return null; }
+    return { price, prevMonthClose };
+  } catch { return empty; }
 }
 
 async function run(code: string) {
   const bars = await fetchMonthly(code);
   if (bars.length < 12) return { code, error: "insufficient data", months: bars.length };
-  const price = (await fetchPrice(code)) ?? bars[bars.length - 1].close;
-  const r = classifyV2(bars, price);
+  const daily = await fetchDaily(code);
+  const price = daily.price ?? bars[bars.length - 1].close;
+  const r = classifyV2(bars, price, { lastMonthClose: daily.prevMonthClose });
   const pv = (p: { m: number; p: number } | undefined | null) =>
     p ? { month: p.m, price: p.p, date: bars[bars.length - 1 + p.m]?.date ?? null } : null;
   return {
     code, price, months: bars.length, monthFraction: monthFraction(),
+    lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
     h1: pv(r.buyLine?.a), h2: pv(r.buyLine?.b),
     l1: pv(r.sellLine?.a), l2: pv(r.sellLine?.b),

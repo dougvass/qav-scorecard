@@ -98,8 +98,20 @@ export function valueNow(line: V2Line, frac = monthFraction()): number {
   return line.gradient * (-1 + frac) + line.offset;
 }
 
-/** H1 = highest confirmed peak (or the flat-top anchor); H2 = shallowest fall. */
-export function buyLine(s: Pivot2[], anchor?: Pivot2 | null): V2Line | null {
+/**
+ * H1 = highest confirmed peak (or the flat-top anchor); H2 = shallowest fall.
+ *
+ * The Bible: "Mark the highest peak... We call this H1. Then mark the next
+ * highest price or peak to the right of the first price, AFTER THE LAST BREACH
+ * OF A SELL LINE. We call this H2." — hence `afterMonth`.
+ *
+ * It also says "Make sure there aren't any data peaks above the line", and the
+ * shallowest-slope rule IS that constraint: if peak X gives the shallowest
+ * declining line from H1, every other peak has a steeper (more negative) angle
+ * and therefore sits BELOW that line. The Brettalator's MAXIFS and the Bible's
+ * prose are the same rule, one as an optimisation and one as a check.
+ */
+export function buyLine(s: Pivot2[], anchor?: Pivot2 | null, afterMonth?: number | null): V2Line | null {
   const pk = peaks(s);
   const confirmed = pk.filter(x => x.m < -CONFIRM_MONTHS);
   if (!confirmed.length) return null;
@@ -107,6 +119,7 @@ export function buyLine(s: Pivot2[], anchor?: Pivot2 | null): V2Line | null {
   let best: { ang: number; pv: Pivot2 } | null = null;
   for (const x of pk) {
     if (x.m <= h1.m || x.p >= h1.p) continue;          // must be later AND lower
+    if (afterMonth != null && x.m < afterMonth) continue; // Bible: after last sell breach
     const ang = Math.atan2(x.p - h1.p, x.m - h1.m);    // Excel ATAN2(x,y)
     if (!best || ang > best.ang) best = { ang, pv: x }; // MAXIFS over negatives
   }
@@ -155,10 +168,21 @@ export function flatBottomAnchor(s: Pivot2[]): Pivot2 | null {
  * a shallower line so the hold fires constantly. They have to be re-derived
  * against these lines, one at a time, which is a separate exercise.
  */
+/** Month of the last close below the sell line (Bible: H2 comes after this). */
+export function lastSellBreach(s: Pivot2[], line: V2Line | null): number | null {
+  if (!line) return null;
+  let last: number | null = null;
+  for (const x of s) {
+    if (x.m <= line.b.m) continue;
+    if (x.p < line.gradient * x.m + line.offset - 1e-9) last = x.m;
+  }
+  return last;
+}
+
 export function classifyV2(
   bars: V2Bar[],
   price: number,
-  opts: { flatAnchors?: boolean; frac?: number } = {},
+  opts: { flatAnchors?: boolean; frac?: number; lastMonthClose?: number | null } = {},
 ): V2Result {
   const flat = opts.flatAnchors ?? true;   // best against HQ: 84% vs 82%
   if (bars.length < 6) {
@@ -166,8 +190,9 @@ export function classifyV2(
              buyLine: null, sellLine: null, note: "insufficient data" };
   }
   const s = toSeries(bars);
-  const bl = buyLine(s, flat ? flatTopAnchor(s) : null);
+  // Sell line first: the Bible constrains H2 to peaks after its last breach.
   const sl = sellLine(s, flat ? flatBottomAnchor(s) : null);
+  const bl = buyLine(s, flat ? flatTopAnchor(s) : null, lastSellBreach(s, sl));
   const frac = opts.frac ?? monthFraction();
   const buy = bl ? valueNow(bl, frac) : null;
   const sell = sl ? valueNow(sl, frac) : null;
@@ -180,7 +205,16 @@ export function classifyV2(
   if (sell !== null && price < sell) {
     sentiment = "Bearish"; note = `below sell line ${sell.toFixed(3)}`;
   } else if (aboveBuy && aboveSell) {
-    sentiment = "Bullish"; note = `above buy ${buy!.toFixed(3)} & sell ${sell!.toFixed(3)}`;
+    // Bible: positive sentiment, but "technically a buy [Tony] wouldn't buy
+    // until it shows an uptick, which he defines as any price increase since
+    // the close of the previous month." THAT is a Josephine — not "between the
+    // lines", which is how v1 uses the term.
+    const lmc = opts.lastMonthClose;
+    if (lmc != null && price <= lmc) {
+      sentiment = "Josephine"; note = `above both lines but no uptick vs last close ${lmc.toFixed(3)}`;
+    } else {
+      sentiment = "Bullish"; note = `above buy ${buy!.toFixed(3)} & sell ${sell!.toFixed(3)}`;
+    }
   } else if (aboveSell && buy === null) {
     sentiment = "Bullish"; note = `above sell ${sell!.toFixed(3)}, no buy line`;
   } else if (aboveSell) {
