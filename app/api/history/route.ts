@@ -13,7 +13,7 @@
  * No ORM and no migration tool for one table: `ensureTable` runs a CREATE TABLE
  * IF NOT EXISTS on first use, which is idempotent and costs one round trip.
  */
-import { sql } from "@vercel/postgres";
+import { createPool, VercelPool } from "@vercel/postgres";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,14 +27,32 @@ interface Row {
   price: number | null;
 }
 
+/**
+ * Vercel's Postgres/Neon marketplace integration sets DATABASE_URL, while the
+ * older first-party Postgres set POSTGRES_URL — and @vercel/postgres's default
+ * `sql` export only ever reads POSTGRES_URL. Taking the default would make the
+ * route report configured:true and then fail to connect with
+ * "missing_connection_string" on whichever naming the integration happened to
+ * pick. Resolve it explicitly and pool lazily instead.
+ */
+function connectionString(): string | undefined {
+  return process.env.POSTGRES_URL || process.env.DATABASE_URL || undefined;
+}
+
 function configured(): boolean {
-  return !!(process.env.POSTGRES_URL || process.env.DATABASE_URL);
+  return !!connectionString();
+}
+
+let pool: VercelPool | null = null;
+function db(): VercelPool {
+  if (!pool) pool = createPool({ connectionString: connectionString() });
+  return pool;
 }
 
 let tableReady = false;
 async function ensureTable() {
   if (tableReady) return;
-  await sql`
+  await db().sql`
     CREATE TABLE IF NOT EXISTS qav_history (
       snapshot_date DATE   NOT NULL,
       code          TEXT   NOT NULL,
@@ -64,10 +82,10 @@ export async function GET(request: Request) {
   try {
     await ensureTable();
     const res = code
-      ? await sql`SELECT snapshot_date, code, qav, quality, pcf, sentiment, price
-                    FROM qav_history WHERE code = ${code} ORDER BY snapshot_date`
-      : await sql`SELECT snapshot_date, code, qav, quality, pcf, sentiment, price
-                    FROM qav_history ORDER BY snapshot_date`;
+      ? await db().sql`SELECT snapshot_date, code, qav, quality, pcf, sentiment, price
+                         FROM qav_history WHERE code = ${code} ORDER BY snapshot_date`
+      : await db().sql`SELECT snapshot_date, code, qav, quality, pcf, sentiment, price
+                         FROM qav_history ORDER BY snapshot_date`;
 
     const data: Record<string, unknown[]> = {};
     for (const r of res.rows) {
@@ -118,7 +136,7 @@ export async function POST(request: Request) {
          ON CONFLICT (snapshot_date, code) DO UPDATE SET
            qav = EXCLUDED.qav, quality = EXCLUDED.quality, pcf = EXCLUDED.pcf,
            sentiment = EXCLUDED.sentiment, price = EXCLUDED.price`;
-      const res = await sql.query(text, params);
+      const res = await db().query(text, params);
       written += res.rowCount ?? slice.length;
     }
     return Response.json({ configured: true, written, date });
