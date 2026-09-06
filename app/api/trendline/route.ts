@@ -525,11 +525,19 @@ function rayRetestedAbove(maxima: Pivot[], h1: Pivot, h2: Pivot): Pivot | null {
  * the sell-signal hold while it rallied to $1.925, far above both its lines.
  * A RECENT unrecovered pierce is the live sell signal and must be kept, so only
  * long-failed lines are discarded. Any threshold from 12 to 36 months leaves
- * the 15-stock reference set fully correct; 36 is the most conservative choice
- * that still fixes ALK, and it changed only 1 of a 40-stock sample of
- * currently-held stocks.
+ * the 15-stock reference set fully correct; 36 was originally chosen as the most
+ * conservative value that still fixes ALK.
+ *
+ * LOWERED 36 -> 24 (2026-09-06) via ASH, which is the identical bug sitting just
+ * under the old threshold. ASH's line ran L1 Jun-2021 @$0.415 -> L2 Feb-2023
+ * @$0.660, extrapolated 43 months to $1.199 — 4.3x the actual $0.28 share price —
+ * and all SEVEN troughs since Feb-2023 pierced it with none recovering. The
+ * earliest of those was 32 months old, so at 36 the line still counted as a live
+ * sell signal and pinned ASH Bearish. 32 months of continuous, unrecovered
+ * breakdown is not a live signal by any reading. 24 sits inside the same 12-36
+ * band already validated for the reference set.
  */
-const DEAD_SUPPORT_MONTHS = 36;
+const DEAD_SUPPORT_MONTHS = 24;
 
 /**
  * Near-mirror of rayRetestedAbove for the sell (support) line through troughs.
