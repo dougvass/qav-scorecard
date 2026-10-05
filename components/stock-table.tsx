@@ -23,7 +23,7 @@ interface StockTableProps {
   history?: HistorySeries;
 }
 
-type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt";
+type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield";
 type SortDir = "asc" | "desc";
 
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -36,6 +36,27 @@ const SENTIMENT_COLORS: Record<string, string> = {
   bullish_proxy: "bg-green-100 text-green-800",
   "—": "bg-gray-100 text-gray-400",
 };
+
+/**
+ * Dividend yield for display and filtering.
+ *
+ * Prefers the FORWARD yield captured from the Stock Doctor financials page
+ * (ratios block, the column after "Current") because that is the forward-
+ * looking number worth filtering on; falls back to the Phase 1 CSV's trailing
+ * "Div Yield (%)" when no forward figure has been scraped for that stock.
+ */
+export function effYield(s: ScoredStock): number | null {
+  const fwd = (s as unknown as Record<string, unknown>)._fwdDivYield;
+  if (typeof fwd === "number" && isFinite(fwd)) return fwd;
+  const t = s["Div Yield (%)"];
+  return typeof t === "number" && isFinite(t) ? t : null;
+}
+
+/** true when the forward figure was used (drives the subtle "f" marker). */
+function isFwdYield(s: ScoredStock): boolean {
+  const fwd = (s as unknown as Record<string, unknown>)._fwdDivYield;
+  return typeof fwd === "number" && isFinite(fwd);
+}
 
 function ScorePill({ val }: { val: number | null }) {
   // null  = no data at all (not scored)            → dash
@@ -167,6 +188,8 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [minAdt, setMinAdt] = useState(0);
+  /** Dividend filter: any / pays a dividend at all / yield above a floor. */
+  const [minYield, setMinYield] = useState<number | "any">("any");
   const [search, setSearch] = useState("");
 
   function toggleSort(key: SortKey) {
@@ -186,6 +209,11 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
         (s) => (s["Avg Trade 3M ($000)"] ?? 0) >= minAdt
       );
     }
+    if (minYield !== "any") {
+      // Forward yield when the Phase 2 scrape has supplied it, else the CSV's
+      // trailing yield. ">0" is the "actually pays a dividend" filter.
+      result = result.filter((s) => (effYield(s) ?? 0) > minYield - 1e-9);
+    }
     if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
     if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0);
     if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
@@ -196,7 +224,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
       );
     }
     return result;
-  }, [stocks, minAdt, filterSentiment, hideEtfs, search]);
+  }, [stocks, minAdt, minYield, filterSentiment, hideEtfs, search]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -204,6 +232,9 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
       let bv: number | string | null = null;
       if (sortKey === "Code") {
         av = a.Code; bv = b.Code;
+      } else if (sortKey === "yield") {
+        av = effYield(a) ?? -Infinity;
+        bv = effYield(b) ?? -Infinity;
       } else if (sortKey === "adt") {
         av = a["Avg Trade 3M ($000)"] ?? -Infinity;
         bv = b["Avg Trade 3M ($000)"] ?? -Infinity;
@@ -266,6 +297,20 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
           </select>
         </div>
         <div className="flex items-center gap-2">
+          <label className="text-sm font-medium text-gray-600">Dividend</label>
+          <select
+            value={String(minYield)}
+            onChange={(e) => setMinYield(e.target.value === "any" ? "any" : Number(e.target.value))}
+            className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          >
+            <option value="any">Any</option>
+            <option value="0">Pays a dividend</option>
+            <option value="2">Yield ≥ 2%</option>
+            <option value="4">Yield ≥ 4%</option>
+            <option value="6">Yield ≥ 6%</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
           <label className="text-sm font-medium text-gray-600">Sentiment</label>
           <select
             value={filterSentiment}
@@ -320,6 +365,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
               <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 1 — EPS ÷ 19.5% (Tony's hurdle)">IV1</th>
               <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Intrinsic Value 2 — Forecast EPS ÷ 10.1% (market hurdle)">IV2</th>
               <Th label="ADT $k" col="adt" title="Average Daily Traded (3 month, $000)" className="text-right" />
+              <Th label="DIV YLD" col="yield" title="Forward dividend yield from Stock Doctor where scraped (marked f), otherwise the CSV trailing yield" className="text-right" />
               <Th label="QAV" col="QAV" title="Quality / PCF × 100 — the main ranking score" className="text-center" />
               <th className="px-2 py-2 text-center font-semibold text-gray-600" title="QAV over time — click for the full history">Trend</th>
               <Th label="Quality" col="Quality" title="Average score per column (TotalScore ÷ Count) — green ≥ 75%" className="text-center" />
@@ -402,6 +448,16 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       {stock.IV2 !== null ? `$${stock.IV2.toFixed(2)}` : "—"}
                     </td>
                     <td className="px-3 py-3 text-right text-gray-600">{adtStr}</td>
+                    <td className="px-3 py-3 text-right font-mono text-xs">
+                      {effYield(stock) !== null ? (
+                        <span className={effYield(stock)! > 0 ? "text-emerald-700" : "text-gray-400"}>
+                          {effYield(stock)!.toFixed(1)}%
+                          {isFwdYield(stock) && <span className="text-gray-400 ml-0.5" title="forward yield">f</span>}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-3 text-center">
                       <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2.5 py-1 text-sm font-bold ${qavColor(stock.QAV)}`}>
                         {stock.QAV !== null ? stock.QAV.toFixed(1) : "—"}
@@ -457,7 +513,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                   </tr>
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
-                      <td colSpan={16} className="px-6 py-4">
+                      <td colSpan={17} className="px-6 py-4">
                         <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} phase2Loaded={phase2Loaded} />
                       </td>
                     </tr>
