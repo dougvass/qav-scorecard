@@ -10,6 +10,9 @@ import {
   StoredSentiments,
   SentimentOverride,
   SENTIMENT_SCORES,
+  SentimentKey,
+  sentimentKeyOf,
+  isJosephineDip,
 } from "@/lib/sentiment-storage";
 import {
   TRENDLINE_STORAGE_KEY,
@@ -30,6 +33,7 @@ import {
   starToIv3Score,
   isEtfOrFund,
   DEFAULT_CASH_RATE,
+  DEFAULT_BORROWING_RATE,
   DEFAULT_RRR,
   ScoringRates,
 } from "@/lib/qav-scoring";
@@ -205,7 +209,7 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
     // last month's close"; v3 writes "below last month close X". Match both.
     // The two legacy strings are kept so any older stored run still resolves.
     const note = (entry.note ?? "").toLowerCase();
-    const isJosephineDip =
+    const isDip =
       entry.sentiment === "Josephine" &&
       (note.includes("↗") ||
        /below last month(?:'s)? close/.test(note) ||
@@ -218,7 +222,7 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
       S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
       // 1 = Josephine (the dip), null = Watch (between the lines).
-      _positiveJosephine: isJosephineDip ? 1 : null,
+      _positiveJosephine: isDip ? 1 : null,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -450,13 +454,18 @@ export default function HomePage() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
-  const [filterSentiment, setFilterSentiment] =
-    useState<"all" | "bullish" | "watch" | "josephine" | "bearish">("all");
+  /** Selected sentiment states; empty means no filter. Any combination works. */
+  const [filterSentiment, setFilterSentiment] = useState<SentimentKey[]>([]);
 
   // Rate inputs
   const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);
+  /** What the RBA currently publishes, for the label and the reset button. */
+  const [cashRateLive, setCashRateLive] =
+    useState<{ rate: number; since: string | null; stale: boolean } | null>(null);
+  /** Set once the user types a rate, so the live value never stomps theirs. */
+  const cashRateEdited = useRef(false);
   const [iv1Rate, setIv1Rate] = useState(DEFAULT_RRR * 100);
-  const [borrowingRate, setBorrowingRate] = useState(6.5);
+  const [borrowingRate, setBorrowingRate] = useState(DEFAULT_BORROWING_RATE);
 
   const rates: ScoringRates = {
     rrr: iv1Rate / 100,
@@ -641,8 +650,7 @@ export default function HomePage() {
           sentiment: s.S_sentiment_long === 2 ? "Bullish"
                    : s.S_sentiment_long === -1 ? "Bearish"
                    : s.S_sentiment_long === 0
-                     ? ((s as Record<string, unknown>)._positiveJosephine === 1
-                         ? "Josephine" : "Watch")
+                     ? (isJosephineDip(s) ? "Josephine" : "Watch")
                      : null,
           price: typeof s["Share Price ($)"] === "number"
             ? (s["Share Price ($)"] as number)
@@ -907,6 +915,24 @@ export default function HomePage() {
     setShowBuybackPanel(false);
   }, []);
 
+  // Live RBA cash rate. Runs once on mount; the route is edge-cached for six
+  // hours and falls back to DEFAULT_CASH_RATE if the RBA is unreachable, so
+  // this never blocks or breaks the page.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/cash-rate");
+        if (!res.ok) return;
+        const d = await res.json() as { rate?: number; since?: string | null; stale?: boolean };
+        if (cancelled || typeof d.rate !== "number" || !isFinite(d.rate)) return;
+        setCashRateLive({ rate: d.rate, since: d.since ?? null, stale: !!d.stale });
+        if (!cashRateEdited.current) setCashRate(d.rate);
+      } catch { /* keep the compiled-in default */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
@@ -924,13 +950,12 @@ export default function HomePage() {
   function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
     let result = arr;
     if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
-    const dip = (s: ScoredStock) =>
-      (s as Record<string, unknown>)._positiveJosephine === 1;
-    if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
-    // Watch and Josephine share a score of 0; the dip marker separates them.
-    if (filterSentiment === "watch")     result = result.filter((s) => s.S_sentiment_long === 0 && !dip(s));
-    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0 && dip(s));
-    if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
+    if (filterSentiment.length > 0) {
+      result = result.filter((s) => {
+        const k = sentimentKeyOf(s.S_sentiment_long, isJosephineDip(s));
+        return k !== null && filterSentiment.indexOf(k) >= 0;
+      });
+    }
     return result;
   }
   const statsAll = applyTableFilters(allStocks ?? []);
@@ -1157,7 +1182,7 @@ export default function HomePage() {
                 <div className="flex items-center gap-2">
                   <input
                     type="number" min={0} max={20} step={0.05} value={cashRate}
-                    onChange={(e) => setCashRate(parseFloat(e.target.value) || 0)}
+                    onChange={(e) => { cashRateEdited.current = true; setCashRate(parseFloat(e.target.value) || 0); }}
                     className="w-24 text-sm border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono"
                   />
                   <span className="text-xs text-indigo-500">
@@ -1165,6 +1190,24 @@ export default function HomePage() {
                     <span className="ml-1 text-indigo-400">(6% + {cashRate}%)</span>
                   </span>
                 </div>
+                {cashRateLive && !cashRateLive.stale ? (
+                  <p className="text-xs text-indigo-400">
+                    RBA target {cashRateLive.rate}%
+                    {cashRateLive.since ? ` since ${cashRateLive.since}` : ""}
+                    {Math.abs(cashRateLive.rate - cashRate) > 1e-9 && (
+                      <button
+                        onClick={() => { cashRateEdited.current = false; setCashRate(cashRateLive.rate); }}
+                        className="ml-1 underline hover:text-indigo-600"
+                      >
+                        use it
+                      </button>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-xs text-indigo-400">
+                    RBA check unavailable — using the built-in {DEFAULT_CASH_RATE}%
+                  </p>
+                )}
               </div>
               <div className="space-y-1">
                 <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wide">
@@ -1197,7 +1240,12 @@ export default function HomePage() {
                 </div>
               </div>
               <button
-                onClick={() => { setCashRate(DEFAULT_CASH_RATE); setIv1Rate(DEFAULT_RRR * 100); setBorrowingRate(6.5); }}
+                onClick={() => {
+                  cashRateEdited.current = false;
+                  setCashRate(cashRateLive?.rate ?? DEFAULT_CASH_RATE);
+                  setIv1Rate(DEFAULT_RRR * 100);
+                  setBorrowingRate(DEFAULT_BORROWING_RATE);
+                }}
                 className="text-xs text-indigo-500 hover:text-indigo-700 underline pb-1.5"
               >
                 Reset to defaults

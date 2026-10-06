@@ -4,7 +4,10 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
 import { qavColor, scoreColor, isEtfOrFund } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
-import { StoredSentiments, SentimentOverride } from "@/lib/sentiment-storage";
+import {
+  StoredSentiments, SentimentOverride, SentimentKey, SENTIMENT_KEYS,
+  sentimentKeyOf, isJosephineDip,
+} from "@/lib/sentiment-storage";
 import { HistorySeries } from "@/lib/history-storage";
 import { QavSparkline } from "@/components/qav-sparkline";
 
@@ -13,8 +16,9 @@ interface StockTableProps {
   showAll: boolean;
   hideEtfs: boolean;
   onToggleEtfs: () => void;
-  filterSentiment: "all" | "bullish" | "watch" | "josephine" | "bearish";
-  onChangeFilterSentiment: (v: "all" | "bullish" | "watch" | "josephine" | "bearish") => void;
+  /** Selected sentiment states. EMPTY means no filter, i.e. show everything. */
+  filterSentiment: SentimentKey[];
+  onChangeFilterSentiment: (v: SentimentKey[]) => void;
   borrowingRate: number;
   phase2Loaded?: boolean;
   sentimentOverrides?: StoredSentiments;
@@ -28,8 +32,7 @@ type SortDir = "asc" | "desc";
 
 const SENTIMENT_COLORS: Record<string, string> = {
   positive: "bg-emerald-100 text-emerald-800",
-  watch: "bg-sky-100 text-sky-800",                                          // between the lines
-  josephine: "bg-sky-100 text-sky-800",
+  watch: "bg-sky-100 text-sky-800",                                       // between the lines
   positive_josephine: "bg-teal-100 text-teal-800 border border-teal-300", // Josephine: above the lines, dipped on the month
   schrodinger: "bg-orange-100 text-orange-800",
   negative: "bg-red-100 text-red-700",
@@ -117,8 +120,7 @@ function SentimentBadge({
 
   const v = stock.S_sentiment_long;
   const isOverridden = override !== undefined;
-  const isPositiveJosephine = v === 0 &&
-    (stock as Record<string, unknown>)._positiveJosephine === 1;
+  const isPositiveJosephine = v === 0 && isJosephineDip(stock);
   // Commodity gate: underlying commodity is in Sell status (QAV rule) —
   // sentiment was forced Bearish by enrichWithCommodityGate unless overridden
   const commodity = (stock as Record<string, unknown>)._commodity as string | undefined;
@@ -220,13 +222,14 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
       // trailing yield. ">0" is the "actually pays a dividend" filter.
       result = result.filter((s) => (effYield(s) ?? 0) > minYield - 1e-9);
     }
-    const dip = (s: ScoredStock) =>
-      (s as Record<string, unknown>)._positiveJosephine === 1;
-    if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
-    // Watch and Josephine share a score of 0; the dip marker separates them.
-    if (filterSentiment === "watch")     result = result.filter((s) => s.S_sentiment_long === 0 && !dip(s));
-    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0 && dip(s));
-    if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
+    // Any combination can be selected, so Bullish + Watch is one list. Nothing
+    // ticked means no filter rather than no rows.
+    if (filterSentiment.length > 0) {
+      result = result.filter((s) => {
+        const k = sentimentKeyOf(s.S_sentiment_long, isJosephineDip(s));
+        return k !== null && filterSentiment.indexOf(k) >= 0;
+      });
+    }
     if (search.trim()) {
       const q = search.trim().toUpperCase();
       result = result.filter(
@@ -320,19 +323,44 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
             <option value="6">Yield ≥ 6%</option>
           </select>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium text-gray-600">Sentiment</label>
-          <select
-            value={filterSentiment}
-            onChange={(e) => onChangeFilterSentiment(e.target.value as "all" | "bullish" | "watch" | "josephine" | "bearish")}
-            className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        <div className="flex items-center gap-2 flex-wrap">
+          <label
+            className="text-sm font-medium text-gray-600"
+            title="Tick any combination. Nothing ticked shows every sentiment."
           >
-            <option value="all">All</option>
-            <option value="bullish">Bullish only</option>
-            <option value="watch">Watch only</option>
-            <option value="josephine">Josephine only</option>
-            <option value="bearish">Bearish only</option>
-          </select>
+            Sentiment
+          </label>
+          {SENTIMENT_KEYS.map(({ key, label }) => {
+            const on = filterSentiment.indexOf(key) >= 0;
+            return (
+              <label
+                key={key}
+                className="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none px-1.5 py-1 rounded hover:bg-gray-50"
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() =>
+                    onChangeFilterSentiment(
+                      on ? filterSentiment.filter((k) => k !== key)
+                         : filterSentiment.concat(key))
+                  }
+                  className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400"
+                />
+                {label}
+              </label>
+            );
+          })}
+          {filterSentiment.length > 0 ? (
+            <button
+              onClick={() => onChangeFilterSentiment([])}
+              className="text-xs text-indigo-500 hover:text-indigo-700 underline"
+            >
+              clear
+            </button>
+          ) : (
+            <span className="text-xs text-gray-400">all</span>
+          )}
         </div>
         <button
           onClick={onToggleEtfs}
