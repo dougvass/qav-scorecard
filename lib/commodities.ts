@@ -1,12 +1,18 @@
 /**
  * Commodity 3PTL gate — QAV rule: a stock whose UNDERLYING commodity is in
  * Sell (Bearish) status is itself a sell / do-not-buy, regardless of its own
- * chart. Commodity sentiment comes from the same 3PTL engine as stocks
- * (/api/trendline?commodities=1) where Yahoo Finance has a live monthly feed.
- * Iron ore has no reachable feed but IS auto-classified, from a monthly series
- * embedded in the API off the Market Index workbook (refresh it when a new
- * workbook is downloaded). Coal, lithium and nickel remain MANUAL — read the
- * tradingeconomics.com chart and set their sentiment by hand in the UI.
+ * chart. Commodity sentiment comes from the same 3PTL engine as the stocks,
+ * served by /api/commodities.
+ *
+ * Eleven commodities read World Bank Pink Sheet monthly closes (gapless, which
+ * is what they needed — Yahoo's monthly futures have calendar gaps and the
+ * engine indexes time by array position). Palladium and Uranium are not in the
+ * Pink Sheet and use Yahoo futures, calendar-normalised at fetch time.
+ *
+ * LITHIUM is a LABELLED PROXY (the LIT ETF) because no free monthly lithium
+ * price series exists — see its entry below. It is marked with an asterisk
+ * everywhere it is shown. A manual override beats the automatic read for any
+ * commodity; read the tradingeconomics.com chart to set one.
  */
 
 import type { TrendlineSentiment } from "./trendline-storage";
@@ -19,6 +25,12 @@ export interface CommodityDef {
   symbol: string | null;
   /** Reference chart for the human read (Tony's 3PTL by eye) */
   teUrl: string;
+  /**
+   * Set when `symbol` is NOT the commodity itself but a stand-in. The chip
+   * marks these with an asterisk and shows this text, because a 3PTL on a
+   * proxy reads the proxy's trend, not the commodity's.
+   */
+  proxy?: string;
 }
 
 export const COMMODITIES: CommodityDef[] = [
@@ -41,11 +53,16 @@ export const COMMODITIES: CommodityDef[] = [
   // so they are automatic now — "pink" marks a series with no Yahoo symbol.
   { key: "COAL",      label: "Coal",       symbol: "pink",    teUrl: "https://tradingeconomics.com/commodity/coal" },
   { key: "NICKEL",    label: "Nickel",     symbol: "pink",    teUrl: "https://tradingeconomics.com/commodity/nickel" },
-  // Manual-only. Lithium has NO free monthly price series: FRED carries only a
-  // miners equity index, the Pink Sheet has neither lithium nor cobalt, stooq
-  // and Yahoo futures have nothing usable, and SMM, Fastmarkets, Benchmark and
-  // the LME are paywalled. Set it from the TE chart.
-  { key: "LITHIUM",   label: "Lithium",    symbol: null,      teUrl: "https://tradingeconomics.com/commodity/lithium" },
+  // Lithium has NO free monthly price series anywhere reachable: FRED carries
+  // only a miners equity index, the Pink Sheet has neither lithium nor cobalt,
+  // stooq and Yahoo futures have nothing usable, and SMM, Fastmarkets,
+  // Benchmark and the LME are paywalled. So it runs on a LABELLED PROXY —
+  // marked with an asterisk everywhere it is shown. A manual override still
+  // wins, and the TE chart is the reference for setting one.
+  { key: "LITHIUM",   label: "Lithium",    symbol: "LIT",     teUrl: "https://tradingeconomics.com/commodity/lithium",
+    proxy: "Proxy: LIT, the Global X Lithium & Battery Tech ETF. These are MINER AND BATTERY EQUITIES, "
+         + "not the lithium price — they carry market beta and can lead or lag the commodity. Read the "
+         + "Trading Economics chart and override by hand when the two disagree." },
 ];
 
 /**
@@ -133,6 +150,9 @@ export const COMMODITY_SYMBOLS: Record<string, string> = {
   PLATINUM:  "PL=F",
   PALLADIUM: "PA=F",
   URANIUM:   "U-UN.TO",  // Sprott physical trust proxy
+  // Not the commodity: an equity proxy, flagged by CommodityDef.proxy so the
+  // UI can asterisk it. See the LITHIUM entry in COMMODITIES for why.
+  LITHIUM:   "LIT",      // Global X Lithium & Battery Tech ETF
 };
 
 /**

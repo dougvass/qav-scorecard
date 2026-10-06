@@ -1178,9 +1178,9 @@ export default function HomePage() {
                       key={c.key}
                       onClick={() => cycleCommodityOverride(c.key)}
                       className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette}`}
-                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Watch → Josephine → Bearish → auto`}
+                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.proxy ? `\n\n${c.proxy}` : c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Watch → Josephine → Bearish → auto`}
                     >
-                      {c.label} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Watch" ? "◇" : eff === "Josephine" ? "◆" : "—"}
+                      {c.label}{c.proxy ? "*" : ""} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Watch" ? "◇" : eff === "Josephine" ? "◆" : "—"}
                       {manual && <span className="ml-1 opacity-60">✎</span>}
                     </button>
                   );
@@ -1191,7 +1191,8 @@ export default function HomePage() {
                   Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
                   Gold, Silver, Copper, Oil, Brent, Nat Gas, Aluminium, Platinum, Iron Ore, Nickel and Coal
                   come from the World Bank Pink Sheet (gapless monthly, updated monthly). Palladium and
-                  Uranium use Yahoo futures. Only Lithium has no series at all — read{" "}
+                  Uranium use Yahoo futures. <strong>Lithium* is a proxy</strong> — the LIT ETF of miner
+                  and battery equities, not the lithium price, so check it against{" "}
                   <a href="https://tradingeconomics.com/commodities" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>{" "}
                   and click the chip to set. Click any chip to override; ✎ = manual.
                 </span>
