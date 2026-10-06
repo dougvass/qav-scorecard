@@ -72,13 +72,16 @@ import {
 const TRENDLINE_ENDPOINT = "/api/trendline-v3";
 
 /**
- * Which engine classifies the COMMODITY complex. v3 as of 2026-10-06.
+ * The COMMODITY complex. /api/commodities runs v3 over World Bank Pink Sheet
+ * monthly closes — gapless, which is what commodities actually needed: Yahoo's
+ * monthly futures have calendar gaps and the engine indexes time by array
+ * position, so a gap silently compresses it.
  *
- * Note v1 ran a separate commodity mode with no falling-knife rule; v3 has one
- * rule set, so a commodity v3 reads as a knife now gates every stock mapped to
- * it off the buy list. Flip back to "/api/trendline?commodities=1" to revert.
+ * Earlier alternatives, either of which can be restored by changing this line:
+ *   "/api/trendline-v3?commodities=1"  v3 over Yahoo futures (gappy)
+ *   "/api/trendline?commodities=1"     v1's separate commodity mode
  */
-const COMMODITY_ENDPOINT = "/api/trendline-v3?commodities=1";
+const COMMODITY_ENDPOINT = "/api/commodities";
 
 const SCORE_KEYS = [
   "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
@@ -1186,8 +1189,9 @@ export default function HomePage() {
               <div className="flex flex-wrap items-center gap-4 text-xs text-amber-700">
                 <span>
                   Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
-                  Iron Ore is classified from the Market Index workbook (automatic, lagged up to two months).
-                  Feedless commodities (Coal, Lithium, Nickel) — read{" "}
+                  Gold, Silver, Copper, Oil, Brent, Nat Gas, Aluminium, Platinum, Iron Ore, Nickel and Coal
+                  come from the World Bank Pink Sheet (gapless monthly, updated monthly). Palladium and
+                  Uranium use Yahoo futures. Only Lithium has no series at all — read{" "}
                   <a href="https://tradingeconomics.com/commodities" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>{" "}
                   and click the chip to set. Click any chip to override; ✎ = manual.
                 </span>

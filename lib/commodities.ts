@@ -37,10 +37,15 @@ export const COMMODITIES: CommodityDef[] = [
   // monthly series embedded from the Market Index workbook — auto, but lagged
   // by up to a month. The chip still accepts a manual override.
   { key: "IRONORE",   label: "Iron Ore",   symbol: "embedded", teUrl: "https://tradingeconomics.com/commodity/iron-ore" },
-  // Manual-only: no series available at all — set sentiment from the TE chart
-  { key: "COAL",      label: "Coal",       symbol: null,      teUrl: "https://tradingeconomics.com/commodity/coal" },
+  // Coal and Nickel are in the World Bank Pink Sheet (see PINK_SHEET_SERIES),
+  // so they are automatic now — "pink" marks a series with no Yahoo symbol.
+  { key: "COAL",      label: "Coal",       symbol: "pink",    teUrl: "https://tradingeconomics.com/commodity/coal" },
+  { key: "NICKEL",    label: "Nickel",     symbol: "pink",    teUrl: "https://tradingeconomics.com/commodity/nickel" },
+  // Manual-only. Lithium has NO free monthly price series: FRED carries only a
+  // miners equity index, the Pink Sheet has neither lithium nor cobalt, stooq
+  // and Yahoo futures have nothing usable, and SMM, Fastmarkets, Benchmark and
+  // the LME are paywalled. Set it from the TE chart.
   { key: "LITHIUM",   label: "Lithium",    symbol: null,      teUrl: "https://tradingeconomics.com/commodity/lithium" },
-  { key: "NICKEL",    label: "Nickel",     symbol: null,      teUrl: "https://tradingeconomics.com/commodity/nickel" },
 ];
 
 /**
@@ -160,4 +165,35 @@ export const EMBEDDED_MONTHLY: Record<string, { asOf: string; bars: [string, num
       ["2026-03",106.38], ["2026-04",107.18], ["2026-05",104.52], ["2026-06",100.2], ["2026-07",98], ["2026-08",96.05]
     ],
   },
+};
+
+/**
+ * Our commodity key → its series name in the World Bank Pink Sheet
+ * ("Monthly Prices" sheet, names on row 5).
+ *
+ * This is the preferred source for everything listed here: gapless monthly
+ * closes since 1960, updated monthly, and a month fresher than the Market
+ * Index workbook. Yahoo's monthly FUTURES series have calendar gaps — gold was
+ * missing 8 of 61 months — and the engine indexes time by array position, so a
+ * gap silently compresses it. Feeding gapless closes moved Aluminium and
+ * Platinum from wrong to right against HQ's own run with no engine change.
+ *
+ * Units differ from other sources (iron ore in $/dmtu rather than $/t), which
+ * does not matter: 3PTL reads a trend, so it is scale-invariant.
+ *
+ * Palladium and Uranium are NOT in the Pink Sheet and keep their Yahoo
+ * futures, calendar-normalised at fetch time. Lithium has no series at all.
+ */
+export const PINK_SHEET_SERIES: Record<string, string> = {
+  GOLD:      "Gold",
+  SILVER:    "Silver",
+  COPPER:    "Copper",
+  OIL:       "Crude oil, WTI",
+  BRENT:     "Crude oil, Brent",
+  NATGAS:    "Natural gas, US",
+  ALUMINIUM: "Aluminum",
+  PLATINUM:  "Platinum",
+  IRONORE:   "Iron ore, cfr spot",
+  NICKEL:    "Nickel",
+  COAL:      "Coal, Australian",
 };
