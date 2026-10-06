@@ -45,3 +45,25 @@ export const TRENDLINE_SCORES: Record<TrendlineSentiment, number> = {
   Josephine:  0,
   Bearish:   -1,
 };
+
+
+/**
+ * Normalise whatever an engine reports into the stored vocabulary.
+ *
+ * v3 says Buy / Sell / Watch / Josephine; v1 says Bullish / Josephine /
+ * Bearish. Accepting both means the auto run can be pointed at either engine
+ * without touching the storage layer. An unknown or missing value becomes
+ * Watch, which scores 0 — the neutral choice for a stock the engine could not
+ * read (insufficient data), and what v1 already did by defaulting.
+ */
+export function toStoredSentiment(s: string | null | undefined): TrendlineSentiment {
+  switch ((s ?? "").trim().toLowerCase()) {
+    case "buy":
+    case "bullish":   return "Bullish";
+    case "sell":
+    case "bearish":   return "Bearish";
+    case "josephine": return "Josephine";
+    case "watch":     return "Watch";
+    default:          return "Watch";
+  }
+}
