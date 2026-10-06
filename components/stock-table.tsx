@@ -13,8 +13,8 @@ interface StockTableProps {
   showAll: boolean;
   hideEtfs: boolean;
   onToggleEtfs: () => void;
-  filterSentiment: "all" | "bullish" | "josephine" | "bearish";
-  onChangeFilterSentiment: (v: "all" | "bullish" | "josephine" | "bearish") => void;
+  filterSentiment: "all" | "bullish" | "watch" | "josephine" | "bearish";
+  onChangeFilterSentiment: (v: "all" | "bullish" | "watch" | "josephine" | "bearish") => void;
   borrowingRate: number;
   phase2Loaded?: boolean;
   sentimentOverrides?: StoredSentiments;
@@ -28,8 +28,9 @@ type SortDir = "asc" | "desc";
 
 const SENTIMENT_COLORS: Record<string, string> = {
   positive: "bg-emerald-100 text-emerald-800",
+  watch: "bg-sky-100 text-sky-800",                                          // between the lines
   josephine: "bg-sky-100 text-sky-800",
-  positive_josephine: "bg-teal-100 text-teal-800 border border-teal-300", // was Bullish, minor monthly dip
+  positive_josephine: "bg-teal-100 text-teal-800 border border-teal-300", // Josephine: above the lines, dipped on the month
   schrodinger: "bg-orange-100 text-orange-800",
   negative: "bg-red-100 text-red-700",
   insufficient_data: "bg-gray-100 text-gray-500",
@@ -88,6 +89,7 @@ function SortIcon({ col, sortKey, sortDir }: { col: string; sortKey: string; sor
 const SENTIMENT_OPTIONS: { label: SentimentOverride | "Auto"; value: SentimentOverride | null }[] = [
   { label: "Auto", value: null },
   { label: "Bullish", value: "Bullish" },
+  { label: "Watch", value: "Watch" },
   { label: "Josephine", value: "Josephine" },
   { label: "Bearish", value: "Bearish" },
 ];
@@ -123,12 +125,16 @@ function SentimentBadge({
   const commoditySell = !isOverridden &&
     (stock as Record<string, unknown>)._commoditySell === 1;
 
-  let label = "Josephine";
-  let colorCls = SENTIMENT_COLORS["josephine"];
+  // A score of 0 is the between-the-lines state, which is WATCH. Josephine is
+  // now only the dip: above both lines, but below last month's close.
+  let label = "Watch";
+  let colorCls = SENTIMENT_COLORS["watch"];
   if (v === 2)  { label = "Bullish";   colorCls = SENTIMENT_COLORS["bullish_proxy"]; }
   if (v === -1) { label = "Bearish";   colorCls = SENTIMENT_COLORS["negative"]; }
   if (v === 0 && isPositiveJosephine) {
-    label = "Josephine ↗";   // teal — was Bullish, just a monthly dip
+    // No arrow any more: it only existed to tell this apart from the other,
+    // between-the-lines Josephine, and that one is now called Watch.
+    label = "Josephine";     // teal — above the lines, dipped on the month
     colorCls = SENTIMENT_COLORS["positive_josephine"];
   }
   if (commoditySell) label = `Bearish ⛏`;
@@ -214,8 +220,12 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
       // trailing yield. ">0" is the "actually pays a dividend" filter.
       result = result.filter((s) => (effYield(s) ?? 0) > minYield - 1e-9);
     }
+    const dip = (s: ScoredStock) =>
+      (s as Record<string, unknown>)._positiveJosephine === 1;
     if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
-    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0);
+    // Watch and Josephine share a score of 0; the dip marker separates them.
+    if (filterSentiment === "watch")     result = result.filter((s) => s.S_sentiment_long === 0 && !dip(s));
+    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0 && dip(s));
     if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
     if (search.trim()) {
       const q = search.trim().toUpperCase();
@@ -314,11 +324,12 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
           <label className="text-sm font-medium text-gray-600">Sentiment</label>
           <select
             value={filterSentiment}
-            onChange={(e) => onChangeFilterSentiment(e.target.value as "all" | "bullish" | "bearish")}
+            onChange={(e) => onChangeFilterSentiment(e.target.value as "all" | "bullish" | "watch" | "josephine" | "bearish")}
             className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
           >
             <option value="all">All</option>
             <option value="bullish">Bullish only</option>
+            <option value="watch">Watch only</option>
             <option value="josephine">Josephine only</option>
             <option value="bearish">Bearish only</option>
           </select>
