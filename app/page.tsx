@@ -19,6 +19,7 @@ import {
   StoredTrendlines,
   TrendlineSentiment,
   TRENDLINE_SCORES,
+  toStoredSentiment,
 } from "@/lib/trendline-storage";
 import {
   COMMODITIES,
@@ -56,6 +57,19 @@ import {
   TrendingUp,
   Activity,
 } from "lucide-react";
+
+/**
+ * Which 3PTL engine the auto run uses for STOCKS.
+ *
+ * v3 is the sequential walk built from Doug's own chart readings: 15/15 on his
+ * qualified set and 83.3% agreement with HQ's published buy list, against v1's
+ * 60%. Flip this back to "/api/trendline" to revert; nothing else needs to
+ * change, because toStoredSentiment() accepts both vocabularies.
+ *
+ * The COMMODITY gate still calls v1 at /api/trendline?commodities=1 — that mode
+ * only exists there.
+ */
+const TRENDLINE_ENDPOINT = "/api/trendline-v3";
 
 const SCORE_KEYS = [
   "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
@@ -803,18 +817,26 @@ export default function HomePage() {
     try {
       for (let i = 0; i < codes.length; i += CHUNK) {
         const chunk = codes.slice(i, i + CHUNK);
-        const res = await fetch("/api/trendline", {
+        const res = await fetch(TRENDLINE_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ codes: chunk }),
         });
         if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
-        const data = await res.json() as Record<string, { sentiment: string; note?: string }>;
+        const data = await res.json() as Record<string, { sentiment?: string; note?: string }>;
         for (const [code, entry] of Object.entries(data)) {
           accumulated[code] = {
-            sentiment: (entry.sentiment ?? "Watch") as TrendlineSentiment,
+            // v3 reports Buy / Sell / Watch / Josephine; toStoredSentiment maps
+            // both vocabularies, so flipping TRENDLINE_ENDPOINT back to v1
+            // needs no other change.
+            sentiment: toStoredSentiment(entry.sentiment),
             note: entry.note,
-            // Flag as "new upturn" if 3PTL detected a recent breakout above resistance
+            // Left as-is deliberately. v1 has never written either string, so
+            // newUpturn has always been false and S_new_upturn always null.
+            // v3 could answer this properly from its BUY events, but its event
+            // dates are not a causal history (L2 advances to the last point
+            // that works, which can post-date the month being walked), so they
+            // must not be read as "recently breached the buy line".
             newUpturn: !!(entry.note?.toLowerCase().includes("broke above") ||
                           entry.note?.toLowerCase().includes("trough recovery")),
           };
@@ -1036,7 +1058,7 @@ export default function HomePage() {
                         ? "text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100"
                         : "text-gray-500 border-gray-300 hover:bg-gray-50"
                     }`}
-                    title="Calculate 3PTL (3-Point Trendline) from 5yr monthly Yahoo Finance data"
+                    title="Calculate 3PTL (3-Point Trendline) from 5yr monthly Yahoo Finance data — v3 sequential walk"
                   >
                     <Activity className="w-4 h-4" />
                     {trendlineLoaded ? "3PTL ✓" : "Calc 3PTL"}
