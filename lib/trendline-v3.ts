@@ -208,12 +208,19 @@ export function buyLine(
     if (c[top] < c[j] * (1 + SEP) && j > h1) h1 = j;
   }
 
-  // Rule 8: the LATEST qualifying peak. The earliest gave FRI H2 2024-09 and a
+  // Rule 8: the LATEST qualifying point. The earliest gave FRI H2 2024-09 and a
   // ray decayed to -0.125, which was then rejected and left no buy line at all;
   // his H2 2025-10 is the last that qualifies and gives 0.824.
-  for (let x = avail.length - 1; x >= 0; x--) {
-    const h2 = avail[x];
-    if (h2 <= h1) continue;
+  //
+  // H2 may be ANY later close, not only a peak — the mirror of rule 4 for L2,
+  // and what Doug's gold reading requires: his H2 2026-05 4545.95 is 14.9%
+  // below H1 2026-02 5222.30 so it clears the gate easily, but it is NOT a peak
+  // (2026-04 4611.35 precedes it). Same ALK logic as L2: "not technically a low
+  // trough, just the next low/close". Never the final bar, for the same reason
+  // L2 never is. This lifted the anchors he has confirmed from 14/16 to 16/16
+  // and his qualified verdicts to 6/6, with his 15 unchanged at 15/15.
+  const lastH2 = Math.min(upto, c.length - 1);
+  for (let h2 = lastH2 - 1; h2 > h1; h2--) {
     if (c[h1] < c[h2] * (1 + SEP)) continue;
     const g = (c[h2] - c[h1]) / (h2 - h1);
     let over = false;

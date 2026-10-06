@@ -71,6 +71,18 @@ import {
  */
 const TRENDLINE_ENDPOINT = "/api/trendline-v3";
 
+/**
+ * The COMMODITY complex. /api/commodities runs v3 over World Bank Pink Sheet
+ * monthly closes — gapless, which is what commodities actually needed: Yahoo's
+ * monthly futures have calendar gaps and the engine indexes time by array
+ * position, so a gap silently compresses it.
+ *
+ * Earlier alternatives, either of which can be restored by changing this line:
+ *   "/api/trendline-v3?commodities=1"  v3 over Yahoo futures (gappy)
+ *   "/api/trendline?commodities=1"     v1's separate commodity mode
+ */
+const COMMODITY_ENDPOINT = "/api/commodities";
+
 const SCORE_KEYS = [
   "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
   "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
@@ -865,14 +877,17 @@ export default function HomePage() {
     setCommodityChecking(true);
     setError(null);
     try {
-      const res = await fetch("/api/trendline?commodities=1");
+      const res = await fetch(COMMODITY_ENDPOINT);
       if (!res.ok) throw new Error(`Commodity API error ${res.status}`);
       const json = await res.json() as { commodities: Record<string, { sentiment?: string; note?: string; error?: string }> };
       const auto: StoredCommodities["auto"] = {};
       for (const [key, entry] of Object.entries(json.commodities)) {
         if (entry.error || !entry.sentiment) continue;
         auto[key] = {
-          sentiment: entry.sentiment as TrendlineSentiment,
+          // v3 says Buy/Sell/Watch/Josephine. Casting that straight to
+          // TrendlineSentiment would have stored "Buy", which is not a key in
+          // TRENDLINE_SCORES and would have broken the gate silently.
+          sentiment: toStoredSentiment(entry.sentiment),
           note: entry.note,
         };
       }
@@ -898,7 +913,8 @@ export default function HomePage() {
   const cycleCommodityOverride = useCallback((key: string) => {
     setCommodityData((prev) => {
       const base: StoredCommodities = prev ?? { timestamp: null, auto: {}, manual: {} };
-      const order: (TrendlineSentiment | undefined)[] = [undefined, "Bullish", "Josephine", "Bearish"];
+      const order: (TrendlineSentiment | undefined)[] =
+        [undefined, "Bullish", "Watch", "Josephine", "Bearish"];
       const current = base.manual[key];
       const next = order[(order.indexOf(current) + 1) % order.length];
       const manual = { ...base.manual };
@@ -1148,9 +1164,13 @@ export default function HomePage() {
                   const manual = commodityData?.manual[c.key];
                   const auto = commodityData?.auto[c.key];
                   const eff = effectiveCommoditySentiment(commodityData, c.key);
+                  // Watch needs its own palette: without it a Watch commodity
+                  // fell through to the "not set" dashed style and read as
+                  // unset, which v3 can now actually produce.
                   const palette =
                     eff === "Bullish"   ? "bg-emerald-100 text-emerald-800 border-emerald-300" :
                     eff === "Bearish"   ? "bg-red-100 text-red-800 border-red-300" :
+                    eff === "Watch"     ? "bg-sky-100 text-sky-800 border-sky-300" :
                     eff === "Josephine" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
                                           "bg-white text-gray-400 border-dashed border-gray-300";
                   return (
@@ -1158,9 +1178,9 @@ export default function HomePage() {
                       key={c.key}
                       onClick={() => cycleCommodityOverride(c.key)}
                       className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette}`}
-                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Josephine → Bearish → auto`}
+                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Watch → Josephine → Bearish → auto`}
                     >
-                      {c.label} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Josephine" ? "◆" : "—"}
+                      {c.label} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Watch" ? "◇" : eff === "Josephine" ? "◆" : "—"}
                       {manual && <span className="ml-1 opacity-60">✎</span>}
                     </button>
                   );
@@ -1169,7 +1189,9 @@ export default function HomePage() {
               <div className="flex flex-wrap items-center gap-4 text-xs text-amber-700">
                 <span>
                   Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
-                  Feedless commodities (Iron Ore, Coal, Lithium, Nickel) — read{" "}
+                  Gold, Silver, Copper, Oil, Brent, Nat Gas, Aluminium, Platinum, Iron Ore, Nickel and Coal
+                  come from the World Bank Pink Sheet (gapless monthly, updated monthly). Palladium and
+                  Uranium use Yahoo futures. Only Lithium has no series at all — read{" "}
                   <a href="https://tradingeconomics.com/commodities" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>{" "}
                   and click the chip to set. Click any chip to override; ✎ = manual.
                 </span>
