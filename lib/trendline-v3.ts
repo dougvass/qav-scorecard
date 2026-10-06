@@ -381,7 +381,15 @@ export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | 
   }
 
   const sellNow = rayAt(c, out.sell[0], out.sell[1], n - 1);
-  const buyNow = out.buy != null ? rayAt(c, out.buy[0], out.buy[1], n - 1) : null;
+  // The buy ray is FLOORED AT ZERO. A long-decayed declining ray extrapolates
+  // below zero — copper reported -417 — which is meaningless to display and, in
+  // principle, lets the Watch test be skipped by a line that is not really
+  // there. Flooring changes no verdict (price is above zero either way) but
+  // keeps the reported number sane. A buy line of exactly 0 means "decayed
+  // away", not "a line at zero".
+  const buyNow = out.buy != null
+    ? Math.max(0, rayAt(c, out.buy[0], out.buy[1], n - 1))
+    : null;
 
   let sentiment: V3Result["sentiment"];
   let note: string;
