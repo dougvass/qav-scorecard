@@ -18,6 +18,7 @@
  */
 import { classifyV3, V3Bar } from "@/lib/trendline-v3";
 import { classifyV2 } from "@/lib/trendline-v2";
+import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY } from "@/lib/commodities";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -129,8 +130,60 @@ async function run(code: string, withV2 = false) {
   return withV2 ? { ...base, v2 } : base;
 }
 
+/**
+ * One commodity. Same engine as the stocks — v3 has a single rule set, where v1
+ * ran a separate commodity mode (close basis, faster confirmation, and notably
+ * NO falling-knife rule). That difference is real: a commodity v3 reads as a
+ * knife gates every stock mapped to it off the buy list, which v1 would not
+ * have done.
+ *
+ * Iron ore has no reachable feed and comes from the embedded Market Index
+ * series; `asOf` is returned so its lag is visible rather than silent. For that
+ * series the price IS the last monthly close, so the uptick test compares the
+ * last two months rather than a live quote.
+ */
+async function runCommodity(name: string) {
+  const emb = EMBEDDED_MONTHLY[name];
+  if (emb) {
+    const bars: V3Bar[] = emb.bars.map(([date, close]) => ({ date, close }));
+    if (bars.length < 12) return { symbol: "embedded", error: "insufficient data", months: bars.length };
+    const price = bars[bars.length - 1].close;
+    const lmc = bars.length >= 2 ? bars[bars.length - 2].close : null;
+    const r = classifyV3(bars, price, lmc);
+    return {
+      symbol: "embedded", months: bars.length, asOf: emb.asOf,
+      source: "Market Index workbook", price, lastMonthClose: lmc,
+      sentiment: r.sentiment, note: r.note, sell: r.sell, buy: r.buy,
+      l1: r.l1, l2: r.l2, h1: r.h1, h2: r.h2,
+    };
+  }
+  const symbol = COMMODITY_SYMBOLS[name];
+  if (!symbol) return { symbol: null, error: "no series for this commodity" };
+  const bars = await fetchMonthly(symbol);
+  if (bars.length < 12) return { symbol, error: "insufficient data", months: bars.length };
+  const daily = await fetchDaily(symbol);
+  const price = daily.price ?? bars[bars.length - 1].close;
+  const r = classifyV3(bars, price, daily.prevMonthClose);
+  return {
+    symbol, months: bars.length, price, lastMonthClose: daily.prevMonthClose,
+    sentiment: r.sentiment, note: r.note, sell: r.sell, buy: r.buy,
+    l1: r.l1, l2: r.l2, h1: r.h1, h2: r.h2,
+  };
+}
+
 export async function GET(request: Request) {
   const sp = new URL(request.url).searchParams;
+
+  // The whole commodity complex in one call — feeds the buy-list commodity
+  // gate (a stock whose underlying commodity is Bearish is not a buy).
+  if (sp.get("commodities")) {
+    const names = Object.keys(COMMODITY_SYMBOLS).concat(Object.keys(EMBEDDED_MONTHLY));
+    const results = await Promise.all(names.map((n) => runCommodity(n)));
+    const out: Record<string, unknown> = {};
+    names.forEach((n, i) => { out[n] = results[i]; });
+    return Response.json({ commodities: out });
+  }
+
   const code = sp.get("code")?.trim().toUpperCase();
   if (!code) return Response.json({ error: "code required" }, { status: 400 });
 
