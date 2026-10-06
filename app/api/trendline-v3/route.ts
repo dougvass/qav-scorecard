@@ -115,7 +115,7 @@ async function run(code: string, withV2 = false) {
     };
   }
 
-  return {
+  const base = {
     code, price, months: bars.length,
     lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
@@ -124,8 +124,9 @@ async function run(code: string, withV2 = false) {
     // strictly causal (see the caveat in lib/trendline-v3.ts). Useful for
     // debugging a reading, not for a "date became sell" column.
     events: r.events,
-    v2,
   };
+  // Only carried when asked for, so a plain call's shape stays clean.
+  return withV2 ? { ...base, v2 } : base;
 }
 
 export async function GET(request: Request) {
