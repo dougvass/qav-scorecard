@@ -265,8 +265,12 @@ export function walk(
     }
 
     if (sell != null) {
-      const l1 = sell[0];
-      const l2 = sell[1];
+      // The annotations are load-bearing: `sell` is reassigned further down
+      // from sellLine(c, l1, t, true), which references l1, so inferring l1
+      // from the narrowed `sell` is circular and tsc rejects it as implicit
+      // any. Pinning both to number breaks the cycle.
+      const l1: number = sell[0];
+      const l2: number = sell[1];
       const v = rayAt(c, l1, l2, t);
       if (t > l2) {
         // Rule 10. A line price has not confirmed is still being FORMED, not in
@@ -316,8 +320,8 @@ export function walk(
     if (b != null) buy = [b[0], b[1]];
 
     if (state !== "long" && buy != null) {
-      const h1 = buy[0];
-      const h2 = buy[1];
+      const h1: number = buy[0];
+      const h2: number = buy[1];
       const bv = rayAt(c, h1, h2, t);
       // Rule 12. On HMY this rejects 2024-08 (ray 0.366 against a sell line of
       // 0.370) and 2024-10 (0.333 against 0.377) while admitting his 2025-06
