@@ -11,7 +11,12 @@ import { StockRow, ScoredStock, ScoreColumns } from "./types";
 
 export const DEFAULT_RRR = 0.195;           // Tony's hurdle rate (AV35)
 export const DEFAULT_MARKET_HURDLE = 0.1035; // 6% + RBA cash rate 4.35% (AW35)
-export const DEFAULT_CASH_RATE = 4.35;          // RBA cash rate %
+// RBA cash rate target. This is only the compiled-in FALLBACK: the app asks
+// /api/cash-rate on load, which reads the rate in force from the RBA's own
+// published daily series (table F1, FIRMMCRTD). Keep it current anyway so a
+// first paint, or a failed fetch, is not wrong by a whole cycle.
+// 4.60% took effect 30-Sep-2026.
+export const DEFAULT_CASH_RATE = 4.6;           // RBA cash rate %
 export const DEFAULT_BORROWING_RATE = 6.5;      // Mortgage rate % — Bible Col Q: "Yield > mortgage rate"
 
 export interface ScoringRates {

@@ -29,3 +29,36 @@ export const SENTIMENT_SCORES: Record<SentimentOverride, number> = {
   Josephine: 0,
   Bearish:  -1,
 };
+
+
+/** The four sentiment states as filter keys, in display order. */
+export type SentimentKey = "bullish" | "watch" | "josephine" | "bearish";
+
+export const SENTIMENT_KEYS: { key: SentimentKey; label: string }[] = [
+  { key: "bullish",   label: "Bullish" },
+  { key: "watch",     label: "Watch" },
+  { key: "josephine", label: "Josephine" },
+  { key: "bearish",   label: "Bearish" },
+];
+
+/**
+ * Which state a sentiment score belongs to.
+ *
+ * Watch and Josephine both score 0, so `isDip` is the only thing that can
+ * separate them. Defined here once because the buy-list stats and the table
+ * rows each filter independently, and they had already drifted apart.
+ */
+export function sentimentKeyOf(
+  score: number | null | undefined,
+  isDip: boolean,
+): SentimentKey | null {
+  if (score === 2) return "bullish";
+  if (score === -1) return "bearish";
+  if (score === 0) return isDip ? "josephine" : "watch";
+  return null;
+}
+
+/** True when a scored stock carries the Josephine dip marker. */
+export function isJosephineDip(stock: unknown): boolean {
+  return (stock as Record<string, unknown>)?._positiveJosephine === 1;
+}
