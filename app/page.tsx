@@ -269,14 +269,25 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
  * (Bearish) status is itself a sell / do-not-buy, regardless of its own chart
  * — force sentiment to Bearish and flag it for the table badge. Runs AFTER
  * the auto 3PTL layer and BEFORE manual per-stock overrides (manual wins).
+ *
+ * A PROXY commodity is ADVISORY ONLY: its automatic read is displayed but never
+ * gates. Lithium has no price series at all, so it runs on the LIT ETF of miner
+ * and battery equities, and that stand-in should not push stocks off the buy
+ * list by itself — it read Sell at 71.07 against a 73.96 line, 3.9% below, with
+ * the two lines converged inside 1.3%, while gating PLS, LTR, IGO and MIN.
+ *
+ * A MANUAL setting on a proxy commodity DOES gate, because choosing it means a
+ * human read the real chart.
  */
 function enrichWithCommodityGate(stocks: ScoredStock[], commodities: StoredCommodities): ScoredStock[] {
   return stocks.map((stock) => {
     const commodityKey = STOCK_COMMODITY[stock.Code];
     if (!commodityKey) return stock;
     const sentiment = effectiveCommoditySentiment(commodities, commodityKey);
-    const label = COMMODITIES.find((c) => c.key === commodityKey)?.label ?? commodityKey;
-    if (sentiment !== "Bearish") {
+    const def = COMMODITIES.find((c) => c.key === commodityKey);
+    const label = (def?.label ?? commodityKey) + (def?.proxy ? "*" : "");
+    const advisory = !!def?.proxy && commodities.manual[commodityKey] === undefined;
+    if (sentiment !== "Bearish" || advisory) {
       // Not gated — still annotate the commodity for display
       return { ...stock, _commodity: label, _commoditySell: null } as ScoredStock;
     }
@@ -1189,6 +1200,7 @@ export default function HomePage() {
               <div className="flex flex-wrap items-center gap-4 text-xs text-amber-700">
                 <span>
                   Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
+                  A <strong>proxy*</strong> commodity is advisory only — its automatic read never gates, though setting one by hand does.
                   Gold, Silver, Copper, Oil, Brent, Nat Gas, Aluminium, Platinum, Iron Ore, Nickel and Coal
                   come from the World Bank Pink Sheet (gapless monthly, updated monthly). Palladium and
                   Uranium use Yahoo futures. <strong>Lithium* is a proxy</strong> — the LIT ETF of miner
