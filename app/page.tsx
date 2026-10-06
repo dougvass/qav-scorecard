@@ -195,18 +195,30 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
   return stocks.map((stock) => {
     const entry = trendlines.data[stock.Code];
     if (!entry) return stock;
-    const isPositiveJosephine =
+    // Josephine means ONE thing now: above both lines but below last month's
+    // close. Everything else scoring 0 is between the lines, i.e. Watch.
+    //
+    // This test used to look for "josephine: positive" or "positive 3ptl" in
+    // the note, and NOTHING in the codebase has ever written either string —
+    // so the marker was never set and the teal badge was unreachable. v1
+    // actually writes "Josephine ↗: above both lines but price X is N% below
+    // last month's close"; v3 writes "below last month close X". Match both.
+    // The two legacy strings are kept so any older stored run still resolves.
+    const note = (entry.note ?? "").toLowerCase();
+    const isJosephineDip =
       entry.sentiment === "Josephine" &&
-      !!(entry.note?.toLowerCase().includes("josephine: positive") ||
-         entry.note?.toLowerCase().includes("positive 3ptl"));
+      (note.includes("↗") ||
+       /below last month(?:'s)? close/.test(note) ||
+       note.includes("josephine: positive") ||
+       note.includes("positive 3ptl"));
 
     const enriched = {
       ...stock,
       S_sentiment_long: TRENDLINE_SCORES[entry.sentiment],
       // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
       S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
-      // Flag positive Josephines (was Bullish, just a monthly dip) for teal badge (1=yes, null=no)
-      _positiveJosephine: isPositiveJosephine ? 1 : null,
+      // 1 = Josephine (the dip), null = Watch (between the lines).
+      _positiveJosephine: isJosephineDip ? 1 : null,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -263,7 +275,16 @@ function enrichWithSentimentOverrides(stocks: ScoredStock[], overrides: StoredSe
   return stocks.map((stock) => {
     const override = overrides[stock.Code];
     if (override === undefined) return stock;
-    const enriched = { ...stock, S_sentiment_long: SENTIMENT_SCORES[override] } as ScoredStock;
+    const enriched = {
+      ...stock,
+      S_sentiment_long: SENTIMENT_SCORES[override],
+      // Watch and Josephine both score 0, so the score cannot separate them.
+      // Josephine now means ONLY the dip case (above the lines, below last
+      // month's close), so a Josephine override sets the dip marker and every
+      // other override clears it — otherwise a manual Watch would inherit a
+      // stale flag from the auto run and render as Josephine.
+      _positiveJosephine: override === "Josephine" ? 1 : null,
+    } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
       .filter((v): v is number => v !== null);
@@ -429,7 +450,8 @@ export default function HomePage() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
-  const [filterSentiment, setFilterSentiment] = useState<"all" | "bullish" | "josephine" | "bearish">("all");
+  const [filterSentiment, setFilterSentiment] =
+    useState<"all" | "bullish" | "watch" | "josephine" | "bearish">("all");
 
   // Rate inputs
   const [cashRate, setCashRate] = useState(DEFAULT_CASH_RATE);
@@ -618,7 +640,10 @@ export default function HomePage() {
           pcf: s.PCF ?? null,
           sentiment: s.S_sentiment_long === 2 ? "Bullish"
                    : s.S_sentiment_long === -1 ? "Bearish"
-                   : s.S_sentiment_long === 0 ? "Josephine" : null,
+                   : s.S_sentiment_long === 0
+                     ? ((s as Record<string, unknown>)._positiveJosephine === 1
+                         ? "Josephine" : "Watch")
+                     : null,
           price: typeof s["Share Price ($)"] === "number"
             ? (s["Share Price ($)"] as number)
             : parseFloat(String(s["Share Price ($)"] ?? "").replace(/,/g, "")) || null,
@@ -779,7 +804,7 @@ export default function HomePage() {
         const data = await res.json() as Record<string, { sentiment: string; note?: string }>;
         for (const [code, entry] of Object.entries(data)) {
           accumulated[code] = {
-            sentiment: (entry.sentiment ?? "Josephine") as "Bullish" | "Josephine" | "Bearish",
+            sentiment: (entry.sentiment ?? "Watch") as TrendlineSentiment,
             note: entry.note,
             // Flag as "new upturn" if 3PTL detected a recent breakout above resistance
             newUpturn: !!(entry.note?.toLowerCase().includes("broke above") ||
@@ -899,8 +924,12 @@ export default function HomePage() {
   function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
     let result = arr;
     if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
+    const dip = (s: ScoredStock) =>
+      (s as Record<string, unknown>)._positiveJosephine === 1;
     if (filterSentiment === "bullish")   result = result.filter((s) => s.S_sentiment_long === 2);
-    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0);
+    // Watch and Josephine share a score of 0; the dip marker separates them.
+    if (filterSentiment === "watch")     result = result.filter((s) => s.S_sentiment_long === 0 && !dip(s));
+    if (filterSentiment === "josephine") result = result.filter((s) => s.S_sentiment_long === 0 && dip(s));
     if (filterSentiment === "bearish")   result = result.filter((s) => s.S_sentiment_long === -1);
     return result;
   }

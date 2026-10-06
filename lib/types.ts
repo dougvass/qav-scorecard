@@ -96,7 +96,7 @@ export interface ScoreColMeta {
 }
 
 export const SCORE_COL_META: ScoreColMeta[] = [
-  { key: "S_sentiment_long",  label: "Sentiment",   description: "3PTL trend: Bullish=+2, Bearish=−1, Josephine=0 (auto from SDMAX + price chg)", phase: 0 },
+  { key: "S_sentiment_long",  label: "Sentiment",   description: "3PTL trend: Bullish=+2, Bearish=−1, Watch/Josephine=0 (auto from SDMAX + price chg)", phase: 0 },
   { key: "S_sentiment_short", label: "3PTL",         description: "Short-term 3 Point Trendline (Phase 1)", phase: 1 },
   { key: "S_pcf",             label: "PCF",          description: "Price/CashFlow ≤ 7 → 2pts", phase: 0 },
   { key: "S_div_yield",       label: "Div Yield",    description: "Dividend yield > 9.3% → 1pt", phase: 0 },

@@ -18,8 +18,13 @@
  *
  * Classification:
  *   price > BUY line AND > SELL line → Bullish (above both lines)
- *   price > SELL line AND < BUY line → Josephine (between lines)
+ *   price > SELL line AND < BUY line → shown as WATCH (between the lines)
  *   price < SELL line               → Bearish (below support)
+ *
+ * The response still carries "Josephine" as the sentiment VALUE for the
+ * between-the-lines case — it scores 0 either way, and the UI distinguishes
+ * Watch from Josephine (the uptick dip) by the note, so nothing downstream
+ * needed to change. Only the notes and labels were renamed.
  *
  * POST /api/trendline { codes: string[] }   — batch ≤25
  * GET  /api/trendline?code=FEX              — debug single ticker
@@ -1032,7 +1037,7 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     // falling-knife re-check below — a real "between the lines" basing stock will
     // pass through unchanged; an active multi-year collapse will be reclassified.
     sentiment = "Josephine";
-    note = `Josephine: above sell line ${sellLine!.toFixed(3)} but below buy line ${buyLine?.toFixed(3) ?? "n/a"} — between the lines`;
+    note = `Watch: above sell line ${sellLine!.toFixed(3)} but below buy line ${buyLine?.toFixed(3) ?? "n/a"} — between the lines, not a sell nor a buy`;
     checkFallingKnife = true;
   } else if (aboveBuy && sellLine === null) {
     // Above buy line, sell line not yet established (stock just bottomed)
@@ -1042,7 +1047,7 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     // falling-knife re-check on this path too (PPE-type: "not had a drawable
     // sell line in 5 years even though it technically cuts a buy line").
     sentiment = "Josephine";
-    note = `Josephine: above buy line ${buyLine!.toFixed(3)} but sell line not yet established (recent trough, no second low yet)`;
+    note = `Watch: above buy line ${buyLine!.toFixed(3)} but sell line not yet established (recent trough, no second low yet)`;
     checkFallingKnife = true;
   } else if (!aboveBuy && buyLine !== null && sellLine === null) {
     // Below buy line, no sell line — the stock has crashed below resistance
