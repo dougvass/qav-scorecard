@@ -246,7 +246,7 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       ...stock,
       S_sentiment_long: TRENDLINE_SCORES[entry.sentiment],
       // Auto-set new upturn +1 when 3PTL detects a fresh breakout above resistance
-      S_new_upturn: (entry as unknown as Record<string,unknown>).newUpturn ? 1 : null,
+      S_new_upturn: scoreNewUpturn(entry.lastBuyBreach, stock),
       // 1 = Josephine (the dip), null = Watch (between the lines).
       _positiveJosephine: isDip ? 1 : null,
     } as ScoredStock;
@@ -262,6 +262,33 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
         : null;
     return enriched;
   });
+}
+
+/**
+ * Bible Column I — "Is there a recent positive upturn?"
+ *
+ *   Cell type: Score (Positive = 1. Negative = blank.)
+ *   "Does the 5 year monthly chart show a recent upturn since the last
+ *    financial results (results of the date, not reporting date)?"
+ *   "By 'recent upturn', we mean 'has it breached the buy line'?"
+ *   "If it's just started a new upcycle, that's an extra good time to buy in.
+ *    But we aren't going to penalise it if the answer is a no."
+ *
+ * So: 1 when the walk's most recent buy-line breach falls on or after the
+ * BALANCE date of the last reported results, otherwise blank. Blank, never 0 —
+ * a zero would drag Quality down, which the Bible explicitly rules out.
+ *
+ * `_lastPeriod` is that balance date, taken from the CSV's "Last Period
+ * Analysed" (and moved forward by Phase 2 when it holds something newer). It is
+ * the results date, not the announcement date the Bible warns against. With no
+ * balance date there is no window, so the answer is blank.
+ */
+function scoreNewUpturn(lastBuyBreach: string | null | undefined, stock: ScoredStock): number | null {
+  if (!lastBuyBreach) return null;
+  const period = (stock as Record<string, unknown>)._lastPeriod as string | undefined;
+  if (!period) return null;
+  // Breach months are "YYYY-MM"; the balance date is ISO "YYYY-MM-DD".
+  return lastBuyBreach >= period.slice(0, 7) ? 1 : null;
 }
 
 /**
@@ -846,22 +873,28 @@ export default function HomePage() {
           body: JSON.stringify({ codes: chunk }),
         });
         if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
-        const data = await res.json() as Record<string, { sentiment?: string; note?: string }>;
+        const data = await res.json() as Record<string, {
+          sentiment?: string; note?: string;
+          events?: { kind?: string; date?: string }[];
+        }>;
         for (const [code, entry] of Object.entries(data)) {
+          // Bible Column I: "has it breached the buy line" — so the signal is
+          // the most recent BUY event in the walk. enrichWithTrendlines then
+          // asks whether it falls after the last results' balance date.
+          let lastBuyBreach: string | null = null;
+          for (const e of entry.events ?? []) {
+            if (e.kind === "BUY" && typeof e.date === "string") {
+              if (!lastBuyBreach || e.date > lastBuyBreach) lastBuyBreach = e.date;
+            }
+          }
           accumulated[code] = {
             // v3 reports Buy / Sell / Watch / Josephine; toStoredSentiment maps
             // both vocabularies, so flipping TRENDLINE_ENDPOINT back to v1
-            // needs no other change.
+            // needs no other change — v1 simply supplies no events, which
+            // leaves the upturn blank, and blank does not penalise.
             sentiment: toStoredSentiment(entry.sentiment),
             note: entry.note,
-            // Left as-is deliberately. v1 has never written either string, so
-            // newUpturn has always been false and S_new_upturn always null.
-            // v3 could answer this properly from its BUY events, but its event
-            // dates are not a causal history (L2 advances to the last point
-            // that works, which can post-date the month being walked), so they
-            // must not be read as "recently breached the buy line".
-            newUpturn: !!(entry.note?.toLowerCase().includes("broke above") ||
-                          entry.note?.toLowerCase().includes("trough recovery")),
+            lastBuyBreach,
           };
         }
         setTrendlineProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
