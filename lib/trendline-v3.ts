@@ -201,6 +201,10 @@ export function sellLine(
  * enforces that a line drawn AT a sell trigger is one price has yet to cross;
  * without it a steep old ray has already decayed below price, everything reads
  * as "above" it, and the stock flips straight back to a buy.
+ *
+ * The caller passes `aboveAt` only while a USABLE buy line is standing — see
+ * the walk. Passed unconditionally it deadlocks against rule 3 and a stock can
+ * never re-enter; that was the HZN lock-out.
  */
 export function buyLine(
   c: number[],
@@ -348,8 +352,43 @@ export function walk(
     // 1.485 is a higher peak since, while his HMY keeps H1 2022-03 and advances
     // H2 to 2025-09. Advancing H1 too gives RSG the recent 2026-01 pair;
     // never advancing H2 leaves HMY stale on 2025-01.
+    //
+    // The aboveAt gate (a line drawn at a sell must be one price has YET to
+    // cross — his FRI ruling) only makes sense while a line is doing that job.
+    // A buy ray that has sunk to or below the sell line is not a buy line at
+    // all — rule 3, from HMY: "it is all still below any possible sell line
+    // that could be drawn" — so the walk can never read a BUY off it, and
+    // keeping it locks the stock out for good. HZN froze on H1 2023-02 0.170 ->
+    // H2 2023-04 0.150 in 2023, its ray went negative in mid-2024, and the gate
+    // then refused a valid replacement in 15 of the next 18 months: the dead
+    // line could neither signal nor be replaced.
+    //
+    // So gate only while a USABLE line stands; with none, take the best
+    // drawable one, because there is no longer a line for price to have "not
+    // yet crossed". S32 keeps its gate (its 4.54 line is alive, well above its
+    // sell line), which is what used to make this trade one-for-one against
+    // RSG — with this, HZN and RSG both come right and S32 is unchanged.
+    //
+    // Symptom to watch for if this is ever touched again: a stock read SELL
+    // while price sits ABOVE its own sell line, which is never legitimate. That
+    // count was 53 of 326 before and 18 after, all 103 coherent sells unchanged.
+    //
+    // Rule 3 stays a SIGNAL rule — do NOT apply it at draw time. Rejecting
+    // candidates whose ray is below the sell line costs RSG (h1 reverts to
+    // 2026-01) and SRV (loses its 5.608 line): Doug's own RSG has a buy line at
+    // 0.40 under a sell line at 0.5169, so such a line is legitimately drawable.
     if (state !== "long" || buy == null) {
-      const b = buyLine(c, pk, t, t);
+      let usable = false;
+      if (buy != null && sell != null) {
+        // Indexed with explicit annotations rather than destructured: `buy` and
+        // `sell` are both reassigned in this loop, and a const taking its type
+        // from narrowing them lands in the "referenced in its own initializer"
+        // cycle that broke the first port.
+        const bh1: number = buy[0], bh2: number = buy[1];
+        const sl1: number = sell[0], sl2: number = sell[1];
+        usable = rayAt(c, bh1, bh2, t) > rayAt(c, sl1, sl2, t);
+      }
+      const b = buyLine(c, pk, t, usable ? t : null);
       if (b != null) buy = [b[0], b[1]];
     } else {
       const h1f: number = buy[0];
