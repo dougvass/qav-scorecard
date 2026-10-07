@@ -137,13 +137,27 @@ export function sellLine(
   l1In?: number | null,
   after?: number | null,
   advance = false,
+  upto?: number | null,
 ): [number, number] | null {
   const n = c.length;
   if (n < 3) return null;
+  // CAUSAL: only months the walk has reached may be anchors. Without `upto` the
+  // first draw reached years forward for its L2 — RSG's line was "drawn" at
+  // 2021-11 with L2 at 2025-01, and because the walk only acts once t > L2 it
+  // stayed silent for three years, so RSG's -47% month (2024-10, 0.820 ->
+  // 0.435) could not fire the sell Doug confirms it should have. This is the
+  // non-causality the port's own caveat warned about, and fixing it is what
+  // makes the walk's event dates trustworthy enough to score Bible Column I.
+  const end = upto == null ? n - 1 : Math.min(upto, n - 1);
+  if (end < 2) return null;
   let l1 = l1In ?? -1;
   if (l1 < 0) {
+    // The lowest close WITHIN the causal window. Scanning the whole series here
+    // was the subtler half of the non-causality: L1 could be picked from months
+    // the walk had not reached, which both silenced early months and shifted
+    // every line that followed.
     l1 = 1;
-    for (let i = 1; i < n - 1; i++) if (c[i] < c[l1]) l1 = i;
+    for (let i = 1; i < end; i++) if (c[i] < c[l1]) l1 = i;
   }
   const floor = Math.max(l1, after ?? 0);
 
@@ -153,7 +167,7 @@ export function sellLine(
   // signal. So fall back to the last candidate clearing 8% with no backwards
   // cut. Without the fallback PLS, ASX and CCP lose the lines he confirmed.
   let fallback = -1;
-  for (let l2 = n - 2; l2 > floor; l2--) {
+  for (let l2 = end - 1; l2 > floor; l2--) {
     if (c[l2] < c[l1] * (1 + SEP)) continue;
     const g = (c[l2] - c[l1]) / (l2 - l1);
     let backCut = false;
@@ -163,7 +177,7 @@ export function sellLine(
     if (backCut) continue;
     if (fallback < 0) fallback = l2;
     let fwdCut = false;
-    for (let k = l2 + 1; k < n; k++) {
+    for (let k = l2 + 1; k < end; k++) {
       if (c[k] < c[l1] + g * (k - l1) - EPS) { fwdCut = true; break; }
     }
     if (fwdCut) continue;
@@ -172,7 +186,9 @@ export function sellLine(
   if (fallback >= 0) return [l1, fallback];
 
   // Rule 6: L1 steps forward, but only in response to a break.
-  if (advance && l1 + 1 < n - 1) return sellLine(c, l1 + 1, after, true);
+  // Bounded by `end`, not n-1: the advance must not step L1 past the causal
+  // horizon either, or the walk reaches forward again through this path.
+  if (advance && l1 + 1 < end) return sellLine(c, l1 + 1, after, true, upto);
   return null;
 }
 
@@ -267,7 +283,7 @@ export function walk(
 
   for (let t = 2; t < n; t++) {
     if (sell == null) {
-      sell = sellLine(c, null, null, advanceFirst);
+      sell = sellLine(c, null, null, advanceFirst, t);
       confirmed = false;
     }
 
@@ -288,14 +304,21 @@ export function walk(
         // with the first of the following month. Without this every formation
         // break is a sell signal and the buy signals between them thrash:
         // HMY fired seven flips in nine months.
-        if (!(confirmed && state === "long")) {
+        // A CONFIRMED line signals; an unconfirmed one is still forming. The
+        // test was `confirmed && state === "long"`, so a stock the walk had
+        // marked "out" could never register a sell — RSG sat out through a 5x
+        // rally with its breach detected and silenced. Doug: "Yes RSG should
+        // have triggered a sell in 2024-10." A breach is a sell SIGNAL whether
+        // or not you held; `state` tracks position, and re-entry still needs
+        // the buy line crossed (his FRI ruling), handled below.
+        if (!confirmed) {
           if (c[t] > v) {
             confirmed = true;
             if (state == null) state = "long";
           } else if (c[t] < v && t < n - 1) {
             // At the final bar nothing re-anchors; the line stands as drawn.
             const nxt: [number, number] | null =
-              c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true);
+              c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true, t);
             if (nxt != null) {
               sell = nxt;
             } else {
@@ -308,23 +331,42 @@ export function walk(
               confirmed = false;
             }
           }
-        } else if (state === "long" && c[t] < v) {
+        } else if (c[t] < v) {
           events.push({ kind: "SELL", date: dt[t] });
           state = "out";
           if (t < n - 1) {
-            sell = c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true);
+            sell = c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true, t);
           }
           confirmed = false;
         }
       }
     }
 
-    // Rule 11: kept current every month, in or out, but only REPLACED when a
-    // new line is drawable. He asked of HMY "why is there no buy line above?" —
-    // the walk had frozen it at H2 2025-01 0.63 from the 2025-03 buy and never
-    // looked again. Signals are still read only while out, below.
-    const b = buyLine(c, pk, t, t);
-    if (b != null) buy = [b[0], b[1]];
+    // Rule 11, refined. While SEEKING ENTRY the line is drawn afresh each
+    // month. While HOLDING, H1 is FIXED at what it was when the line was drawn
+    // and only H2 advances: Doug's RSG keeps H1 2024-09 0.820 though 2026-01
+    // 1.485 is a higher peak since, while his HMY keeps H1 2022-03 and advances
+    // H2 to 2025-09. Advancing H1 too gives RSG the recent 2026-01 pair;
+    // never advancing H2 leaves HMY stale on 2025-01.
+    if (state !== "long" || buy == null) {
+      const b = buyLine(c, pk, t, t);
+      if (b != null) buy = [b[0], b[1]];
+    } else {
+      const h1f: number = buy[0];
+      let h2f = -1;
+      for (let cand = Math.min(t, c.length - 1) - 1; cand > h1f; cand--) {
+        if (c[h1f] < c[cand] * (1 + SEP)) continue;
+        const g = (c[cand] - c[h1f]) / (cand - h1f);
+        let over = false;
+        for (let k = h1f + 1; k < cand; k++) {
+          if (c[k] > c[h1f] + g * (k - h1f) + EPS) { over = true; break; }
+        }
+        if (over) continue;
+        h2f = cand;
+        break;
+      }
+      if (h2f > 0) buy = [h1f, h2f];
+    }
 
     if (state !== "long" && buy != null) {
       const h1: number = buy[0];
