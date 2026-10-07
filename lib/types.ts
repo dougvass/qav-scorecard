@@ -116,5 +116,5 @@ export const SCORE_COL_META: ScoreColMeta[] = [
   { key: "S_fh_trend",        label: "FH Trend",     description: "Recovering=2, Steady=1, Deteriorating=-1", phase: 0 },
   { key: "S_ownership",       label: "Ownership",    description: "Directors own ≥10% of market cap → 2pts", phase: 0 },
   { key: "S_buyback",         label: "Buyback",      description: "On-market buyback with ≥5% share reduction (Bible Col S) → 1pt", phase: 3 },
-  { key: "S_new_upturn",     label: "New Upturn",   description: "Recently breached buy line — new 3PT uptrend started (Bible Col R/I) → 1pt", phase: 3 },
+  { key: "S_new_upturn",     label: "New Upturn",   description: "Breached the buy line since the last results balance date (Bible Col I) → 1pt, else blank", phase: 3 },
 ];

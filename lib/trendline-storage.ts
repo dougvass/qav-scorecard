@@ -29,7 +29,31 @@ export type TrendlineSentiment = "Bullish" | "Watch" | "Josephine" | "Bearish";
 export interface TrendlineEntry {
   sentiment: TrendlineSentiment;
   note?: string;
-  /** true when the 3PTL detected a recent breakout above resistance — maps to Bible Col R (New 3PT Upturn) */
+  /**
+   * Month of the most recent BUY event in the walk — a breach of the buy line —
+   * as "YYYY-MM", or null if the engine reported none.
+   *
+   * This is what Bible Column I actually asks for. Its wording: "Does the 5
+   * year monthly chart show a recent upturn since the last financial results
+   * (results of the date, not reporting date)? By 'recent upturn', we mean 'has
+   * it breached the buy line'?" — scored "Positive = 1. Negative = blank", with
+   * "we aren't going to penalise it if the answer is a no", which is why a no
+   * is null rather than 0.
+   *
+   * So the score needs two things: the breach month (here) and the BALANCE date
+   * of the last reported results (`_lastPeriod` on the stock, from the CSV's
+   * "Last Period Analysed", which is the results date rather than the
+   * announcement date the Bible warns against). enrichWithTrendlines compares
+   * them.
+   *
+   * Only v3 supplies this, because only a CAUSAL walk has trustworthy event
+   * dates — the engine's L2 could previously reach years forward, which is why
+   * this criterion was left unscored until the walk was fixed.
+   */
+  lastBuyBreach?: string | null;
+  /** @deprecated Never set: the note strings it was derived from were never
+   *  written by any engine, so S_new_upturn was always null. Superseded by
+   *  lastBuyBreach + the balance date. */
   newUpturn?: boolean;
 }
 
