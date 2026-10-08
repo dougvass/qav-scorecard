@@ -38,9 +38,11 @@ const HEADERS = {
 };
 
 /** Governance lookback. The Mill Rule says a flag stands "until they have fixed
- *  the issue", which nothing here can judge, so we show anything recent and let
- *  Doug decide rather than flagging a company forever. */
-const GOVERNANCE_YEARS = 2;
+ *  the issue", which nothing here can judge — so rather than flag a company
+ *  forever we show anything in recent years WITH ITS DATE and let Doug decide.
+ *  Three years, not two: CCX's "Response to ASX Aware Query-earnings surprise"
+ *  is from 2024-09 and a two-year window hid it. */
+const GOVERNANCE_YEARS = 3;
 
 /** Above this, the filing is a bundled annual report; we read only its front
  *  pages, where the Appendix 4E cover sits. See trap 3 in lib/redflags.ts. */
@@ -92,12 +94,27 @@ async function announcements(xid: string): Promise<Ann[]> {
   }));
 }
 
-/** The SMALLEST recent Appendix 4E/4D — the short cover document that carries
- *  the structured item, not the bundled annual report. */
+/**
+ * The Appendix to read: the LATEST reporting period, and within it the
+ * SMALLEST document.
+ *
+ * Both halves matter. Latest, because sorting the whole history by size alone
+ * returned CCX's FY24 Appendix instead of FY26 — an audit opinion from two
+ * years ago is not the current one. Smallest within that period, because a
+ * company lodges both a short 4E cover carrying the structured item AND a
+ * bundled "4E and Annual Report" whose boilerplate caused the LAU false flag.
+ */
+const SAME_PERIOD_DAYS = 45;
+
 function pickAppendix(anns: Ann[]): Ann | null {
   const c = anns.filter((a) => APPENDIX.test(`${a.headline} ${a.types.join(" ")}`));
   if (!c.length) return null;
-  return c.slice().sort((a, b) => a.kb - b.kb)[0];
+  const byDate = c.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const newest = new Date(byDate[0].date).getTime();
+  const samePeriod = byDate.filter(
+    (a) => newest - new Date(a.date).getTime() <= SAME_PERIOD_DAYS * 86_400_000,
+  );
+  return samePeriod.sort((a, b) => a.kb - b.kb)[0];
 }
 
 async function appendixText(a: Ann): Promise<string> {
