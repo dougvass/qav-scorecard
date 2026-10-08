@@ -17,7 +17,6 @@ import {
 import {
   TRENDLINE_STORAGE_KEY,
   StoredTrendlines,
-  TrendlineSentiment,
   TRENDLINE_SCORES,
   toStoredSentiment,
 } from "@/lib/trendline-storage";
@@ -508,6 +507,8 @@ export default function HomePage() {
   const [commodityData, setCommodityData] = useState<StoredCommodities | null>(null);
   const [commodityChecking, setCommodityChecking] = useState(false);
   const [showCommodityPanel, setShowCommodityPanel] = useState(false);
+  /** Which commodity's stock list is open, if any — see the chip onClick. */
+  const [commodityStocksFor, setCommodityStocksFor] = useState<string | null>(null);
   const [buybackData, setBuybackData] = useState<BuybackMap | null>(null);
   const [buybackLoaded, setBuybackLoaded] = useState(false);
   const [buybackCount, setBuybackCount] = useState(0);
@@ -950,21 +951,23 @@ export default function HomePage() {
     }
   }, [commodityData]);
 
-  /** Cycle a commodity's manual sentiment: (unset) → Bullish → Josephine → Bearish → (unset).
-   *  Manual settings win over the auto calculation — used for the feedless
-   *  commodities (iron ore, coal, lithium, nickel: read the TE chart) and to
-   *  overrule the algorithm on any other. */
-  const cycleCommodityOverride = useCallback((key: string) => {
+  /**
+   * Clearing stored manual commodity overrides.
+   *
+   * The click-to-cycle override was removed on Doug's instruction (2026-10-08):
+   * clicking a chip now lists the stocks that commodity governs instead. Every
+   * commodity has had an automatic reading since the Pink Sheet went in, so the
+   * override had stopped earning its click.
+   *
+   * `effectiveCommoditySentiment` still honours `manual`, and overrides set
+   * before this change are still in localStorage — so without a way to clear
+   * them a stale one would gate forever with nothing in the UI to reveal it.
+   * The panel surfaces the count and this clears them.
+   */
+  const clearCommodityOverrides = useCallback(() => {
     setCommodityData((prev) => {
-      const base: StoredCommodities = prev ?? { timestamp: null, auto: {}, manual: {} };
-      const order: (TrendlineSentiment | undefined)[] =
-        [undefined, "Bullish", "Watch", "Josephine", "Bearish"];
-      const current = base.manual[key];
-      const next = order[(order.indexOf(current) + 1) % order.length];
-      const manual = { ...base.manual };
-      if (next === undefined) delete manual[key];
-      else manual[key] = next;
-      const stored: StoredCommodities = { ...base, manual };
+      if (!prev) return prev;
+      const stored: StoredCommodities = { ...prev, manual: {} };
       localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
       return stored;
     });
@@ -1217,30 +1220,97 @@ export default function HomePage() {
                     eff === "Watch"     ? "bg-sky-100 text-sky-800 border-sky-300" :
                     eff === "Josephine" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
                                           "bg-white text-gray-400 border-dashed border-gray-300";
+                  const open = commodityStocksFor === c.key;
+                  const governs = Object.keys(STOCK_COMMODITY)
+                    .filter((code) => STOCK_COMMODITY[code] === c.key).length;
                   return (
                     <button
                       key={c.key}
-                      onClick={() => cycleCommodityOverride(c.key)}
-                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette}`}
-                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (manual)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.proxy ? `\n\n${c.proxy}` : c.symbol ? "" : "\nNo live feed — read the Trading Economics chart and click to set"}\nClick to cycle manual override: Bullish → Watch → Josephine → Bearish → auto`}
+                      onClick={() => setCommodityStocksFor(open ? null : c.key)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette} ${open ? "ring-2 ring-amber-400" : ""}`}
+                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (MANUAL override)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.proxy ? `\n\n${c.proxy}` : ""}\n\nClick to ${open ? "hide" : "list"} the ${governs} stock${governs === 1 ? "" : "s"} this commodity governs`}
                     >
                       {c.label}{c.proxy ? "*" : ""} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Watch" ? "◇" : eff === "Josephine" ? "◆" : "—"}
+                      {governs > 0 && <span className="ml-1 opacity-50">{governs}</span>}
                       {manual && <span className="ml-1 opacity-60">✎</span>}
                     </button>
                   );
                 })}
               </div>
+              {/* The stocks one commodity governs — the chip click opens this. */}
+              {commodityStocksFor && (() => {
+                const def = COMMODITIES.find((c) => c.key === commodityStocksFor);
+                const eff = effectiveCommoditySentiment(commodityData, commodityStocksFor);
+                const codes = Object.keys(STOCK_COMMODITY)
+                  .filter((code) => STOCK_COMMODITY[code] === commodityStocksFor)
+                  .sort();
+                const byCode = new Map((allStocks ?? []).map((s) => [s.Code, s]));
+                const gating = eff === "Bearish" && !(def?.proxy && commodityData?.manual[commodityStocksFor] === undefined);
+                return (
+                  <div className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2.5">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
+                      <strong className="text-amber-900">{def?.label}{def?.proxy ? "*" : ""}</strong>
+                      <span className="text-amber-700">{eff ?? "not set"}</span>
+                      <span className="text-amber-600">
+                        governs {codes.length} stock{codes.length === 1 ? "" : "s"} ·{" "}
+                        {gating
+                          ? "Bearish, so every one of them is forced to Bearish"
+                          : eff === "Bearish"
+                            ? "Bearish but advisory (proxy), so it gates nothing"
+                            : "not gating"}
+                      </span>
+                      <button onClick={() => setCommodityStocksFor(null)} className="ml-auto underline text-amber-700 hover:text-amber-900">close</button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {codes.map((code) => {
+                        const s = byCode.get(code);
+                        const held = !!s;
+                        const sent = s ? (s.S_sentiment_long === 2 ? "Bullish"
+                          : s.S_sentiment_long === -1 ? "Bearish"
+                          : s.S_sentiment_long === 0 ? (isJosephineDip(s) ? "Josephine" : "Watch")
+                          : null) : null;
+                        const tone = !held ? "bg-gray-50 text-gray-400 border-gray-200"
+                          : sent === "Bullish" ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                          : sent === "Bearish" ? "bg-red-50 text-red-800 border-red-200"
+                          : sent === "Watch" ? "bg-sky-50 text-sky-800 border-sky-200"
+                          : sent === "Josephine" ? "bg-yellow-50 text-yellow-800 border-yellow-200"
+                          : "bg-white text-gray-600 border-gray-200";
+                        return (
+                          <span
+                            key={code}
+                            className={`px-2 py-0.5 rounded border text-xs font-medium ${tone}`}
+                            title={held
+                              ? `${code}: ${sent ?? "no sentiment"}${s?.QAV != null ? ` · QAV ${s.QAV}` : ""}`
+                              : `${code}: not in the loaded CSV`}
+                          >
+                            {code}
+                            {held && s?.QAV != null && <span className="ml-1 opacity-60">{s.QAV}</span>}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {!allStocks?.length && (
+                      <p className="mt-2 text-xs text-amber-600">Load a CSV to see each one&apos;s sentiment and QAV.</p>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="flex flex-wrap items-center gap-4 text-xs text-amber-700">
                 <span>
                   Stocks whose underlying commodity is <strong>Bearish</strong> are forced to Bearish sentiment (QAV commodity rule).
-                  A <strong>proxy*</strong> commodity is advisory only — its automatic read never gates, though setting one by hand does.
+                  A <strong>proxy*</strong> commodity is advisory only — its automatic read never gates.
                   Gold, Silver, Copper, Oil, Brent, Nat Gas, Aluminium, Platinum, Iron Ore, Nickel and Coal
                   come from the World Bank Pink Sheet (gapless monthly, updated monthly). Palladium and
                   Uranium use Yahoo futures. <strong>Lithium* is a proxy</strong> — the LIT ETF of miner
-                  and battery equities, not the lithium price, so check it against{" "}
-                  <a href="https://tradingeconomics.com/commodities" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>{" "}
-                  and click the chip to set. Click any chip to override; ✎ = manual.
+                  and battery equities, not the lithium price, so read it against{" "}
+                  <a href="https://tradingeconomics.com/commodity/lithium" target="_blank" rel="noreferrer" className="underline">Trading Economics</a>.
+                  Click a chip to list the stocks it governs; the number on each chip is that count.
                 </span>
+                {!!commodityData && Object.keys(commodityData.manual).length > 0 && (
+                  <button onClick={clearCommodityOverrides} className="underline hover:text-amber-900" title="Click-to-override was removed; these were set before that change and still gate.">
+                    clear {Object.keys(commodityData.manual).length} stored manual override{Object.keys(commodityData.manual).length === 1 ? "" : "s"} (✎)
+                  </button>
+                )}
                 <button onClick={checkCommodities} disabled={commodityChecking} className="underline hover:text-amber-900">
                   {commodityChecking ? "Refreshing…" : "Refresh auto 3PTL"}
                 </button>
