@@ -206,6 +206,19 @@ export function sellLine(
  * the walk. Passed unconditionally it deadlocks against rule 3 and a stock can
  * never re-enter; that was the HZN lock-out.
  */
+/**
+ * Has price TURNED DOWN from month `j`?
+ *
+ * Doug, 2026-10-08: "The next peak is 2026-06 which in realtime we wouldn't
+ * have known was a peak so it would have held the H2 position until it was
+ * confirmed as a peak." A peak is only knowable once the following month exists
+ * and is LOWER, hence the strict `>` on the right — a flat shelf is not a turn
+ * down. Local to H2 on purpose; `pivots`, which L1 and L2 use, is untouched.
+ */
+function confirmedPeak(c: number[], j: number): boolean {
+  return j > 0 && j < c.length - 1 && c[j] >= c[j - 1] && c[j] > c[j + 1];
+}
+
 export function buyLine(
   c: number[],
   pk: number[],
@@ -401,6 +414,27 @@ export function walk(
           if (c[k] > c[h1f] + g * (k - h1f) + EPS) { over = true; break; }
         }
         if (over) continue;
+        // Doug, 2026-10-08: once H2 is a confirmed peak the line is "locked in
+        // ... as long as it didn't make another peak from which H2 could move
+        // without cutbacks to H1". So a peak gives way ONLY to a HIGHER peak.
+        //
+        //   HMY  2025-03 0.635 -> 2025-09 0.940   higher, so it walks on
+        //   FRI  2025-08 0.885 -> 2025-10 0.890   higher, so it walks on
+        //   HZN  2026-08 0.220 vs 2026-06 0.220   EQUAL, so 2026-06 stands
+        //
+        // While H2 is still a provisional NON-peak it advances freely — his
+        // "in real time H2 2026-04 0.225 would have been valid" — which is how
+        // a peak comes to hold the slot in the first place.
+        //
+        // This is rule 8 restated as the walk he describes: "None of these
+        // calls should be made on earliest or latest valid, its a walk through
+        // process just like for the sell line." Freezing H2 leaves old
+        // declining lines to decay away, taking buy lines at zero from 23 of
+        // 326 to 74 — Doug ruled that correct: a line broken long ago is not
+        // resistance, and sliding H2 forward to keep one just above price is
+        // the "fudged line" he rejected on gold.
+        if (confirmedPeak(c, buy[1]) &&
+            !(confirmedPeak(c, cand) && c[cand] > c[buy[1]])) continue;
         h2f = cand;
         break;
       }
