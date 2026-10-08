@@ -8,6 +8,7 @@ import {
   StoredSentiments, SentimentOverride, SentimentKey, SENTIMENT_KEYS,
   sentimentKeyOf, isJosephineDip,
 } from "@/lib/sentiment-storage";
+import { RedFlagEntry, hasRedFlag, redFlagSummary } from "@/lib/redflags";
 import { HistorySeries } from "@/lib/history-storage";
 import { QavSparkline } from "@/components/qav-sparkline";
 
@@ -28,6 +29,10 @@ interface StockTableProps {
   /** Codes the user holds — marked so an owned stock is obvious while reading
    *  the buy list. See lib/holdings-storage.ts. */
   ownedCodes?: Set<string>;
+  /** Qualified-audit and corporate-governance findings, by code. A MARKER, not
+   *  a gate — Doug's call, and the Bible treats both as things a human weighs
+   *  at the buy step. See lib/redflags.ts. */
+  redFlags?: Record<string, RedFlagEntry>;
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield";
@@ -194,7 +199,7 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes, redFlags }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -451,6 +456,18 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       >
                         {stock.Code}
                       </a>
+                      {(() => {
+                        const rf = redFlags?.[stock.Code];
+                        if (!hasRedFlag(rf)) return null;
+                        return (
+                          <span
+                            className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-300 align-middle cursor-help"
+                            title={redFlagSummary(rf)}
+                          >
+                            ⚑ RED FLAG
+                          </span>
+                        );
+                      })()}
                       {ownedCodes?.has(stock.Code) && (
                         <span
                           className="ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-300 align-middle"

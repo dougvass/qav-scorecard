@@ -21,6 +21,12 @@ import {
   toStoredSentiment,
 } from "@/lib/trendline-storage";
 import {
+  REDFLAG_STORAGE_KEY,
+  StoredRedFlags,
+  RedFlagEntry,
+  hasRedFlag,
+} from "@/lib/redflags";
+import {
   HOLDINGS_STORAGE_KEY,
   StoredHoldings,
   loadHoldings,
@@ -64,6 +70,7 @@ import {
   TrendingUp,
   Activity,
   Briefcase,
+  AlertTriangle,
 } from "lucide-react";
 
 /**
@@ -506,6 +513,8 @@ export default function HomePage() {
   const [view, setView] = useState<"buy" | "all" | "holdings">("buy");
   const [holdings, setHoldings] = useState<StoredHoldings>({ timestamp: null, codes: [] });
   const [holdingsChecking, setHoldingsChecking] = useState(false);
+  const [redFlags, setRedFlags] = useState<StoredRedFlags | null>(null);
+  const [redFlagChecking, setRedFlagChecking] = useState<{ done: number; total: number } | null>(null);
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
@@ -621,6 +630,13 @@ export default function HomePage() {
   }
 
   // Auto-load on mount + listen for changes from other tabs (e.g. /phase2 in new tab)
+  const readRedFlags = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(REDFLAG_STORAGE_KEY);
+      if (raw) setRedFlags(JSON.parse(raw) as StoredRedFlags);
+    } catch { /* an unreadable cache is the same as none */ }
+  }, []);
+
   useEffect(() => {
     loadPhase2FromStorage();
     loadBuybacksFromStorage();
@@ -628,9 +644,11 @@ export default function HomePage() {
     loadTrendlineFromStorage();
     loadCommoditiesFromStorage();
     setHoldings(loadHoldings());
+    readRedFlags();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === HOLDINGS_STORAGE_KEY)  setHoldings(loadHoldings());
+      if (e.key === REDFLAG_STORAGE_KEY)   readRedFlags();
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
       if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
       if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
@@ -988,6 +1006,49 @@ export default function HomePage() {
     });
   }, []);
 
+  /**
+   * Red flags — the Bible's qualified-audit check (Column AR) and the
+   * corporate-governance Mill Rule. See lib/redflags.ts.
+   *
+   * Run over a CHOSEN set rather than the whole list: each stock means reading
+   * an ASX announcement feed and an Appendix 4E PDF that can be 18MB, so the
+   * route caps a batch at 10. That is how Tony does it by hand too — he checks
+   * the audit for the top 20-30, "because it takes the most amount of time".
+   */
+  const checkRedFlags = useCallback(async (codes: string[]) => {
+    const batch = Array.from(new Set(codes)).filter(Boolean);
+    if (!batch.length) return;
+    setRedFlagChecking({ done: 0, total: batch.length });
+    setError(null);
+    try {
+      const byCode = new Map((allStocks ?? []).map((st) => [st.Code, st]));
+      const merged: Record<string, RedFlagEntry> = { ...(redFlags?.data ?? {}) };
+      for (let i = 0; i < batch.length; i += 10) {
+        const chunk = batch.slice(i, i + 10).map((code) => ({
+          code,
+          // "Last Period Analysed" is the RESULTS date, which is what Listing
+          // Rule 4.3A measures the lodgement deadline from.
+          balanceDate: (byCode.get(code) as Record<string, unknown> | undefined)?._lastPeriod as string | undefined,
+        }));
+        const res = await fetch("/api/redflags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: chunk }),
+        });
+        if (!res.ok) throw new Error(`Red flag API error ${res.status}`);
+        Object.assign(merged, await res.json() as Record<string, RedFlagEntry>);
+        setRedFlagChecking({ done: Math.min(i + 10, batch.length), total: batch.length });
+      }
+      const stored: StoredRedFlags = { timestamp: new Date().toISOString(), data: merged };
+      localStorage.setItem(REDFLAG_STORAGE_KEY, JSON.stringify(stored));
+      setRedFlags(stored);
+    } catch (e) {
+      setError(e instanceof Error ? `Red flags: ${e.message}` : "Red flag check failed.");
+    } finally {
+      setRedFlagChecking(null);
+    }
+  }, [allStocks, redFlags]);
+
   /** Replace the stored portfolio. Codes only — see lib/holdings-storage.ts. */
   const saveHoldingCodes = useCallback((codes: string[]) => {
     setHoldings(saveHoldings(codes));
@@ -1061,6 +1122,12 @@ export default function HomePage() {
    * Counts a commodity gate or a manual override too, since either also leaves
    * the holding reading Bearish on the scorecard.
    */
+  /** How many checked stocks carry a red flag — shown on the toolbar button. */
+  const redFlagCount = useMemo(
+    () => Object.values(redFlags?.data ?? {}).filter(hasRedFlag).length,
+    [redFlags],
+  );
+
   const holdingAlertCount = useMemo(() => {
     const byCode = new Map((allStocks ?? []).map((st) => [st.Code, st]));
     return holdings.codes.filter((code) => {
@@ -1250,6 +1317,38 @@ export default function HomePage() {
                   <BarChart2 className={`w-4 h-4 ${commodityChecking ? "animate-pulse" : ""}`} />
                   {commodityChecking ? "Commodities…" : commodityData ? "Commodities ✓" : "Commodities"}
                 </button>
+
+                {/* Red flags — qualified audit (Bible Col AR) + the governance
+                    Mill Rule. Run over holdings and the top of the buy list,
+                    not the whole CSV: each stock means an ASX feed plus an
+                    Appendix 4E PDF that can run to 18MB. */}
+                {redFlagChecking ? (
+                  <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
+                    <AlertTriangle className="w-4 h-4 animate-pulse" />
+                    <span>{redFlagChecking.done}/{redFlagChecking.total}</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => checkRedFlags([
+                      ...holdings.codes,
+                      ...buyList.slice(0, 20).map((st) => st.Code),
+                    ])}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                      redFlagCount > 0
+                        ? "text-red-700 bg-red-50 border-red-200 hover:bg-red-100"
+                        : redFlags
+                          ? "text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100"
+                          : "text-gray-500 border-gray-300 hover:bg-gray-50"
+                    }`}
+                    title={"Check the Appendix 4E for a qualified audit (Bible Column AR) and the ASX feed for corporate governance breaches (the Mill Rule).\n" +
+                           "Covers your holdings plus the top 20 of the buy list."}
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    {redFlags
+                      ? (redFlagCount > 0 ? `${redFlagCount} red flag${redFlagCount !== 1 ? "s" : ""}` : "Red flags ✓")
+                      : "Check Red Flags"}
+                  </button>
+                )}
 
                 {/* Buyback — auto-check + manual fallback */}
                 {!buybackChecking && (
@@ -1687,6 +1786,7 @@ export default function HomePage() {
               stocks={displayedStocks}
               showAll={showAll}
               ownedCodes={ownedCodes}
+              redFlags={redFlags?.data}
               hideEtfs={hideEtfs}
               onToggleEtfs={() => setHideEtfs((v) => !v)}
               filterSentiment={filterSentiment}
