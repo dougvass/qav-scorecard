@@ -25,6 +25,9 @@ interface StockTableProps {
   onSentimentOverride?: (code: string, value: SentimentOverride | null) => void;
   /** QAV-over-time series per code; drives the Trend sparkline column. */
   history?: HistorySeries;
+  /** Codes the user holds — marked so an owned stock is obvious while reading
+   *  the buy list. See lib/holdings-storage.ts. */
+  ownedCodes?: Set<string>;
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield";
@@ -191,7 +194,7 @@ function StarBadge({ rating }: { rating: number | null }) {
   return <span className={`text-sm font-medium ${color}`} title={`${rating} stars`}>{stars}</span>;
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -448,6 +451,14 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                       >
                         {stock.Code}
                       </a>
+                      {ownedCodes?.has(stock.Code) && (
+                        <span
+                          className="ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-300 align-middle"
+                          title="You hold this — see the My Holdings tab"
+                        >
+                          held
+                        </span>
+                      )}
                       {(stock as Record<string, unknown>)._missingPhase2 === 1 && (
                         <a
                           href={`https://www.stockdoctor.com.au/Company/${stock.Code}?page=financials`}

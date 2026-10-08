@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { parseStockDoctorCSV } from "@/lib/csv-parser";
 import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS, scorePeHiLoLive } from "@/lib/phase2-storage";
@@ -20,6 +20,14 @@ import {
   TRENDLINE_SCORES,
   toStoredSentiment,
 } from "@/lib/trendline-storage";
+import {
+  HOLDINGS_STORAGE_KEY,
+  StoredHoldings,
+  loadHoldings,
+  saveHoldings,
+  isHoldingAlert,
+} from "@/lib/holdings-storage";
+import HoldingsPanel from "@/components/holdings-panel";
 import {
   COMMODITIES,
   STOCK_COMMODITY,
@@ -55,6 +63,7 @@ import {
   Database,
   TrendingUp,
   Activity,
+  Briefcase,
 } from "lucide-react";
 
 /**
@@ -493,6 +502,10 @@ export default function HomePage() {
   const [historyConfigured, setHistoryConfigured] = useState<boolean | null>(null);
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showAll, setShowAll] = useState(false);
+  /** Which view the table area is showing. "holdings" is the portfolio. */
+  const [view, setView] = useState<"buy" | "all" | "holdings">("buy");
+  const [holdings, setHoldings] = useState<StoredHoldings>({ timestamp: null, codes: [] });
+  const [holdingsChecking, setHoldingsChecking] = useState(false);
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
@@ -614,8 +627,10 @@ export default function HomePage() {
     loadSentimentsFromStorage();
     loadTrendlineFromStorage();
     loadCommoditiesFromStorage();
+    setHoldings(loadHoldings());
 
     function onStorageChange(e: StorageEvent) {
+      if (e.key === HOLDINGS_STORAGE_KEY)  setHoldings(loadHoldings());
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
       if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
       if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
@@ -972,6 +987,87 @@ export default function HomePage() {
       return stored;
     });
   }, []);
+
+  /** Replace the stored portfolio. Codes only — see lib/holdings-storage.ts. */
+  const saveHoldingCodes = useCallback((codes: string[]) => {
+    setHoldings(saveHoldings(codes));
+  }, []);
+
+  /**
+   * Run 3PTL for a set of held codes and merge the results into the stored
+   * trendline data.
+   *
+   * A holding need not be in the loaded CSV at all — the Stock Doctor filter
+   * that produces it is a screen, so anything that has fallen out of favour is
+   * missing from it, and those are exactly the holdings most likely to have
+   * broken a line. Merging rather than replacing keeps the main table's results
+   * intact, so checking three holdings does not discard a 500-stock run.
+   */
+  const checkHoldings3PTL = useCallback(async (codes: string[]) => {
+    const batch = codes.filter(Boolean);
+    if (!batch.length) return;
+    setHoldingsChecking(true);
+    setError(null);
+    try {
+      const merged: StoredTrendlines["data"] = { ...(trendlineData?.data ?? {}) };
+      for (let i = 0; i < batch.length; i += 20) {
+        const res = await fetch(TRENDLINE_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codes: batch.slice(i, i + 20) }),
+        });
+        if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
+        const data = await res.json() as Record<string, {
+          sentiment?: string; note?: string; events?: { kind?: string; date?: string }[];
+        }>;
+        for (const [code, entry] of Object.entries(data)) {
+          let lastBuyBreach: string | null = null;
+          for (const e of entry.events ?? []) {
+            if (e.kind === "BUY" && typeof e.date === "string") {
+              if (!lastBuyBreach || e.date > lastBuyBreach) lastBuyBreach = e.date;
+            }
+          }
+          merged[code] = {
+            sentiment: toStoredSentiment(entry.sentiment),
+            note: entry.note,
+            lastBuyBreach,
+          };
+        }
+      }
+      const stored: StoredTrendlines = {
+        timestamp: new Date().toISOString(),
+        checkedCount: Object.keys(merged).length,
+        data: merged,
+      };
+      localStorage.setItem(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
+      setTrendlineData(stored);
+      setTrendlineLoaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? `Holdings 3PTL: ${e.message}` : "Holdings 3PTL check failed.");
+    } finally {
+      setHoldingsChecking(false);
+    }
+  }, [trendlineData]);
+
+  /** Codes the user holds — drives the owned marker in the table. */
+  const ownedCodes = useMemo(() => new Set(holdings.codes), [holdings.codes]);
+
+  /**
+   * How many holdings have broken their sell line. Shown on the tab itself so
+   * the answer to "do I need to act today" costs no clicks — Doug's whole ask:
+   * "if they have broken a sell line then I need to know and action it without
+   * having to check each one everday."
+   *
+   * Counts a commodity gate or a manual override too, since either also leaves
+   * the holding reading Bearish on the scorecard.
+   */
+  const holdingAlertCount = useMemo(() => {
+    const byCode = new Map((allStocks ?? []).map((st) => [st.Code, st]));
+    return holdings.codes.filter((code) => {
+      if (isHoldingAlert(trendlineData?.data?.[code]?.sentiment)) return true;
+      return byCode.get(code)?.S_sentiment_long === -1;
+    }).length;
+  }, [holdings.codes, trendlineData, allStocks]);
 
   /** Set or clear a manual 3PTL sentiment override for one stock. */
   const saveSentimentOverride = useCallback((code: string, value: SentimentOverride | null) => {
@@ -1531,24 +1627,42 @@ export default function HomePage() {
 
             <SummaryStats all={statsAll} buyList={statsBuyList} msLoaded={msLoaded} />
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <button
-                onClick={() => setShowAll(false)}
+                onClick={() => { setView("buy"); setShowAll(false); }}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  !showAll ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  view === "buy" ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
                 }`}
               >
                 <Star className="w-4 h-4" />
                 Buy List ({buyList.length})
               </button>
               <button
-                onClick={() => setShowAll(true)}
+                onClick={() => { setView("all"); setShowAll(true); }}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  showAll ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  view === "all" ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
                 }`}
               >
                 <ListFilter className="w-4 h-4" />
                 All Stocks ({allStocks.length})
+              </button>
+              {/* The portfolio. The badge is the count that needs action, so a
+                  broken sell line is visible without opening the tab. */}
+              <button
+                onClick={() => setView("holdings")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  view === "holdings" ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <Briefcase className="w-4 h-4" />
+                My Holdings ({holdings.codes.length})
+                {holdingAlertCount > 0 && (
+                  <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[11px] font-bold ${
+                    view === "holdings" ? "bg-white text-red-700" : "bg-red-600 text-white"
+                  }`} title={`${holdingAlertCount} holding(s) below the sell line`}>
+                    {holdingAlertCount}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -1559,9 +1673,20 @@ export default function HomePage() {
               <span className="text-gray-400 ml-2">Click <strong>ⓘ</strong> to expand per-stock score breakdown</span>
             </div>
 
+            {view === "holdings" ? (
+              <HoldingsPanel
+                codes={holdings.codes}
+                allStocks={allStocks}
+                trendlineData={trendlineData}
+                onSave={saveHoldingCodes}
+                onCheckMissing={checkHoldings3PTL}
+                checking={holdingsChecking}
+              />
+            ) : (
             <StockTable
               stocks={displayedStocks}
               showAll={showAll}
+              ownedCodes={ownedCodes}
               hideEtfs={hideEtfs}
               onToggleEtfs={() => setHideEtfs((v) => !v)}
               filterSentiment={filterSentiment}
@@ -1572,6 +1697,7 @@ export default function HomePage() {
               onSentimentOverride={saveSentimentOverride}
               history={history}
             />
+            )}
 
             <div className="bg-white border border-gray-200 rounded-xl p-5 text-sm text-gray-500 space-y-2">
               <p className="font-semibold text-gray-700">Scoring notes</p>
