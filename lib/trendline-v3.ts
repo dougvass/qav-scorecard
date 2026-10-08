@@ -517,7 +517,22 @@ export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | 
     // are not a sell nor a buy." FRI and HMY are both this case.
     sentiment = "Watch";
     note = `between the lines, ${sellNow.toFixed(3)}-${buyNow.toFixed(3)}`;
-  } else if (out.state !== "long") {
+  } else if (out.state !== "long" && !(buyNow == null || buyNow <= sellNow)) {
+    // The "out" state holds a stock out only while a LIVE buy line stands over
+    // it. A ray decayed to or below the sell line — or no buy line at all — is
+    // not overhead resistance. Doug, 2026-10-08: "the decayed lines are
+    // correct". So position state cannot be what makes a stock a Sell while
+    // price sits ABOVE its sell line; that reading is never legitimate.
+    //
+    // His two cases: COL at 23.19 over a 22.14 sell line with a buy line of 0,
+    // crossed back in 2024, still reading Sell; EDU at 0.98 over 0.34. Both
+    // read Josephine once a dead line stops standing in for resistance it no
+    // longer provides. Across HQ's 326 this releases 18 and takes "Sell while
+    // above the sell line" from 18 to zero.
+    //
+    // Deliberately a READ-side rule, NOT a change to the walk's entry test:
+    // moving the BUY event itself (threshold = max(buy, sell)) fires it
+    // earlier, re-freezes H1, and cost HZN both of its anchors.
     sentiment = "Sell";
     note = "sell signal in force, no buy since";
   } else if (lmc != null && p < lmc) {
