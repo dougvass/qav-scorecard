@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { AlertTriangle, Check, Pencil, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, Pencil, Plus, RefreshCw, X } from "lucide-react";
 import { ScoredStock } from "@/lib/types";
 import { StoredTrendlines, TrendlineSentiment } from "@/lib/trendline-storage";
 import { parseHoldings, isHoldingAlert } from "@/lib/holdings-storage";
@@ -12,6 +12,10 @@ interface Props {
   allStocks: ScoredStock[] | null;
   trendlineData: StoredTrendlines | null;
   onSave: (codes: string[]) => void;
+  /** Add one code AND run its 3PTL straight away. A holding added by hand is
+   *  almost always one just bought, so the first thing wanted is its reading —
+   *  Doug, 2026-10-24: "also make the 3PTL run when a new stock is added." */
+  onAdd: (code: string) => Promise<void>;
   /** Fetch 3PTL for held codes the CSV does not cover. Resolves when stored. */
   onCheckMissing: (codes: string[]) => Promise<void>;
   checking: boolean;
@@ -28,11 +32,14 @@ const TONE: Record<string, string> = {
 const RANK: Record<string, number> = { Bearish: 0, Watch: 1, Josephine: 2, Bullish: 3 };
 
 export default function HoldingsPanel({
-  codes, allStocks, trendlineData, onSave, onCheckMissing, checking,
+  codes, allStocks, trendlineData, onSave, onAdd, onCheckMissing, checking,
 }: Props) {
   const [editing, setEditing] = useState(codes.length === 0);
   const [draft, setDraft] = useState(codes.join(", "));
   const [skipped, setSkipped] = useState<string[]>([]);
+  const [newCode, setNewCode] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const rows = useMemo(() => {
     const byCode = new Map((allStocks ?? []).map((s) => [s.Code, s]));
@@ -60,6 +67,37 @@ export default function HoldingsPanel({
 
   const alerts = rows.filter((r) => r.alert);
   const unknown = rows.filter((r) => !r.sentiment).map((r) => r.code);
+
+  function removeCode(code: string) {
+    onSave(codes.filter((c) => c !== code));
+    setDraft(codes.filter((c) => c !== code).join(", "));
+  }
+
+  async function addCode() {
+    const raw = newCode.trim().toUpperCase();
+    if (!raw) return;
+    // Reuse the same parser the bulk paste uses, so "BHP.AX" and "ASX:BHP"
+    // behave identically however the code arrives.
+    const { codes: parsed, skipped: skip } = parseHoldings(raw);
+    if (!parsed.length) {
+      setAddError(skip.length ? `${skip.join(", ")} is not an ASX code` : `"${raw}" is not an ASX code`);
+      return;
+    }
+    const code = parsed[0];
+    if (codes.includes(code)) {
+      setAddError(`${code} is already in your holdings`);
+      return;
+    }
+    setAddError(null);
+    setNewCode("");
+    setAdding(true);
+    try {
+      await onAdd(code);
+      setDraft([...codes, code].sort().join(", "));
+    } finally {
+      setAdding(false);
+    }
+  }
 
   function commit() {
     const { codes: parsed, skipped: skip } = parseHoldings(draft);
@@ -124,6 +162,7 @@ export default function HoldingsPanel({
                 <th className="text-left px-3 py-2 font-semibold">Line</th>
                 <th className="text-right px-3 py-2 font-semibold">QAV</th>
                 <th className="text-center px-3 py-2 font-semibold">Buy list</th>
+                <th className="w-8 px-2 py-2"><span className="sr-only">Remove</span></th>
               </tr>
             </thead>
             <tbody>
@@ -163,10 +202,60 @@ export default function HoldingsPanel({
                       ? <span className="text-emerald-600" title="Qualifies for the buy list">●</span>
                       : <span className="text-gray-300">·</span>}
                   </td>
+                  <td className="px-2 py-2 text-center">
+                    <button
+                      onClick={() => removeCode(r.code)}
+                      className="text-gray-300 hover:text-red-600 transition-colors p-1 rounded hover:bg-red-50"
+                      title={`Remove ${r.code} from your holdings`}
+                      aria-label={`Remove ${r.code}`}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Add one code. The common case by far — a holding changes one stock at
+          a time — so it sits right under the list rather than behind the bulk
+          paste editor, and it runs the new code's 3PTL on the way in. */}
+      {codes.length > 0 && !editing && (
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <input
+              value={newCode}
+              onChange={(e) => { setNewCode(e.target.value); setAddError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addCode(); } }}
+              placeholder="Add ASX code"
+              aria-label="Add an ASX code to your holdings"
+              maxLength={12}
+              disabled={adding}
+              className="w-36 text-sm font-mono uppercase px-2.5 py-1.5 border border-gray-300 rounded-lg
+                         focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
+            />
+            <button
+              onClick={() => void addCode()}
+              disabled={adding || !newCode.trim()}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium rounded-lg border
+                         border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100
+                         disabled:opacity-40 disabled:hover:bg-indigo-50 transition-colors"
+              title="Add this code and run its 3PTL"
+            >
+              {adding
+                ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                : <Plus className="w-3.5 h-3.5" />}
+              {adding ? "Checking 3PTL…" : "Add"}
+            </button>
+          </div>
+          {addError && <span className="text-xs text-red-600">{addError}</span>}
+          {!addError && (
+            <span className="text-xs text-gray-400">
+              Adding a code runs its 3PTL straight away.
+            </span>
+          )}
         </div>
       )}
 

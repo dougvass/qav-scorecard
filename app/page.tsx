@@ -1055,6 +1055,22 @@ export default function HomePage() {
   }, []);
 
   /**
+   * Add one holding and run its 3PTL immediately.
+   *
+   * Doug, 2026-10-24: "also make the 3PTL run when a new stock is added." A
+   * code added by hand is almost always one just bought, and the reading is the
+   * whole reason the holding is tracked — a new row showing "—" until a
+   * separate refresh is run would be the wrong default. It is also usually
+   * absent from the loaded CSV, so `checkHoldings3PTL` (which merges rather
+   * than replaces) is exactly the right path.
+   */
+  const addHoldingCode = useCallback(async (code: string) => {
+    const next = Array.from(new Set([...holdings.codes, code.toUpperCase()]));
+    setHoldings(saveHoldings(next));
+    await checkHoldings3PTL([code.toUpperCase()]);
+  }, [holdings.codes, checkHoldings3PTL]);
+
+  /**
    * Run 3PTL for a set of held codes and merge the results into the stored
    * trendline data.
    *
@@ -1778,6 +1794,7 @@ export default function HomePage() {
                 allStocks={allStocks}
                 trendlineData={trendlineData}
                 onSave={saveHoldingCodes}
+                onAdd={addHoldingCode}
                 onCheckMissing={checkHoldings3PTL}
                 checking={holdingsChecking}
               />
