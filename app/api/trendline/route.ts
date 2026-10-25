@@ -1116,6 +1116,34 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     }
   }
 
+  // ── DECLINING SELL LINE → no genuine support, steady downtrend ───────────────
+  // Tony's sell line is RISING support. When the ONLY sell line the engine can
+  // draw is itself DECLINING (L2 below L1), lows are still falling — there is no
+  // support, and being "above" that falling line is not a bullish signal
+  // (findSellLine only falls back to a declining pair when NO rising pair exists
+  // anywhere). With the buy line ALSO declining, price "above both lines" is a
+  // decayed-line artifact of a steady downtrend that the depth-gated falling-
+  // knife tiers miss for moderate (<35%) declines. Force Bearish unless a
+  // confirmed reversal — the last 3 confirmed troughs strictly rising — has
+  // since formed. Commodities are excluded (flattened bars, own rule set).
+  //
+  // Found via the ETF ranker (MQWS: Macquarie Walter Scott Global Equity ETF —
+  // −25% over 18mo, lower highs AND lower lows, both decayed lines below price →
+  // read Bullish). Regression-checked 2026-10-25 against all 18 reference stocks
+  // (see [[3ptl-reference-stocks]]): changes NONE — every non-Bearish one has a
+  // RISING sell line; the only declining sell lines belong to already-Bearish
+  // stocks (BRK/AQZ/CCX/PPE), which the guard skips.
+  if (sentiment !== "Bearish" && !isCommodity
+      && l1 && l2 && l2.price < l1.price * (1 - PIVOT_TIE_TOL)
+      && h1 && h2 && h2.price < h1.price * (1 - PIVOT_TIE_TOL)) {
+    const cMin = minima.filter((m) => isConfirmed(m, currentIdx)).slice(-3);
+    const reversed = cMin.length === 3 && cMin[0].price < cMin[1].price && cMin[1].price < cMin[2].price;
+    if (!reversed) {
+      sentiment = "Bearish";
+      note = `Bearish: declining sell line ${l1.price.toFixed(3)}→${l2.price.toFixed(3)} (no rising support) with declining buy line — steady downtrend; "above both lines" is a decayed-line artifact.`;
+    }
+  }
+
   return { sentiment, buyLine, sellLine, h1, h2, l1, l2, note };
 }
 
