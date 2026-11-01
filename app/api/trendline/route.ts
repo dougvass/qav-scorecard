@@ -1012,8 +1012,21 @@ function classify3PTL(bars: PriceBar[], currentPrice: number, lastMonthCloseOver
     // support at $4.56. Lumping this in with "between the lines" made a stock
     // with nothing above it look like it was capped by something.
     // Still routed through the falling-knife re-check below.
-    sentiment = "Bullish";
-    note = `Bullish: price ${currentPrice.toFixed(3)} above sell line ${sellLine!.toFixed(3)}, no buy line (no overhead resistance)`;
+    //
+    // Subject to the SAME Josephine month-on-month dip rule as the above-both
+    // case: a positive reading that closed the month BELOW the prior month's
+    // close is a "not tonight, Josephine" (extended 2026-11-01 at Doug's call —
+    // a no-buy-line stock ticking down month-on-month, e.g. U100, is not a fresh
+    // buy). Uses the same daily-derived lastMonthCloseOverride; see above.
+    const lastMonthClose = lastMonthCloseOverride ?? (n >= 2 ? bars[n - 2].close : 0);
+    if (lastMonthClose > 0 && currentPrice < lastMonthClose) {
+      const pv = (currentPrice - lastMonthClose) / lastMonthClose;
+      sentiment = "Josephine";
+      note = `Josephine ↗: above sell line ${sellLine!.toFixed(3)} (no buy line) but price ${currentPrice.toFixed(3)} is ${(pv * 100).toFixed(1)}% below last month's close ${lastMonthClose.toFixed(3)} — "not tonight, Josephine"`;
+    } else {
+      sentiment = "Bullish";
+      note = `Bullish: price ${currentPrice.toFixed(3)} above sell line ${sellLine!.toFixed(3)}, no buy line (no overhead resistance)`;
+    }
     checkFallingKnife = true;
   } else if (aboveSell) {
     // Above sell line but below buy line — Josephine (between the lines).
