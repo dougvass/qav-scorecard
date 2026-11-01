@@ -256,7 +256,8 @@ function normalizeMonthly(bars: PriceBar[]): PriceBar[] {
  */
 async function fetchDaily(code: string): Promise<{ price: number | null; prevMonthClose: number | null }> {
   const empty = { price: null, prevMonthClose: null };
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=2mo&includePrePost=false`;
+  // 3mo window so the month BEFORE the latest price's month is always covered.
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}?interval=1d&range=3mo&includePrePost=false`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return empty;
@@ -267,17 +268,30 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
     const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
     if (!ts || !closes) return empty;
 
-    const now = new Date();
-    const curYear = now.getUTCFullYear(), curMonth = now.getUTCMonth();
-    let price: number | null = null;        // latest valid close in the window
-    let prevMonthClose: number | null = null; // latest valid close before this month
+    // First pass: latest valid close and the calendar month it falls in.
+    let price: number | null = null;
+    let priceYM = -1;
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
       price = c;
       const d = new Date(ts[i] * 1000);
-      const y = d.getUTCFullYear(), m = d.getUTCMonth();
-      if (y < curYear || (y === curYear && m < curMonth)) prevMonthClose = c;
+      priceYM = d.getUTCFullYear() * 12 + d.getUTCMonth();
+    }
+    // Second pass: prevMonthClose = last close of the month BEFORE the latest
+    // price's month — NOT before *today's* month. At the start of a new month,
+    // before it has traded, the live price is still the just-completed month's
+    // close; anchoring on today's month would compare that month against itself
+    // and the Josephine month-on-month dip check could never fire (every topped-
+    // out stock reads Bullish on the 1st–2nd). CONFIRMED 2026-11-01 via the ETF
+    // ranker: MCCL's Oct close 16.22 < Sep 16.98 (a Josephine) was read Bullish
+    // because prevMonthClose came back as 16.22 (Oct, == price) instead of 16.98.
+    let prevMonthClose: number | null = null;
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null || isNaN(c) || c <= 0) continue;
+      const d = new Date(ts[i] * 1000);
+      if (d.getUTCFullYear() * 12 + d.getUTCMonth() < priceYM) prevMonthClose = c;
     }
     return { price, prevMonthClose };
   } catch { return empty; }
