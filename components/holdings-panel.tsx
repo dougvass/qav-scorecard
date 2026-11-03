@@ -6,6 +6,9 @@ import { ScoredStock } from "@/lib/types";
 import { StoredTrendlines, TrendlineSentiment } from "@/lib/trendline-storage";
 import { parseHoldings, isHoldingAlert } from "@/lib/holdings-storage";
 import { isJosephineDip } from "@/lib/sentiment-storage";
+import {
+  COMMODITIES, STOCK_COMMODITY, StoredCommodities, effectiveCommoditySentiment,
+} from "@/lib/commodities";
 
 interface Props {
   codes: string[];
@@ -16,6 +19,12 @@ interface Props {
    *  almost always one just bought, so the first thing wanted is its reading —
    *  Doug, 2026-10-24: "also make the 3PTL run when a new stock is added." */
   onAdd: (code: string) => Promise<void>;
+  /** The commodity complex, so the QAV commodity gate can be applied HERE too.
+   *  enrichWithCommodityGate only runs over the scored CSV rows, so a holding
+   *  absent from the CSV — which is most of the reason this list exists — was
+   *  never gated. Doug, 2026-11-03: "It needs to flag them as sells/bearish if
+   *  the commodity for that stock is a sell." */
+  commodities?: StoredCommodities | null;
   /** Fetch 3PTL for held codes the CSV does not cover. Resolves when stored. */
   onCheckMissing: (codes: string[]) => Promise<void>;
   checking: boolean;
@@ -32,7 +41,7 @@ const TONE: Record<string, string> = {
 const RANK: Record<string, number> = { Bearish: 0, Watch: 1, Josephine: 2, Bullish: 3 };
 
 export default function HoldingsPanel({
-  codes, allStocks, trendlineData, onSave, onAdd, onCheckMissing, checking,
+  codes, allStocks, trendlineData, commodities, onSave, onAdd, onCheckMissing, checking,
 }: Props) {
   const [editing, setEditing] = useState(codes.length === 0);
   const [draft, setDraft] = useState(codes.join(", "));
@@ -56,16 +65,29 @@ export default function HoldingsPanel({
           : stock.S_sentiment_long === 0 ? (isJosephineDip(stock) ? "Josephine" : "Watch")
           : null)
         : null;
+      // The QAV commodity gate, applied directly rather than inherited from a
+      // scored CSV row — a holding the CSV does not carry must still be flagged
+      // when its underlying commodity is a sell. Mirrors enrichWithCommodityGate,
+      // including the rule that a PROXY commodity is advisory and never gates on
+      // its own automatic read.
+      const commodityKey = STOCK_COMMODITY[code];
+      const def = commodityKey ? COMMODITIES.find((c) => c.key === commodityKey) : undefined;
+      const commoditySentiment = commodityKey && commodities
+        ? effectiveCommoditySentiment(commodities, commodityKey) : null;
+      const advisory = !!def?.proxy && commodities?.manual[commodityKey] === undefined;
+      const gated = commoditySentiment === "Bearish" && !advisory;
       return {
-        code, stock, sentiment, effective,
+        code, stock, sentiment, effective, gated,
+        commodity: def ? (def.label + (def.proxy ? "*" : "")) : null,
         note: tl?.note ?? null,
-        alert: isHoldingAlert(sentiment) || isHoldingAlert(effective),
-        rank: RANK[sentiment ?? ""] ?? 4,
+        alert: gated || isHoldingAlert(sentiment) || isHoldingAlert(effective),
+        rank: gated ? 0 : (RANK[sentiment ?? ""] ?? 4),
       };
     }).sort((a, b) => a.rank - b.rank || a.code.localeCompare(b.code));
-  }, [codes, allStocks, trendlineData]);
+  }, [codes, allStocks, trendlineData, commodities]);
 
   const alerts = rows.filter((r) => r.alert);
+  const gatedCount = rows.filter((r) => r.gated).length;
   const unknown = rows.filter((r) => !r.sentiment).map((r) => r.code);
 
   function removeCode(code: string) {
@@ -121,8 +143,14 @@ export default function HoldingsPanel({
               {alerts.length ? (
                 <>
                   <strong className="text-red-800">
-                    {alerts.length} of your {codes.length} holdings {alerts.length === 1 ? "has" : "have"} broken a sell line
+                    {alerts.length} of your {codes.length} holdings {alerts.length === 1 ? "needs" : "need"} attention
                   </strong>
+                  {gatedCount > 0 && (
+                    <div className="text-xs text-red-700 mt-0.5">
+                      {alerts.length - gatedCount > 0 && `${alerts.length - gatedCount} broke a sell line; `}
+                      {gatedCount} forced Bearish by the commodity rule
+                    </div>
+                  )}
                   <div className="mt-1 flex flex-wrap gap-1.5">
                     {alerts.map((r) => (
                       <span key={r.code} className="px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-300 text-xs font-semibold">
@@ -134,6 +162,7 @@ export default function HoldingsPanel({
               ) : (
                 <strong className="text-emerald-800">
                   None of your {codes.length} holdings {codes.length === 1 ? "has" : "have"} broken a sell line
+                  {commodities ? " or been gated by its commodity" : ""}
                 </strong>
               )}
               {unknown.length > 0 && (
@@ -180,19 +209,30 @@ export default function HoldingsPanel({
                     {r.stock?.Name ?? <span className="text-gray-400">not in the loaded CSV</span>}
                   </td>
                   <td className="px-3 py-2">
-                    {r.sentiment ? (
+                    {r.gated ? (
+                      <span className="px-2 py-0.5 rounded border text-xs font-medium bg-red-100 text-red-800 border-red-300"
+                            title={`${r.commodity} is a sell, so the QAV commodity rule forces this holding to Bearish`}>
+                        Bearish
+                      </span>
+                    ) : r.sentiment ? (
                       <span className={`px-2 py-0.5 rounded border text-xs font-medium ${TONE[r.sentiment] ?? "bg-gray-100 text-gray-500 border-gray-300"}`}>
                         {r.sentiment}
                       </span>
                     ) : <span className="text-gray-400 text-xs">—</span>}
+                    {r.gated && (
+                      <span className="ml-1.5 text-[11px] text-red-600" title="QAV commodity rule">
+                        ⛏ {r.commodity}
+                      </span>
+                    )}
                     {r.effective && r.sentiment && r.effective !== r.sentiment && (
                       <span className="ml-1.5 text-[11px] text-gray-500" title="The scorecard shows this instead — a commodity gate or a manual override is in force">
                         → {r.effective}
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-xs text-gray-500 max-w-[260px] truncate" title={r.note ?? ""}>
-                    {r.note ?? ""}
+                  <td className="px-3 py-2 text-xs text-gray-500 max-w-[260px] truncate"
+                      title={r.gated ? `${r.commodity} is a sell (QAV commodity rule)` : (r.note ?? "")}>
+                    {r.gated ? `${r.commodity} is a sell` : (r.note ?? "")}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {r.stock?.QAV ?? <span className="text-gray-300">—</span>}
@@ -308,6 +348,7 @@ export default function HoldingsPanel({
           </button>
           <span className="text-gray-400">
             Bearish = price below the sell line. Watch is between the lines, not an alert.
+            {!commodities && " Run Commodities to apply the commodity rule here too."}
           </span>
         </div>
       )}

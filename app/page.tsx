@@ -1794,6 +1794,7 @@ export default function HomePage() {
                 codes={holdings.codes}
                 allStocks={allStocks}
                 trendlineData={trendlineData}
+                commodities={commodityData}
                 onSave={saveHoldingCodes}
                 onAdd={addHoldingCode}
                 onCheckMissing={checkHoldings3PTL}
