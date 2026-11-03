@@ -235,10 +235,32 @@ export function buyLine(
   // 4.62 looks 7.97% below the top 5.02, joins the band, becomes H1 and kills
   // the line; off its own price it is 8.66% away and is correctly excluded,
   // leaving H1 2022-04 5.00 — the H1 he confirmed.
+  //
+  // And a flat top is a SHELF: price has to have stayed up there. The price
+  // test alone pairs highs that are nothing of the kind — KLS's 2022-03 7.825
+  // with 2023-05 7.260, 7.78% apart but separated by 14 months and a fall to
+  // 4.608, FORTY-ONE PER CENT below the high; ASX's 2021-11 92.90 with
+  // 2022-06 88.26 across a fall to 80.80. Taking the most recent of such a
+  // "band" gave KLS a -0.126/mo ray decaying to 2.09 (Buy) where Doug reads a
+  // 6.136 line (Watch), and moved ASX's H1 off the 92.90 he draws from.
+  //
+  // So a peak joins only if nothing between it and the top dipped more than
+  // the same 8% BELOW THE TOP. Measuring off the top rather than off the lower
+  // of the two peaks is what makes it agree with him on both charts.
+  //
+  // The Bible's flat-top wording is explicit that TIME is not the test — "it
+  // doesn't matter how far apart they are temporally" — so this adds no
+  // distance rule, only the condition that price held the level.
+  const shelfFloor = c[top] * (1 - SEP);
+  const heldTheLevel = (j: number): boolean => {
+    const lo = Math.min(j, top), hi = Math.max(j, top);
+    for (let k = lo + 1; k < hi; k++) if (c[k] < shelfFloor) return false;
+    return true;
+  };
   let h1 = top;
   for (let i = 0; i < avail.length; i++) {
     const j = avail[i];
-    if (c[top] < c[j] * (1 + SEP) && j > h1) h1 = j;
+    if (c[top] < c[j] * (1 + SEP) && j > h1 && heldTheLevel(j)) h1 = j;
   }
 
   // Rule 8: the LATEST qualifying point. The earliest gave FRI H2 2024-09 and a
