@@ -182,7 +182,7 @@ export default function HoldingsPanel({
       {/* The list itself. */}
       {codes.length > 0 && !editing && (
         <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
-          <table className="w-full text-sm min-w-[560px]">
+          <table className="w-full text-sm min-w-[640px]">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-gray-500 border-b border-gray-200">
                 <th className="text-left px-3 py-2 font-semibold">Code</th>
@@ -190,6 +190,10 @@ export default function HoldingsPanel({
                 <th className="text-left px-3 py-2 font-semibold">3PTL</th>
                 <th className="text-left px-3 py-2 font-semibold">Line</th>
                 <th className="text-right px-3 py-2 font-semibold">QAV</th>
+                <th className="text-center px-3 py-2 font-semibold"
+                    title="Average score per column (TotalScore ÷ Count) — green ≥ 75%">
+                  Quality
+                </th>
                 <th className="text-center px-3 py-2 font-semibold">Buy list</th>
                 <th className="w-8 px-2 py-2"><span className="sr-only">Remove</span></th>
               </tr>
@@ -236,6 +240,21 @@ export default function HoldingsPanel({
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {r.stock?.QAV ?? <span className="text-gray-300">—</span>}
+                  </td>
+                  {/* Same pill and thresholds as the main tables, so the number
+                      reads identically wherever he meets it. */}
+                  <td className="px-3 py-2 text-center">
+                    {typeof r.stock?.Quality === "number" ? (
+                      <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2 py-0.5 text-xs font-bold ${
+                        r.stock.Quality >= 0.75
+                          ? "bg-emerald-100 text-emerald-800"
+                          : r.stock.Quality > 0
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-gray-100 text-gray-500"
+                      }`}>
+                        {(r.stock.Quality * 100).toFixed(1)}%
+                      </span>
+                    ) : <span className="text-xs text-gray-300">—</span>}
                   </td>
                   <td className="px-3 py-2 text-center">
                     {r.stock && typeof r.stock.QAV === "number" && r.stock.QAV >= 10
