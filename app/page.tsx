@@ -1149,9 +1149,17 @@ export default function HomePage() {
     const byCode = new Map((allStocks ?? []).map((st) => [st.Code, st]));
     return holdings.codes.filter((code) => {
       if (isHoldingAlert(trendlineData?.data?.[code]?.sentiment)) return true;
-      return byCode.get(code)?.S_sentiment_long === -1;
+      if (byCode.get(code)?.S_sentiment_long === -1) return true;
+      // The commodity gate, same as the panel computes it — a holding absent
+      // from the CSV has no scored row to carry it, so without this the badge
+      // undercounts exactly the holdings the list exists to watch.
+      const ck = STOCK_COMMODITY[code];
+      if (!ck || !commodityData) return false;
+      const def = COMMODITIES.find((c) => c.key === ck);
+      const advisory = !!def?.proxy && commodityData.manual[ck] === undefined;
+      return effectiveCommoditySentiment(commodityData, ck) === "Bearish" && !advisory;
     }).length;
-  }, [holdings.codes, trendlineData, allStocks]);
+  }, [holdings.codes, trendlineData, allStocks, commodityData]);
 
   /** Set or clear a manual 3PTL sentiment override for one stock. */
   const saveSentimentOverride = useCallback((code: string, value: SentimentOverride | null) => {
