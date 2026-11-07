@@ -18,8 +18,21 @@
  *
  * `since` is derived by walking back through the daily series to the first date
  * carrying the current value, which is the effective date of the last change
- * (30-Sep-2026 for 4.60). The response is cached at the edge for six hours;
- * the RBA publishes once a day and the rate changes at most monthly.
+ * (04-Nov-2026 for 4.85). The response is cached at the edge for an hour; the
+ * RBA publishes once a day and the rate changes at most monthly.
+ *
+ * CACHING, 2026-11-07 — why the directives look redundant. Doug reported the
+ * rate "isn't updating correctly" while this route was returning the right
+ * number. Vercel's edge CONSUMES `s-maxage` and `stale-while-revalidate` and
+ * strips them from the response it sends on, so a header of
+ * `public, s-maxage=21600, stale-while-revalidate=86400` reached the browser as
+ * a bare `public` — no `max-age`, no `Expires`, no `Last-Modified`. A browser
+ * then falls back to HEURISTIC freshness and may serve its own stored copy
+ * without revalidating, indefinitely in practice. The edge was current and the
+ * browser was not. `max-age=0, must-revalidate` is the half that survives to
+ * the client and forces it to ask every time; the other two directives govern
+ * the edge, where 1h keeps a rate change at most an hour behind and the 6h
+ * stale window covers an RBA outage without reaching for the fallback.
  */
 import { DEFAULT_CASH_RATE } from "@/lib/qav-scoring";
 
@@ -86,7 +99,8 @@ function parse(csv: string): Parsed | null {
 
 export async function GET() {
   const headers = {
-    "Cache-Control": "public, s-maxage=21600, stale-while-revalidate=86400",
+    "Cache-Control":
+      "public, max-age=0, must-revalidate, s-maxage=3600, stale-while-revalidate=21600",
   };
   // `stale: true` means the caller is looking at the compiled-in fallback and
   // should say so rather than present it as the live rate.
