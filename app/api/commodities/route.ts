@@ -35,6 +35,7 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { classifyV3, V3Bar } from "@/lib/trendline-v3";
+import { monthOf } from "@/lib/exchange-months";
 import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY, PINK_SHEET_SERIES } from "@/lib/commodities";
 
 export const dynamic = "force-dynamic";
@@ -147,12 +148,12 @@ async function yahooMonthly(symbol: string): Promise<V3Bar[]> {
     const closes = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]
                     ?.close as number[];
     if (!ts || !closes) return [];
+    const off = ((r.meta as Record<string, unknown>)?.gmtoffset as number) ?? 0;
     const byMonth = new Map<string, number>();
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
-      const d = new Date(ts[i] * 1000);
-      byMonth.set(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`, c);
+      byMonth.set(monthOf(ts[i], off), c);
     }
     const have = Array.from(byMonth.keys()).sort();
     if (have.length < 24) return [];

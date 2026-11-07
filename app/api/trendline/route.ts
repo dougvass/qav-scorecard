@@ -30,6 +30,7 @@
  * GET  /api/trendline?code=FEX              — debug single ticker
  */
 import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY } from "@/lib/commodities";
+import { monthOrdinal } from "@/lib/exchange-months";
 
 export const runtime = "edge";
 
@@ -267,6 +268,7 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
     const ts = result.timestamp as number[];
     const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
     if (!ts || !closes) return empty;
+    const off = ((result.meta as Record<string, unknown>)?.gmtoffset as number) ?? 0;
 
     // First pass: latest valid close and the calendar month it falls in.
     let price: number | null = null;
@@ -275,8 +277,7 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
       price = c;
-      const d = new Date(ts[i] * 1000);
-      priceYM = d.getUTCFullYear() * 12 + d.getUTCMonth();
+      priceYM = monthOrdinal(ts[i], off);
     }
     // Second pass: prevMonthClose = last close of the month BEFORE the latest
     // price's month — NOT before *today's* month. At the start of a new month,
@@ -290,8 +291,7 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
-      const d = new Date(ts[i] * 1000);
-      if (d.getUTCFullYear() * 12 + d.getUTCMonth() < priceYM) prevMonthClose = c;
+      if (monthOrdinal(ts[i], off) < priceYM) prevMonthClose = c;
     }
     return { price, prevMonthClose };
   } catch { return empty; }

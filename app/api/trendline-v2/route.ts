@@ -14,6 +14,7 @@
  * output is the algorithm and never the data.
  */
 import { classifyV2, V2Bar, monthFraction } from "@/lib/trendline-v2";
+import { monthOf, currentMonth } from "@/lib/exchange-months";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,7 @@ async function fetchMonthly(code: string): Promise<V2Bar[]> {
     const r = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
     if (!r) return [];
     const ts = r.timestamp as number[];
+    const off = ((r.meta as Record<string, unknown>)?.gmtoffset as number) ?? 0;
     const q = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0];
     const closes = q?.close as number[];
     if (!ts || !closes) return [];
@@ -48,8 +50,7 @@ async function fetchMonthly(code: string): Promise<V2Bar[]> {
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
-      const d = new Date(ts[i] * 1000);
-      out.push({ date: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`, close: c });
+      out.push({ date: monthOf(ts[i], off), close: c });
     }
     // Yahoo can repeat the current month; keep the last close per calendar month.
     const byMonth = new Map<string, V2Bar>();
@@ -72,15 +73,17 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
     const ts = r.timestamp as number[];
     const closes = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as number[];
     if (!ts || !closes) return empty;
-    const now = new Date();
-    const cy = now.getUTCFullYear(), cm = now.getUTCMonth();
+    const off = ((r.meta as Record<string, unknown>)?.gmtoffset as number) ?? 0;
+    const cur = currentMonth();
     let price: number | null = null, prevMonthClose: number | null = null;
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
       if (c == null || isNaN(c) || c <= 0) continue;
       price = c;
-      const d = new Date(ts[i] * 1000);
-      if (d.getUTCFullYear() < cy || (d.getUTCFullYear() === cy && d.getUTCMonth() < cm)) prevMonthClose = c;
+      // The LAST session of a previous month, in the exchange's calendar — the
+      // first session of the current month is 00:00 Sydney, which is still the
+      // month before in UTC, so a UTC test took it as last month's close.
+      if (monthOf(ts[i], off) < cur) prevMonthClose = c;
     }
     return { price, prevMonthClose };
   } catch { return empty; }
