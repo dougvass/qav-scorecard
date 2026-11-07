@@ -65,6 +65,8 @@
  * "date became sell" without revisiting this.
  */
 
+import { currentMonth } from "./exchange-months";
+
 export interface V3Bar { date: string; close: number }
 
 export type V3Anchor = { date: string; close: number };
@@ -94,8 +96,11 @@ const EPS = 1e-9;
  * `now` is injectable so tests do not depend on the clock.
  */
 export function window5y(bars: V3Bar[], now?: Date): V3Bar[] {
-  const d = now ?? new Date();
-  const cur = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  // Bars carry EXCHANGE months (see lib/exchange-months.ts), so "the current,
+  // incomplete month" has to be read on the same clock. Off UTC, for the first
+  // eleven hours of a Sydney month the just-completed month would still look
+  // current and be stripped, leaving the series a month short.
+  const cur = currentMonth(now);
   let b = bars.filter((x) => x.date < cur);
   if (b.length === 0) b = bars.slice();
   if (b.length === 0) return [];
@@ -236,31 +241,30 @@ export function buyLine(
   // the line; off its own price it is 8.66% away and is correctly excluded,
   // leaving H1 2022-04 5.00 — the H1 he confirmed.
   //
-  // And a flat top is a SHELF: price has to have stayed up there. The price
-  // test alone pairs highs that are nothing of the kind — KLS's 2022-03 7.825
-  // with 2023-05 7.260, 7.78% apart but separated by 14 months and a fall to
-  // 4.608, FORTY-ONE PER CENT below the high; ASX's 2021-11 92.90 with
-  // 2022-06 88.26 across a fall to 80.80. Taking the most recent of such a
-  // "band" gave KLS a -0.126/mo ray decaying to 2.09 (Buy) where Doug reads a
-  // 6.136 line (Watch), and moved ASX's H1 off the 92.90 he draws from.
+  // The flat top is tested PEAK BY PEAK, against the NEXT peak only. Doug,
+  // 2026-11-07: "There should be no dip rule between flat tops. The flat top
+  // rule simply tests the 8% or greater differential between H1 and H2. If it
+  // fails then the walk continues. It doesn't necessarily make H2 become the
+  // next H1, you should just keep walking through the peaks and testing."
   //
-  // So a peak joins only if nothing between it and the top dipped more than
-  // the same 8% BELOW THE TOP. Measuring off the top rather than off the lower
-  // of the two peaks is what makes it agree with him on both charts.
+  // So: start at the highest peak and step forward while the next peak is
+  // within 8% — a flat top may run several bars. The moment a peak is 8% or
+  // more below, the flat top has ended, H1 stays put, and that peak is just an
+  // H2 candidate like any other.
   //
-  // The Bible's flat-top wording is explicit that TIME is not the test — "it
-  // doesn't matter how far apart they are temporally" — so this adds no
-  // distance rule, only the condition that price held the level.
-  const shelfFloor = c[top] * (1 - SEP);
-  const heldTheLevel = (j: number): boolean => {
-    const lo = Math.min(j, top), hi = Math.max(j, top);
-    for (let k = lo + 1; k < hi; k++) if (c[k] < shelfFloor) return false;
-    return true;
-  };
+  // Scanning the WHOLE window for the most recent peak in the band, which is
+  // what this did before, reached across unrelated structure: it paired KLS's
+  // 7.825 with a 7.260 fourteen months and a 41% drawdown later. A dip test
+  // was then bolted on to suppress that, and the dip test is what pinned REG's
+  // H1 to its 8.37 all-time high and left it reading Buy at 4.92. Stepping one
+  // peak at a time needs no such patch: KLS's next peak is 6.47, 21% down, so
+  // its flat top ends immediately and H1 stays on the high, while REG steps
+  // 8.37 -> 7.91 (5.8%) and stops at the next, 6.95.
   let h1 = top;
-  for (let i = 0; i < avail.length; i++) {
-    const j = avail[i];
-    if (c[top] < c[j] * (1 + SEP) && j > h1 && heldTheLevel(j)) h1 = j;
+  for (;;) {
+    const nxt = avail.find((i) => i > h1);
+    if (nxt === undefined || !(c[h1] < c[nxt] * (1 + SEP))) break;
+    h1 = nxt;
   }
 
   // Rule 8: the LATEST qualifying point. The earliest gave FRI H2 2024-09 and a
