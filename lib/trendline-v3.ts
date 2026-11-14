@@ -279,25 +279,53 @@ export function buyLine(
   // L2 never is. This lifted the anchors he has confirmed from 14/16 to 16/16
   // and his qualified verdicts to 6/6, with his 15 unchanged at 15/15.
   const lastH2 = Math.min(upto, c.length - 1);
-  for (let h2 = lastH2 - 1; h2 > h1; h2--) {
-    if (c[h1] < c[h2] * (1 + SEP)) continue;
-    const g = (c[h2] - c[h1]) / (h2 - h1);
-    let over = false;
-    for (let k = h1 + 1; k < h2; k++) {
-      if (c[k] > c[h1] + g * (k - h1) + EPS) { over = true; break; }
+  const search = (from: number): [number, number, number | null] | null => {
+    for (let h2 = lastH2 - 1; h2 > from; h2--) {
+      if (c[from] < c[h2] * (1 + SEP)) continue;
+      const g = (c[h2] - c[from]) / (h2 - from);
+      let over = false;
+      for (let k = from + 1; k < h2; k++) {
+        if (c[k] > c[from] + g * (k - from) + EPS) { over = true; break; }
+      }
+      if (over) continue;
+      if (aboveAt != null) {
+        if (h2 >= aboveAt) continue;
+        if (c[aboveAt] >= c[from] + g * (aboveAt - from)) continue;
+      }
+      let cut: number | null = null;
+      for (let k = h2 + 1; k < c.length; k++) {
+        if (c[k] > c[from] + g * (k - from)) { cut = k; break; }
+      }
+      return [from, h2, cut];
     }
-    if (over) continue;
-    if (aboveAt != null) {
-      if (h2 >= aboveAt) continue;
-      if (c[aboveAt] >= c[h1] + g * (aboveAt - h1)) continue;
-    }
-    let cut: number | null = null;
-    for (let k = h2 + 1; k < c.length; k++) {
-      if (c[k] > c[h1] + g * (k - h1)) { cut = k; break; }
-    }
-    return [h1, h2, cut];
+    return null;
+  };
+
+  // H1 STEPS OFF THE FIRST BAR OF A FLAT TOP when nothing can be drawn from it.
+  //
+  // LNAS, Doug 2026-11-15. Its top is two bars, 2021-11 14.60 then 2021-12
+  // 14.53. The second is not a pivot peak — it is lower than the bar before —
+  // so the peak-by-peak step above never reaches it and H1 stayed on 14.60.
+  // From there the 14.53 bar sits two cents ABOVE the ray to the 2025-01 peak,
+  // a backwards cut, and so does every H2 before 2025-07: no buy line could be
+  // drawn for three and a half years. His line starts on the second bar and
+  // runs through 2025-01, which price crossed in 2025-06 — "the H2 in Jan25 in
+  // real time is correct".
+  //
+  // This is the buy-line mirror of his sell-line rule, "we would only advance
+  // L1 if there is a backwards cut from L2 to L1": only when NO H2 is drawable,
+  // and only while the next bar is still part of the flat top — within the
+  // same 8% of the H1 the peaks chose. Unrestricted, it walks H1 down a slow
+  // decline and moved half as many readings again when measured.
+  let found = search(h1);
+  let from = h1;
+  while (found == null) {
+    const nxt = from + 1;
+    if (nxt >= lastH2 || !(c[h1] < c[nxt] * (1 + SEP))) break;
+    from = nxt;
+    found = search(from);
   }
-  return null;
+  return found;
 }
 
 interface WalkOut {
@@ -429,7 +457,29 @@ export function walk(
       }
       const b = buyLine(c, pk, t, usable ? t : null);
       if (b != null) buy = [b[0], b[1]];
-    } else {
+    } else if (!confirmedPeak(c, buy[1])) {
+      // HOLDING, and H2 is still a provisional non-peak: it advances freely to
+      // the latest point that works — his "in real time H2 2026-04 0.225 would
+      // have been valid" on HZN — which is how a peak comes to hold the slot.
+      //
+      // Once H2 IS a confirmed peak the line is LOCKED for as long as the stock
+      // is held: this branch is skipped. Doug on LNAS, 2026-11-15: "even though
+      // a high peak is made shortly after in Jul25 we would not advance H2 as
+      // there is no reason to do so. The stock is above the buy line and
+      // remains there until it crosses the sell." And on HZN, 2026-10-08: "once
+      // it was confirmed as a peak and the stock stayed above the buy line it
+      // is locked in as the current buy line with no reason to change."
+      //
+      // This REPLACES the 2026-10-08 reading that a confirmed peak "gives way
+      // only to a HIGHER peak", which rested on HMY: he had asked for its line
+      // through the later, higher 2025-10 peak, but at a time he believed HMY
+      // had sold. It had not — he corrected its sell line the same week — and
+      // on 2026-11-15 he ruled: "Yes HMY is a Josephine." A line is redrawn
+      // when a stock is OUT and looking for its way back in, not while it is in.
+      //
+      // That older rule also let H2 jump BACKWARDS to an earlier, higher peak,
+      // because the scan below runs over every candidate; a good share of the
+      // buy lines "decayed to zero" were made that way.
       const h1f: number = buy[0];
       let h2f = -1;
       for (let cand = Math.min(t, c.length - 1) - 1; cand > h1f; cand--) {
@@ -440,27 +490,6 @@ export function walk(
           if (c[k] > c[h1f] + g * (k - h1f) + EPS) { over = true; break; }
         }
         if (over) continue;
-        // Doug, 2026-10-08: once H2 is a confirmed peak the line is "locked in
-        // ... as long as it didn't make another peak from which H2 could move
-        // without cutbacks to H1". So a peak gives way ONLY to a HIGHER peak.
-        //
-        //   HMY  2025-03 0.635 -> 2025-09 0.940   higher, so it walks on
-        //   FRI  2025-08 0.885 -> 2025-10 0.890   higher, so it walks on
-        //   HZN  2026-08 0.220 vs 2026-06 0.220   EQUAL, so 2026-06 stands
-        //
-        // While H2 is still a provisional NON-peak it advances freely — his
-        // "in real time H2 2026-04 0.225 would have been valid" — which is how
-        // a peak comes to hold the slot in the first place.
-        //
-        // This is rule 8 restated as the walk he describes: "None of these
-        // calls should be made on earliest or latest valid, its a walk through
-        // process just like for the sell line." Freezing H2 leaves old
-        // declining lines to decay away, taking buy lines at zero from 23 of
-        // 326 to 74 — Doug ruled that correct: a line broken long ago is not
-        // resistance, and sliding H2 forward to keep one just above price is
-        // the "fudged line" he rejected on gold.
-        if (confirmedPeak(c, buy[1]) &&
-            !(confirmedPeak(c, cand) && c[cand] > c[buy[1]])) continue;
         h2f = cand;
         break;
       }
