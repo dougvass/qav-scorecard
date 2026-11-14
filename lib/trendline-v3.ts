@@ -558,9 +558,9 @@ export function walk(
     // Whether the stock was HELD coming into this month. A holding is what the
     // safety net is for, and it is the start-of-month position that a sell
     // closes, so every test below reads this rather than `state`.
-    const holding = state === "long";
-    let broke = false;    // did this month's close break the sell line?
-    let sold = false;     // was a holding sold this month?
+    const holding: boolean = state === "long";
+    let broke: boolean = false;    // did this month's close break the sell line?
+    let sold: boolean = false;     // was a holding sold this month?
 
     if (sell == null) {
       sell = sellLine(c, null, null, advanceFirst, t);
@@ -576,14 +576,14 @@ export function walk(
         if (sell != null) prov = 1;
       }
       if (sell == null && holding && NET) {
-        const nl = netLine(c, t);
+        const nl: [number, number] | null = netLine(c, t);
         if (nl != null) {
           sell = nl;
           isNet = true;
           prov = 2;
         } else {
           // Held, nothing drawable, and a new low: a falling knife.
-          let lowest = c[1];
+          let lowest: number = c[1];
           for (let i = 1; i < t; i++) if (c[i] < lowest) lowest = c[i];
           if (c[t] < lowest) {
             events.push({ kind: "SELL", date: dt[t] });
@@ -600,7 +600,7 @@ export function walk(
       // Feb-24 -> Apr-24 gives way in Jan-25 to Apr-24 -> Dec-24, the line he
       // names, which then breaks in Mar-25.
       let better: [number, number] | null = sellLine(c, null, null, advanceFirst, t, true);
-      let lvl = 0;
+      let lvl: number = 0;
       if (better == null && prov === 2) {
         better = sellLineBand(c, t);
         lvl = 1;
@@ -654,7 +654,7 @@ export function walk(
             // still forming, and the close of 61.27 under the net — "another
             // sell line L1 Apr26 and L2 Sep26 created a sell".
             if (V3_RULES.netWhileForming && holding && NET && !isNet) {
-              const nl = netLine(c, t);
+              const nl: [number, number] | null = netLine(c, t);
               if (nl != null && c[t] < rayAt(c, nl[0], nl[1], t)) {
                 events.push({ kind: "SELL", date: dt[t] });
                 state = "out";
@@ -664,9 +664,11 @@ export function walk(
             let nxt: [number, number] | null;
             if (isNet) {
               // A net re-anchors without the 8% as well.
-              const g = (c[t] - c[l1]) / (t - l1);
-              const tol = 1e-6 * c[l1];
-              let ok = c[t] > c[l1] + tol;
+              // Annotated for the same reason l1 and l2 are: inferred, these
+              // sit in the cycle through `sell` that tsc rejects.
+              const g: number = (c[t] - c[l1]) / (t - l1);
+              const tol: number = 1e-6 * c[l1];
+              let ok: boolean = c[t] > c[l1] + tol;
               for (let k = l1 + 1; k < t && ok; k++) {
                 if (c[k] < c[l1] + g * (k - l1) - tol) ok = false;
               }
@@ -689,7 +691,7 @@ export function walk(
               isNet = false;
               prov = 0;
               if (holding && NET && !sold) {
-                const nl = netLine(c, t);
+                const nl: [number, number] | null = netLine(c, t);
                 if (nl != null && c[t] > rayAt(c, nl[0], nl[1], t)) {
                   sell = nl;
                   confirmed = true;
@@ -723,7 +725,7 @@ export function walk(
 
     // A holding has just been sold: settle which buy line it now faces.
     if (sold && V3_RULES.redrawAtSell) {
-      const rd = redrawAtSell(c, pk, t, buy, floor, since);
+      const rd: { buy: [number, number] | null; floor: number } = redrawAtSell(c, pk, t, buy, floor, since);
       buy = rd.buy;
       floor = rd.floor;
     }
@@ -824,7 +826,7 @@ export function walk(
       // buy, where the ray is 0.574 over a sell line at 0.563.
       let over = true;
       if (sell != null) over = bv > rayAt(c, sell[0], sell[1], t);
-      let ok = t > h2 && c[t] > bv && over;
+      let ok: boolean = t > h2 && c[t] > bv && over;
       // In a FALLING KNIFE — no sell line to stand over — only a line through a
       // real peak counts. A provisional close on the way down is crossed by
       // every bounce: MTS "bought" in Oct-22 over a line from the top through
