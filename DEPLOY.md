@@ -68,6 +68,28 @@ npm run dev
 
 ---
 
+## Day-to-day: getting a CSV in
+
+Three ways, all ending in the same place:
+
+1. **Straight from Stock Doctor (no download).** On the scorecard, open
+   *Stock Doctor bookmark* and drag **QAV ← Stock Doctor** to the bookmarks
+   bar. Then, signed in to Stock Doctor, open *Tools → Stock Filter* and click
+   it. It loads the saved filter `2. QAV_checklist`, fetches the export and
+   hands it to the scorecard in a new tab — about three seconds. It signs
+   nobody in; if the session has expired it says so. See `lib/sd-bridge.ts`.
+2. **Drop the file**, as before.
+3. **Do nothing.** The last CSV is remembered in the browser
+   (`lib/csv-storage.ts`), so the site reopens on it; the "Loaded …" line says
+   when it was loaded and turns amber once it is a day old. *New CSV* forgets it.
+
+However it arrives, every check that has not already run **today** then starts
+by itself — 3PTL, Commodities, MorningStar, Buybacks. Red flags stay on their
+button (each stock is an ASX feed plus a PDF that can run to 18MB).
+
+Everything is stored in the browser, not on the server: the CSV is Stock
+Doctor subscriber data and this site has no login.
+
 ## What the scoring covers
 
 | Column | Phase | Description |

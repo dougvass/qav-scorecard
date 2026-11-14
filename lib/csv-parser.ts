@@ -2,25 +2,40 @@
 import { StockRow } from "./types";
 
 /**
+ * Bytes of a Stock Doctor export -> text.
+ *
+ * SD exports are cp1252 (Windows-1252), which matters for exactly one header:
+ * the cent sign in "EPS (¢) Fcst yr1". Decoded as UTF-8 that column's name is
+ * mangled and IV2 silently goes blank for every stock.
+ */
+export function decodeStockDoctorCsv(buffer: ArrayBuffer): string {
+  try {
+    return new TextDecoder("windows-1252").decode(buffer);
+  } catch {
+    return new TextDecoder("utf-8").decode(buffer);
+  }
+}
+
+/**
  * Parse a Stock Doctor CSV export into StockRow[].
  *
  * SD exports:
- *  - ~35 lines of preamble before the "Code,Name,…" header
+ *  - a preamble before the "Code,Name,…" header (the timestamp and the filter's
+ *    criteria)
  *  - cp1252 (Windows-1252) encoded
  *  - Numbers use comma as thousands separator  (e.g. "1,234,567")
  *  - Some numeric columns arrive as strings like "1,234.56"
  */
 export async function parseStockDoctorCSV(file: File): Promise<StockRow[]> {
-  const buffer = await file.arrayBuffer();
+  return parseStockDoctorText(decodeStockDoctorCsv(await file.arrayBuffer()));
+}
 
-  // Decode with Windows-1252 (handles the ¢ character in "EPS (¢) Fcst yr1")
-  let text: string;
-  try {
-    text = new TextDecoder("windows-1252").decode(buffer);
-  } catch {
-    text = new TextDecoder("utf-8").decode(buffer);
-  }
-
+/**
+ * The same parse from already-decoded text. Split out so a CSV can arrive
+ * without being a File: restored from the browser's own copy of the last load,
+ * or handed over directly from the Stock Doctor tab (see lib/sd-bridge.ts).
+ */
+export function parseStockDoctorText(text: string): StockRow[] {
   const lines = text.split(/\r?\n/);
 
   // Find the header row that starts with "Code,Name"

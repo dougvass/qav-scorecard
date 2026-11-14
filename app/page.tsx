@@ -2,7 +2,14 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
-import { parseStockDoctorCSV } from "@/lib/csv-parser";
+import { parseStockDoctorText, decodeStockDoctorCsv } from "@/lib/csv-parser";
+import {
+  CSV_STORAGE_KEY, StoredCsv, loadStoredCsv, saveStoredCsv, clearStoredCsv,
+  formatLoadedAt, daysSince,
+} from "@/lib/csv-storage";
+import {
+  SD_ORIGIN, SD_FILTER_NAME, BridgeAckMessage, isBridgeCsvMessage, bookmarkletHref,
+} from "@/lib/sd-bridge";
 import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS, scorePeHiLoLive } from "@/lib/phase2-storage";
 import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
@@ -543,6 +550,61 @@ function BuybackPanel({
   );
 }
 
+/**
+ * The "send it straight from Stock Doctor" bookmarklet, as something to drag to
+ * the bookmarks bar. See lib/sd-bridge.ts for what it does and why.
+ *
+ * The href is set through the DOM rather than as a prop: React refuses to
+ * render a `javascript:` URL it is handed. Clicking it HERE does nothing — it
+ * only means anything on Stock Doctor's Stock Filter page — so the click is
+ * swallowed and the hint is shown instead.
+ */
+function SdBookmarklet({ compact }: { compact?: boolean }) {
+  const ref = useRef<HTMLAnchorElement>(null);
+  const [open, setOpen] = useState(!compact);
+  const [nudged, setNudged] = useState(false);
+  useEffect(() => {
+    if (open) ref.current?.setAttribute("href", bookmarkletHref(window.location.origin));
+  }, [open]);
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="ml-auto text-xs text-indigo-500 hover:text-indigo-700 underline"
+        title="Load the CSV straight from Stock Doctor, with no download"
+      >
+        Stock Doctor bookmark
+      </button>
+    );
+  }
+  return (
+    <div className={`${compact ? "ml-auto" : "w-full max-w-2xl"} rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900`}>
+      <p>
+        <strong>Skip the download.</strong> Drag{" "}
+        <a
+          ref={ref}
+          onClick={(e) => { e.preventDefault(); setNudged(true); }}
+          className="inline-block cursor-grab rounded-md bg-indigo-600 px-2 py-0.5 font-semibold text-white no-underline hover:bg-indigo-700"
+          title="Drag me to your bookmarks bar"
+        >
+          QAV ← Stock Doctor
+        </a>{" "}
+        to your bookmarks bar. Then, on Stock Doctor&apos;s <em>Stock Filter</em> page, click it: it runs{" "}
+        <strong>{SD_FILTER_NAME}</strong>, fetches the export and loads it here — no file, no upload.
+        {compact && (
+          <button onClick={() => setOpen(false)} className="ml-2 underline text-indigo-500 hover:text-indigo-700">hide</button>
+        )}
+      </p>
+      {nudged && (
+        <p className="mt-1 text-xs text-indigo-600">
+          It does nothing on this page — drag it to the bookmarks bar and click it on Stock Doctor.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
@@ -562,6 +624,9 @@ export default function HomePage() {
   const [msLoading, setMsLoading] = useState(false);
   const [msLoaded, setMsLoaded] = useState(false);
   const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
+  /** How many stocks actually came back with a star rating. Zero means the
+   *  fetch "worked" but MorningStar supplied nothing — see api/morningstar. */
+  const [msRated, setMsRated] = useState(0);
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
@@ -583,6 +648,12 @@ export default function HomePage() {
   const [buybackProgress, setBuybackProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  /** When and how the CSV on screen arrived. `remembered` = restored from this
+   *  browser's copy of the last load rather than loaded just now. */
+  const [csvMeta, setCsvMeta] =
+    useState<{ loadedAt: string; source: StoredCsv["source"]; remembered: boolean } | null>(null);
+  /** Set by the auto-run so a commodity refresh does not pop its panel open. */
+  const commodityQuiet = useRef(false);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
   /** Selected sentiment states; empty means no filter. Any combination works. */
@@ -851,20 +922,93 @@ export default function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawRows, cashRate, iv1Rate, borrowingRate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
 
+  /**
+   * Load a Stock Doctor CSV from its decoded text, however it arrived — a file
+   * dropped by hand, this browser's remembered copy, or the Stock Doctor tab
+   * (lib/sd-bridge.ts). Returns the row count; throws if it is not an export.
+   *
+   * Unless told otherwise it also REMEMBERS the CSV (lib/csv-storage.ts), so
+   * the next visit opens on these numbers instead of the upload screen.
+   */
+  const ingestCsv = useCallback((
+    text: string,
+    name: string,
+    source: StoredCsv["source"],
+    opts?: { loadedAt?: string; persist?: boolean },
+  ): number => {
+    const rows = parseStockDoctorText(text);
+    if (rows.length === 0) throw new Error("No stock rows found in CSV.");
+    const loadedAt = opts?.loadedAt ?? new Date().toISOString();
+    const persist = opts?.persist !== false;
+    setError(null);
+    setRawRows(rows);
+    setFileName(name);
+    setCsvMeta({ loadedAt, source, remembered: !persist });
+    if (persist) saveStoredCsv({ name, loadedAt, source, text });
+    return rows.length;
+  }, []);
+
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
     setError(null);
-    setFileName(file.name);
     try {
-      const rows = await parseStockDoctorCSV(file);
-      if (rows.length === 0) throw new Error("No stock rows found in CSV.");
-      setRawRows(rows);
+      ingestCsv(decodeStockDoctorCsv(await file.arrayBuffer()), file.name, "upload");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse CSV.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ingestCsv]);
+
+  // Reopen on the last CSV this browser loaded, and follow another tab if it
+  // loads a newer one — the copy in localStorage is the single source of truth.
+  useEffect(() => {
+    const restore = () => {
+      const c = loadStoredCsv();
+      if (!c) return;
+      try {
+        ingestCsv(c.text, c.name, c.source, { loadedAt: c.loadedAt, persist: false });
+      } catch { /* a remembered CSV that no longer parses is skipped, not fatal */ }
+    };
+    restore();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === CSV_STORAGE_KEY && e.newValue) restore();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [ingestCsv]);
+
+  // The Stock Doctor bridge: accept a CSV posted by the bookmarklet running in
+  // a Stock Doctor tab. ONLY that origin is listened to, and the payload is
+  // only ever parsed as a CSV. The sender repeats until it is acknowledged
+  // (this listener does not exist until the page has hydrated), so a repeat of
+  // the CSV just loaded is acknowledged again without being loaded twice.
+  const lastBridge = useRef<{ csv: string; rows: number } | null>(null);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== SD_ORIGIN || !isBridgeCsvMessage(e.data)) return;
+      let rows: number;
+      if (lastBridge.current && lastBridge.current.csv === e.data.csv) {
+        rows = lastBridge.current.rows;
+      } else {
+        try {
+          rows = ingestCsv(e.data.csv, e.data.name, "stockdoctor");
+        } catch (err) {
+          const why = err instanceof Error ? err.message : "the export could not be read";
+          setError(`Stock Doctor export: ${why}`);
+          // Tell the sender why, so its banner does not sit waiting.
+          const nack: BridgeAckMessage = { type: "qav-csv-ack", rows: 0, error: why };
+          try { (e.source as Window | null)?.postMessage(nack, e.origin); } catch { /* sender gone */ }
+          return;
+        }
+        lastBridge.current = { csv: e.data.csv, rows };
+      }
+      const ack: BridgeAckMessage = { type: "qav-csv-ack", rows };
+      try { (e.source as Window | null)?.postMessage(ack, e.origin); } catch { /* sender gone */ }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [ingestCsv]);
 
   const loadMorningstar = useCallback(async () => {
     if (!rawRows) return;
@@ -875,6 +1019,7 @@ export default function HomePage() {
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const ratings: MSRatings = await res.json();
       setMsRatings(ratings);
+      setMsRated(Object.values(ratings).filter((r) => r.starRating != null).length);
       setMsLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? `MorningStar fetch failed: ${e.message}` : "Failed to load MorningStar ratings.");
@@ -1069,10 +1214,12 @@ export default function HomePage() {
       };
       localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
       setCommodityData(stored);
-      setShowCommodityPanel(true);
+      // A refresh the auto-run started should not pop the panel open.
+      if (!commodityQuiet.current) setShowCommodityPanel(true);
     } catch (e) {
       setError(e instanceof Error ? `Commodity check: ${e.message}` : "Commodity check failed.");
     } finally {
+      commodityQuiet.current = false;
       setCommodityChecking(false);
     }
   }, [commodityData]);
@@ -1299,6 +1446,75 @@ export default function HomePage() {
     return () => { cancelled = true; };
   }, []);
 
+  /**
+   * AUTO-RUN. When a CSV lands — dropped, remembered, or sent from Stock
+   * Doctor — start every check that has not already run TODAY, instead of
+   * waiting for four separate buttons to be clicked after each upload.
+   *
+   * Doug, 2026-11-14: "Can more be automated..". Each of these already stored
+   * its results with a timestamp, so "has it run today" needs nothing new.
+   *
+   *   3PTL          unless today's run already covers every code in this CSV
+   *   Commodities   unless refreshed today (quietly — the panel stays shut)
+   *   MorningStar   once per visit; the ratings are not kept between visits
+   *   Buybacks      unless scanned today — and NOT when the stored list was
+   *                 typed in by hand, which the scan would overwrite. The two
+   *                 are told apart by shape: the scan stores every code it
+   *                 checked, active or not; the manual panel stores only the
+   *                 active ones.
+   *
+   * Red flags are deliberately left on their button: each stock is an ASX feed
+   * plus an Appendix 4E PDF that can run to 18MB, over a set he chooses.
+   *
+   * The timestamps are read straight from localStorage, not from state, so the
+   * decision does not depend on which of this page's effects happened to run
+   * first on mount.
+   *
+   * Once per CSV: `autoRanFor` holds the row array it last ran for, so a
+   * re-score from a rate change or an override does not start it again.
+   * To switch it off, return early here.
+   */
+  const autoRanFor = useRef<StockRow[] | null>(null);
+  useEffect(() => {
+    if (!rawRows || autoRanFor.current === rawRows) return;
+    autoRanFor.current = rawRows;
+
+    const today = todayIso();
+    const ranToday = (iso: string | null | undefined): boolean => {
+      if (!iso) return false;
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return false;
+      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      return local === today;
+    };
+    const read = (key: string): unknown => {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    };
+
+    const tl = read(TRENDLINE_STORAGE_KEY) as StoredTrendlines | null;
+    const covered = !!tl && ranToday(tl.timestamp) && rawRows.every((r) => !!tl.data?.[r.Code]);
+    if (!covered) void calculateTrendlines();
+
+    const com = read(COMMODITY_STORAGE_KEY) as StoredCommodities | null;
+    if (!ranToday(com?.timestamp)) {
+      commodityQuiet.current = true;
+      void checkCommodities();
+    }
+
+    if (!msLoaded) void loadMorningstar();
+
+    const bb = read(BUYBACK_STORAGE_KEY) as StoredBuybacks | null;
+    const entries = bb ? Object.values(bb.data ?? {}) : [];
+    const typedByHand = entries.length > 0 && entries.every((e) => e.active);
+    if (!typedByHand && !ranToday(bb?.timestamp)) void checkBuybacks();
+  // Deliberately keyed on the CSV alone. The four callbacks are rebuilt on
+  // almost every render; listing them would re-run this on each one.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawRows]);
+
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
@@ -1307,6 +1523,10 @@ export default function HomePage() {
     setMsLoaded(false);
     setMsRatings(null);
     // Phase 2 + buybacks are stored in localStorage — persist across CSV uploads intentionally
+    // "New CSV" also forgets the remembered one; otherwise the next visit
+    // would reopen on the CSV he just chose to replace.
+    clearStoredCsv();
+    setCsvMeta(null);
     setFileName(null);
     setError(null);
   }, []);
@@ -1386,10 +1606,23 @@ export default function HomePage() {
                     {msLoading ? "Loading MS ratings…" : "Load MS Ratings"}
                   </button>
                 )}
-                {msLoaded && (
+                {msLoaded && msRated > 0 && (
                   <span className="flex items-center gap-1.5 text-sm text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
                     <Star className="w-4 h-4" />
-                    MorningStar loaded
+                    MorningStar · {msRated} rated
+                  </span>
+                )}
+                {/* The fetch succeeded but carried no ratings. Saying "loaded"
+                    here was the bug: it read as a pass while the MS criterion
+                    was unscored for every stock. */}
+                {msLoaded && msRated === 0 && (
+                  <span
+                    className="flex items-center gap-1.5 text-sm text-amber-800 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200"
+                    title={"MorningStar's public screener is returning no star ratings at the moment — its API errors on that field for every stock.\n" +
+                           "So the MorningStar criterion is unscored across the board. Nothing is wrong with your CSV; it will pick up again by itself if their API recovers."}
+                  >
+                    <Star className="w-4 h-4" />
+                    MorningStar: no ratings
                   </span>
                 )}
 
@@ -1875,6 +2108,7 @@ export default function HomePage() {
               </p>
             </div>
             <UploadZone onFile={handleFile} loading={loading} />
+            <SdBookmarklet />
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl w-full text-center text-sm text-gray-500">
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <p className="font-semibold text-gray-700 mb-1">Phase 0</p>
@@ -1894,12 +2128,30 @@ export default function HomePage() {
 
         {allStocks && (
           <div className="space-y-6">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
               <RefreshCw className="w-4 h-4" />
               <span>
                 Loaded <strong className="text-gray-700">{fileName}</strong> —{" "}
                 {allStocks.length} stocks scored
+                {csvMeta && (() => {
+                  // How old the numbers on screen are. The CSV is now
+                  // remembered between visits, so "loaded just now" can no
+                  // longer be assumed — a three-day-old export looks the same
+                  // as a fresh one unless it says so.
+                  const age = daysSince(csvMeta.loadedAt);
+                  const old = age !== null && age >= 1;
+                  return (
+                    <span className={old ? "text-amber-600 font-medium" : "text-gray-400"}>
+                      {" · "}
+                      {csvMeta.source === "stockdoctor" ? "sent from Stock Doctor" : "loaded"}{" "}
+                      {formatLoadedAt(csvMeta.loadedAt)}
+                      {old && ` — ${age} day${age === 1 ? "" : "s"} old`}
+                      {csvMeta.remembered && !old && " (remembered)"}
+                    </span>
+                  );
+                })()}
               </span>
+              <SdBookmarklet compact />
             </div>
 
             <SummaryStats all={statsAll} buyList={statsBuyList} msLoaded={msLoaded} />
