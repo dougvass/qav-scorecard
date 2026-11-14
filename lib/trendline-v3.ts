@@ -948,6 +948,16 @@ export function classifyV3(
     underNet = nl != null && p < rayAt(c, nl[0], nl[1], asOf);
   }
 
+  // A CROSS OF THE BUY LINE THIS MONTH COUNTS NOW, exactly as a break of the
+  // sell line does. The walk stops at the last complete month, so a stock that
+  // is out and whose price has gone over a live buy line since then has no BUY
+  // recorded yet — and was read "sell signal in force" until the month closed
+  // (AGL at 9.08 over a buy line of 8.91 and a sell line of 8.27). Reading the
+  // sell side at the current month and the buy side a month behind would be
+  // inconsistent; before the month-label fix both were read on the in-progress
+  // bar.
+  const crossedNow = asOf === n && buyNow != null && p > buyNow;
+
   let sentiment: V3Result["sentiment"];
   let note: string;
   if (p < sellNow && (!forming || underNet)) {
@@ -959,7 +969,7 @@ export function classifyV3(
     // are not a sell nor a buy." FRI and HMY are both this case.
     sentiment = "Watch";
     note = `between the lines, ${sellNow.toFixed(3)}-${buyNow.toFixed(3)}`;
-  } else if (out.state !== "long" && !(buyNow == null || buyNow <= sellNow)) {
+  } else if (out.state !== "long" && !(buyNow == null || buyNow <= sellNow) && !crossedNow) {
     // The "out" state holds a stock out only while a LIVE buy line stands over
     // it. A ray decayed to or below the sell line — or no buy line at all — is
     // not overhead resistance. Doug, 2026-10-08: "the decayed lines are
