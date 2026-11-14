@@ -88,6 +88,19 @@ export interface V3Result {
 /** 8% separation, measured off the lower of the two prices. */
 export const SEP = 0.08;
 
+/**
+ * The two rules from Doug's LNAS walkthrough of 2026-11-15, switchable so any
+ * reading can be compared with the engine as it stood before them, on the SAME
+ * bars and the same price. Both are on; nothing in the app turns them off —
+ * `classifyV3Before` is the only caller that does, for `?compare=1`.
+ *
+ *   stepOffFlatTop       H1 moves off the first bar of a flat top when no H2
+ *                        can be drawn from it (see buyLine)
+ *   lockH2WhileHolding   once H2 is a confirmed peak the buy line is locked for
+ *                        as long as the stock is held (see the walk)
+ */
+export const V3_RULES = { stepOffFlatTop: true, lockH2WhileHolding: true };
+
 const EPS = 1e-9;
 
 /**
@@ -319,7 +332,7 @@ export function buyLine(
   // decline and moved half as many readings again when measured.
   let found = search(h1);
   let from = h1;
-  while (found == null) {
+  while (found == null && V3_RULES.stepOffFlatTop) {
     const nxt = from + 1;
     if (nxt >= lastH2 || !(c[h1] < c[nxt] * (1 + SEP))) break;
     from = nxt;
@@ -457,7 +470,7 @@ export function walk(
       }
       const b = buyLine(c, pk, t, usable ? t : null);
       if (b != null) buy = [b[0], b[1]];
-    } else if (!confirmedPeak(c, buy[1])) {
+    } else if (!V3_RULES.lockH2WhileHolding || !confirmedPeak(c, buy[1])) {
       // HOLDING, and H2 is still a provisional non-peak: it advances freely to
       // the latest point that works — his "in real time H2 2026-04 0.225 would
       // have been valid" on HZN — which is how a peak comes to hold the slot.
@@ -490,6 +503,10 @@ export function walk(
           if (c[k] > c[h1f] + g * (k - h1f) + EPS) { over = true; break; }
         }
         if (over) continue;
+        // Only with the lock switched OFF, to reproduce the engine as it was
+        // before 2026-11-15: a confirmed peak gave way only to a higher one.
+        if (!V3_RULES.lockH2WhileHolding && confirmedPeak(c, buy[1]) &&
+            !(confirmedPeak(c, cand) && c[cand] > c[buy[1]])) continue;
         h2f = cand;
         break;
       }
@@ -513,6 +530,24 @@ export function walk(
   }
 
   return { sell, buy, state, events };
+}
+
+/**
+ * The same reading by the engine as it was BEFORE the two rules above.
+ *
+ * classifyV3 is synchronous, so flipping the switches around one call cannot
+ * leak into another request: nothing else runs until it returns.
+ */
+export function classifyV3Before(bars: V3Bar[], price?: number | null, lmc?: number | null, now?: Date): V3Result {
+  const step = V3_RULES.stepOffFlatTop, lock = V3_RULES.lockH2WhileHolding;
+  V3_RULES.stepOffFlatTop = false;
+  V3_RULES.lockH2WhileHolding = false;
+  try {
+    return classifyV3(bars, price, lmc, now);
+  } finally {
+    V3_RULES.stepOffFlatTop = step;
+    V3_RULES.lockH2WhileHolding = lock;
+  }
 }
 
 /** Walk the window, then read the sentiment off the lines it ends holding. */

@@ -22,7 +22,7 @@
  * nothing called them but this route's own `?compare=1` debug mode, which went
  * with them. They are in git history if a comparison is ever wanted again.
  */
-import { classifyV3, V3Bar } from "@/lib/trendline-v3";
+import { classifyV3, classifyV3Before, V3Bar } from "@/lib/trendline-v3";
 import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY } from "@/lib/commodities";
 import { monthOf, currentMonth } from "@/lib/exchange-months";
 
@@ -109,7 +109,14 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
   } catch { return empty; }
 }
 
-async function run(code: string) {
+/** The reading as the engine gave it before the 2026-11-15 rules — same bars,
+ *  same price — for `?compare=1`. See V3_RULES in lib/trendline-v3.ts. */
+function before(bars: V3Bar[], price: number, lmc: number | null) {
+  const w = classifyV3Before(bars, price, lmc);
+  return { sentiment: w.sentiment, buy: w.buy, sell: w.sell, note: w.note, h1: w.h1, h2: w.h2 };
+}
+
+async function run(code: string, compare = false) {
   const bars = await fetchMonthly(code);
   // Under a year of monthly closes: no 3PTL can be drawn. `unreadable` tells
   // the scorecard to leave the sentiment UNSCORED rather than file the stock
@@ -119,6 +126,7 @@ async function run(code: string) {
   const price = daily.price ?? bars[bars.length - 1].close;
   const r = classifyV3(bars, price, daily.prevMonthClose);
   return {
+    ...(compare ? { was: before(bars, price, daily.prevMonthClose) } : {}),
     code, price, months: bars.length,
     lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
@@ -142,7 +150,7 @@ async function run(code: string) {
  * series the price IS the last monthly close, so the uptick test compares the
  * last two months rather than a live quote.
  */
-async function runCommodity(name: string) {
+async function runCommodity(name: string, compare = false) {
   const emb = EMBEDDED_MONTHLY[name];
   if (emb) {
     const bars: V3Bar[] = emb.bars.map(([date, close]) => ({ date, close }));
@@ -151,6 +159,7 @@ async function runCommodity(name: string) {
     const lmc = bars.length >= 2 ? bars[bars.length - 2].close : null;
     const r = classifyV3(bars, price, lmc);
     return {
+      ...(compare ? { was: before(bars, price, lmc) } : {}),
       symbol: "embedded", months: bars.length, asOf: emb.asOf,
       source: "Market Index workbook", price, lastMonthClose: lmc,
       sentiment: r.sentiment, note: r.note, sell: r.sell, buy: r.buy,
@@ -165,6 +174,7 @@ async function runCommodity(name: string) {
   const price = daily.price ?? bars[bars.length - 1].close;
   const r = classifyV3(bars, price, daily.prevMonthClose);
   return {
+    ...(compare ? { was: before(bars, price, daily.prevMonthClose) } : {}),
     symbol, months: bars.length, price, lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, note: r.note, sell: r.sell, buy: r.buy,
     l1: r.l1, l2: r.l2, h1: r.h1, h2: r.h2,
@@ -178,7 +188,8 @@ export async function GET(request: Request) {
   // gate (a stock whose underlying commodity is Bearish is not a buy).
   if (sp.get("commodities")) {
     const names = Object.keys(COMMODITY_SYMBOLS).concat(Object.keys(EMBEDDED_MONTHLY));
-    const results = await Promise.all(names.map((n) => runCommodity(n)));
+    const cmp = !!sp.get("compare");
+    const results = await Promise.all(names.map((n) => runCommodity(n, cmp)));
     const out: Record<string, unknown> = {};
     names.forEach((n, i) => { out[n] = results[i]; });
     return Response.json({ commodities: out });
@@ -187,14 +198,16 @@ export async function GET(request: Request) {
   const code = sp.get("code")?.trim().toUpperCase();
   if (!code) return Response.json({ error: "code required" }, { status: 400 });
 
-  return Response.json(await run(code));
+  return Response.json(await run(code, !!sp.get("compare")));
 }
 
 export async function POST(request: Request) {
-  const { codes } = (await request.json()) as { codes?: string[] };
+  const { codes, compare } = (await request.json()) as { codes?: string[]; compare?: boolean };
   const batch = (codes ?? []).slice(0, 25);
   if (!batch.length) return Response.json({ error: "codes required" }, { status: 400 });
-  const results = await Promise.all(batch.map((c) => run(c)));
+  // An arrow, not `batch.map(run)`: map passes the index as the second
+  // argument, which would switch `compare` on for every row but the first.
+  const results = await Promise.all(batch.map((c) => run(c, !!compare)));
   const out: Record<string, unknown> = {};
   batch.forEach((c, i) => { out[c] = results[i]; });
   return Response.json(out);
