@@ -9,6 +9,7 @@ import {
   sentimentKeyOf, isJosephineDip,
 } from "@/lib/sentiment-storage";
 import { RedFlagEntry, hasRedFlag, redFlagSummary } from "@/lib/redflags";
+import { ReportingStatus } from "@/lib/reporting";
 import { HistorySeries } from "@/lib/history-storage";
 import { QavSparkline } from "@/components/qav-sparkline";
 
@@ -33,6 +34,8 @@ interface StockTableProps {
    *  a gate — Doug's call, and the Bible treats both as things a human weighs
    *  at the buy step. See lib/redflags.ts. */
   redFlags?: Record<string, RedFlagEntry>;
+  /** Where each stock on the reporting-season hold is in its reporting cycle. */
+  reporting?: Record<string, ReportingStatus>;
 }
 
 type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield";
@@ -197,7 +200,7 @@ function SentimentBadge({
   );
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes, redFlags }: StockTableProps) {
+export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes, redFlags, reporting }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -505,14 +508,26 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                           ♻️ P2
                         </a>
                       )}
-                      {(stock as Record<string, unknown>)._staleData === 1 && (
-                        <span
-                          className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 align-middle"
-                          title={`HOLD — last reported numbers are ${((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)} months old (period ${(stock as Record<string, unknown>)._lastPeriod}). Reporting-season rule: don't buy on data older than 6 months — check Stock Doctor for fresh numbers.`}
-                        >
-                          📅 {((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)}mo
-                        </span>
-                      )}
+                      {(stock as Record<string, unknown>)._staleData === 1 && (() => {
+                        // What the ASX says about it, when the reporting check
+                        // has an answer for the period this stock is still on.
+                        const period = String((stock as Record<string, unknown>)._lastPeriod ?? "").slice(0, 10);
+                        const rep = reporting?.[stock.Code];
+                        const known = rep && rep.balanceDate === period && rep.state !== "unknown" ? rep : null;
+                        const tone = known?.state === "overdue"
+                          ? "bg-red-100 text-red-700 border-red-300"
+                          : "bg-amber-100 text-amber-700 border-amber-300";
+                        return (
+                          <span
+                            className={`ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full border align-middle cursor-help ${tone}`}
+                            title={`HOLD — last reported numbers are ${((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)} months old (period ${period}). Reporting-season rule: don't buy on data older than 6 months.${known ? `\n${known.detail}` : " Check Stock Doctor for fresh numbers."}`}
+                          >
+                            📅 {((stock as Record<string, unknown>)._dataMonthsOld as number)?.toFixed(1)}mo
+                            {known?.state === "reported" && " · on ASX"}
+                            {known?.state === "overdue" && " · overdue"}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="hidden md:table-cell px-3 py-3 text-gray-700 max-w-[220px] truncate" title={stock.Name}>
                       {stock.Name}

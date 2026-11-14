@@ -3,7 +3,14 @@
  * governance "Mill Rule" (section F). See lib/redflags.ts for both specs.
  *
  *   POST /api/redflags  { codes: [{code, balanceDate?}] | string[] }   batch ≤10
- *   GET  /api/redflags?code=CCX                                        debug one
+ *   POST /api/redflags  { codes: [...], reportingOnly: true }          batch ≤30
+ *   GET  /api/redflags?code=CCX[&balanceDate=2026-06-30][&reportingOnly=1]
+ *   GET  /api/redflags?selftest=1          the reporting rules on fixed feeds
+ *
+ * `reportingOnly` answers one question — where is this company in its reporting
+ * cycle (lib/reporting.ts) — from the announcement feed alone. No PDF is read,
+ * so it is cheap enough to run unprompted over every stock on the
+ * reporting-season hold, which the full check is not.
  *
  * NODE runtime, not edge: reading the Appendix 4E means parsing a PDF, and the
  * batch is capped at 10 because those PDFs run from 64KB to 18MB. That cap is
@@ -20,9 +27,12 @@
  */
 import { getDocumentProxy } from "unpdf";
 import {
-  classifyAudit, governanceHits, lateReport,
+  classifyAudit, governanceHits,
   AuditStatus, GovernanceHit, RedFlagEntry,
 } from "@/lib/redflags";
+import {
+  reportingStatus, lateLodgements, sydneyDate, reportingSelfTest, FeedItem, ReportingStatus,
+} from "@/lib/reporting";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -78,20 +88,36 @@ function sizeKb(s: string): number {
   return g ? parseFloat(g[1]) * 1024 : Number.POSITIVE_INFINITY;
 }
 
-async function announcements(xid: string): Promise<Ann[]> {
+/** A page is 120 announcements. A company on a daily buy-back fills one in a
+ *  few months (LNW: eight), so to judge the reporting cycle the feed is paged
+ *  until it reaches back to the balance date — within reason. */
+const PAGE_SIZE = 120;
+const MAX_PAGES = 4;
+
+async function announcements(xid: string, reachBack?: string | null): Promise<Ann[]> {
   const today = new Date().toISOString().slice(0, 10);
-  const d = await jget(
-    `${BASE}/markets/announcements?entityXids=${xid}&page=0&itemsPerPage=120&summaryCountsDate=${today}`,
-    20_000,
-  );
-  const items = ((d.data as Record<string, unknown>)?.items ?? []) as Record<string, unknown>[];
-  return items.map((it) => ({
-    headline: String(it.headline ?? ""),
-    types: (it.announcementTypes as string[]) ?? [],
-    date: String(it.date ?? ""),
-    key: String(it.documentKey ?? ""),
-    kb: sizeKb(String(it.fileSize ?? "")),
-  }));
+  const back = reachBack && /^\d{4}-\d{2}-\d{2}/.test(reachBack) ? reachBack.slice(0, 10) : null;
+  const out: Ann[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const d = await jget(
+      `${BASE}/markets/announcements?entityXids=${xid}&page=${page}&itemsPerPage=${PAGE_SIZE}&summaryCountsDate=${today}`,
+      20_000,
+    );
+    const items = ((d.data as Record<string, unknown>)?.items ?? []) as Record<string, unknown>[];
+    for (const it of items) {
+      out.push({
+        headline: String(it.headline ?? ""),
+        types: (it.announcementTypes as string[]) ?? [],
+        date: String(it.date ?? ""),
+        key: String(it.documentKey ?? ""),
+        kb: sizeKb(String(it.fileSize ?? "")),
+      });
+    }
+    if (!back || items.length < PAGE_SIZE) break;
+    const oldest = out.reduce((min, a) => (a.date && (!min || a.date < min) ? a.date : min), "");
+    if (!oldest || oldest.slice(0, 10) <= back) break;
+  }
+  return out;
 }
 
 /**
@@ -138,23 +164,62 @@ async function appendixText(a: Ann): Promise<string> {
   return out.join("\n");
 }
 
+function unknownReporting(balanceDate: string | null, why: string): ReportingStatus {
+  return {
+    state: "unknown", balanceDate: (balanceDate ?? "").slice(0, 10), nextPeriodEnd: "", dueBy: "",
+    deadlineMonths: 2, detail: why, checkedAt: new Date().toISOString(),
+  };
+}
+
+/** The feed and what it says about the reporting cycle. Shared by both modes. */
+async function readFeed(code: string, balanceDate: string | null): Promise<
+  { anns: Ann[]; feed: FeedItem[]; reporting: ReportingStatus | null } | null
+> {
+  const xid = await entityXid(code);
+  if (!xid) return null;
+  const anns = await announcements(xid, balanceDate);
+  const feed: FeedItem[] = anns.map((a) => ({ headline: a.headline, types: a.types, date: a.date }));
+  const now = new Date().toISOString();
+  const r = balanceDate ? reportingStatus(feed, balanceDate, sydneyDate(now)) : null;
+  return { anns, feed, reporting: r ? { ...r, checkedAt: now } : null };
+}
+
+async function reportingOne(code: string, balanceDate: string | null): Promise<ReportingStatus> {
+  if (!balanceDate) return unknownReporting(balanceDate, "No balance date to measure from.");
+  try {
+    const got = await readFeed(code, balanceDate);
+    if (!got) return unknownReporting(balanceDate, "ASX code not found.");
+    return got.reporting ?? unknownReporting(balanceDate, "Balance date not understood.");
+  } catch (e) {
+    return unknownReporting(balanceDate, `ASX feed unavailable: ${e instanceof Error ? e.message : "error"}`);
+  }
+}
+
 async function checkOne(code: string, balanceDate: string | null): Promise<RedFlagEntry & { code: string }> {
   const now = new Date().toISOString();
   const base = { code, audit: "error" as AuditStatus, governance: [] as GovernanceHit[], checkedAt: now };
   try {
-    const xid = await entityXid(code);
-    if (!xid) return { ...base, audit: "no filing", auditReason: "ASX code not found" };
+    const got = await readFeed(code, balanceDate);
+    if (!got) return { ...base, audit: "no filing", auditReason: "ASX code not found" };
+    const { anns, feed } = got;
+    const reporting = got.reporting ?? undefined;
 
-    const anns = await announcements(xid);
     const since = new Date(Date.now() - GOVERNANCE_YEARS * 365 * 86_400_000).toISOString();
-    const gov = governanceHits(anns.map((a) => ({ headline: a.headline, types: a.types, date: a.date })), since);
+    const gov = governanceHits(feed, since);
+
+    // "Failure to get financial reports published on time" — both halves of it:
+    // a report that came in late, and one that has not come in at all.
+    for (const l of lateLodgements(feed, balanceDate, since)) {
+      gov.push({ kind: "late", date: l.date, detail: l.detail });
+    }
+    if (reporting?.state === "overdue") {
+      gov.push({ kind: "overdue", date: reporting.dueBy, detail: reporting.detail });
+    }
 
     const ap = pickAppendix(anns);
-    if (ap) {
-      const late = lateReport(balanceDate, ap.date);
-      if (late) gov.push(late);
+    if (!ap) {
+      return { ...base, audit: "no filing", auditReason: "no Appendix 4E/4D found", governance: gov, reporting };
     }
-    if (!ap) return { ...base, audit: "no filing", auditReason: "no Appendix 4E/4D found", governance: gov };
 
     let audit: AuditStatus = "unknown";
     let reason = "could not read the Appendix";
@@ -168,7 +233,7 @@ async function checkOne(code: string, balanceDate: string | null): Promise<RedFl
     return {
       code, audit, auditReason: reason, auditSeverity: severity,
       auditSource: { headline: ap.headline, date: ap.date.slice(0, 10), url: `${BASE}/file/${ap.key}` },
-      governance: gov, checkedAt: now,
+      governance: gov, reporting, checkedAt: now,
     };
   } catch (e) {
     return { ...base, auditReason: e instanceof Error ? e.message : "error" };
@@ -177,16 +242,43 @@ async function checkOne(code: string, balanceDate: string | null): Promise<RedFl
 
 export async function GET(request: Request) {
   const sp = new URL(request.url).searchParams;
+  // The rules, run on fixed made-up feeds: pass/fail only. See lib/reporting.ts.
+  if (sp.get("selftest")) return Response.json(reportingSelfTest());
   const code = sp.get("code")?.trim().toUpperCase();
   if (!code) return Response.json({ error: "code required" }, { status: 400 });
+  if (sp.get("reportingOnly")) {
+    return Response.json({ code, ...(await reportingOne(code, sp.get("balanceDate"))) });
+  }
   return Response.json(await checkOne(code, sp.get("balanceDate")));
 }
 
+/** Feed-only checks at a time. Two small JSON requests each, so three abreast
+ *  is polite to a third-party API and still clears thirty inside the limit. */
+const REPORTING_BATCH = 30;
+const REPORTING_ABREAST = 3;
+
 export async function POST(request: Request) {
-  const body = (await request.json()) as { codes?: (string | { code: string; balanceDate?: string })[] };
-  const raw = (body.codes ?? []).slice(0, 10);
+  const body = (await request.json()) as {
+    codes?: (string | { code: string; balanceDate?: string })[];
+    reportingOnly?: boolean;
+  };
+  const raw = (body.codes ?? []).slice(0, body.reportingOnly ? REPORTING_BATCH : 10);
   if (!raw.length) return Response.json({ error: "codes required" }, { status: 400 });
   const list = raw.map((c) => (typeof c === "string" ? { code: c, balanceDate: undefined } : c));
+
+  if (body.reportingOnly) {
+    const out: Record<string, ReportingStatus> = {};
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const { code, balanceDate } = list[next++];
+        out[code.toUpperCase()] = await reportingOne(code.toUpperCase(), balanceDate ?? null);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(REPORTING_ABREAST, list.length) }, worker));
+    return Response.json(out);
+  }
+
   // Sequential on purpose: these are multi-megabyte PDFs and the ASX API is a
   // third party we should not hammer with ten parallel downloads.
   const out: Record<string, RedFlagEntry> = {};

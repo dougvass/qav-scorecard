@@ -33,13 +33,19 @@
  * can make. So we surface the finding and its date; Doug decides.
  */
 
+import type { ReportingStatus } from "./reporting";
+
 export const REDFLAG_STORAGE_KEY = "qav_redflags_v1";
 
 export type AuditStatus = "clean" | "flag" | "unknown" | "no filing" | "error";
 
 export interface GovernanceHit {
-  /** "disclosure" = an ASX query/aware letter; "late" = report lodged late. */
-  kind: "disclosure" | "late";
+  /** "disclosure" = an ASX query/aware letter; "late" = a report lodged after
+   *  its deadline; "overdue" = the deadline has passed and nothing has been
+   *  lodged at all (dated by the deadline). The last two are the two halves of
+   *  the Mill Rule's "failure to get financial reports published on time" —
+   *  see lib/reporting.ts. */
+  kind: "disclosure" | "late" | "overdue";
   date: string;
   detail: string;
 }
@@ -53,6 +59,9 @@ export interface RedFlagEntry {
   /** The Appendix the reading came from, so a call can be checked by hand. */
   auditSource?: { headline: string; date: string; url: string };
   governance: GovernanceHit[];
+  /** Where the company is in its reporting cycle, when a balance date was
+   *  supplied. Only the "overdue" state is a flag; the rest is context. */
+  reporting?: ReportingStatus;
   checkedAt: string;
 }
 
@@ -72,7 +81,8 @@ export function redFlagSummary(e: RedFlagEntry | undefined): string {
   const bits: string[] = [];
   if (e.audit === "flag") bits.push(`Audit: ${e.auditReason ?? "qualified"}`);
   for (const g of e.governance) {
-    bits.push(`${g.kind === "late" ? "Late report" : "Continuous disclosure"} (${g.date}): ${g.detail}`);
+    const label = g.kind === "late" ? "Late report" : g.kind === "overdue" ? "Results overdue" : "Continuous disclosure";
+    bits.push(`${label} (${g.date}): ${g.detail}`);
   }
   return bits.join("\n");
 }
@@ -219,31 +229,5 @@ export function governanceHits(
   return out;
 }
 
-/**
- * "Failure to get financial reports published on time", computed rather than
- * pattern-matched. ASX Listing Rule 4.3A gives a company TWO MONTHS after the
- * balance date to lodge the Appendix 4E (and 4D for a half year). A lodgement
- * after that is late on the face of it.
- *
- * `balanceDate` comes from the CSV's "Last Period Analysed", which is the
- * RESULTS date rather than the announcement date — the distinction the Bible
- * warns about for Column I.
- */
-export function lateReport(balanceDate: string | null, lodgedIso: string | null): GovernanceHit | null {
-  if (!balanceDate || !lodgedIso) return null;
-  const bal = new Date(balanceDate);
-  const lodged = new Date(lodgedIso);
-  if (isNaN(bal.getTime()) || isNaN(lodged.getTime())) return null;
-  const due = new Date(bal);
-  due.setMonth(due.getMonth() + 2);
-  if (lodged <= due) return null;
-  const daysLate = Math.round((lodged.getTime() - due.getTime()) / 86_400_000);
-  // One or two days is a weekend or a public holiday, not a governance breach.
-  if (daysLate <= 3) return null;
-  return {
-    kind: "late",
-    date: lodgedIso.slice(0, 10),
-    detail: `Appendix lodged ${daysLate} days after the Listing Rule 4.3A deadline ` +
-            `(balance date ${balanceDate.slice(0, 10)})`,
-  };
-}
+// "Failure to get financial reports published on time" is computed rather than
+// pattern-matched — see lateLodgements and reportingStatus in lib/reporting.ts.

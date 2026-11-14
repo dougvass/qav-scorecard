@@ -35,8 +35,16 @@ import {
   REDFLAG_STORAGE_KEY,
   StoredRedFlags,
   RedFlagEntry,
+  GovernanceHit,
   hasRedFlag,
 } from "@/lib/redflags";
+import {
+  REPORTING_STORAGE_KEY,
+  StoredReporting,
+  ReportingStatus,
+  addMonths,
+  formatDay,
+} from "@/lib/reporting";
 import {
   HOLDINGS_STORAGE_KEY,
   StoredHoldings,
@@ -141,6 +149,25 @@ function periodLabel(iso: string | null | undefined): string {
   const m = (iso ?? "").match(/^(\d{4})-(\d{2})/);
   if (!m) return iso || "—";
   return `${MONTH_ABBR[Number(m[2]) - 1] ?? m[2]} ${m[1].slice(2)}`;
+}
+
+/** Stocks per reporting-check request (the route takes up to 30). */
+const REPORTING_CHUNK = 15;
+/** How many hold stocks the daily ASX check takes without being asked. */
+const AUTO_REPORTING_LIMIT = 60;
+/**
+ * The soonest a report for the next half can be due: six months to the period
+ * end plus the two months Listing Rules 4.2B / 4.3B allow. Before that date a
+ * stock on the hold cannot be late, whatever the feed says.
+ */
+const EARLIEST_DEADLINE_MONTHS = 8;
+
+/** The local calendar day of an ISO timestamp, as YYYY-MM-DD. */
+function localDay(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 /**
@@ -783,6 +810,11 @@ export default function HomePage() {
   const [holdingsChecking, setHoldingsChecking] = useState(false);
   const [redFlags, setRedFlags] = useState<StoredRedFlags | null>(null);
   const [redFlagChecking, setRedFlagChecking] = useState<{ done: number; total: number } | null>(null);
+  /** Where each stock on the reporting-season hold is in its reporting cycle,
+   *  read from the ASX — see lib/reporting.ts. Kept in this browser only: it
+   *  is re-derived from public data on every device, every day. */
+  const [reporting, setReporting] = useState<StoredReporting | null>(null);
+  const [reportingChecking, setReportingChecking] = useState(false);
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
@@ -917,6 +949,13 @@ export default function HomePage() {
     } catch { /* an unreadable cache is the same as none */ }
   }, []);
 
+  const readReporting = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(REPORTING_STORAGE_KEY);
+      if (raw) setReporting(JSON.parse(raw) as StoredReporting);
+    } catch { /* an unreadable cache is the same as none */ }
+  }, []);
+
   useEffect(() => {
     loadPhase2FromStorage();
     loadBuybacksFromStorage();
@@ -925,6 +964,7 @@ export default function HomePage() {
     loadCommoditiesFromStorage();
     setHoldings(loadHoldings());
     readRedFlags();
+    readReporting();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === HOLDINGS_STORAGE_KEY)  setHoldings(loadHoldings());
@@ -1503,6 +1543,61 @@ export default function HomePage() {
     }
   }, [allStocks, redFlags]);
 
+  /**
+   * Ask the ASX where each of these stocks is in its reporting cycle.
+   *
+   * Doug, 2026-11-14: "check the reporting season hold on 18 stocks that are
+   * flagged ... double check the ASX for any announcements in relation to the
+   * numbers and why they are so late. This could basically be a new red flag
+   * scenario." This is that check, made a routine: the announcement feed only,
+   * no PDFs, so it is light enough to run without being asked.
+   *
+   * `keep` is the set of codes still on the hold. Anything else is dropped from
+   * the store, so a stock that has reported and been re-analysed does not leave
+   * a stale answer behind.
+   *
+   * A failure is silent on purpose. The banner keeps a "not checked" line for
+   * whatever is missing and offers the check again; an error box for a
+   * background lookup would be noise.
+   */
+  const checkReporting = useCallback(async (
+    targets: { code: string; balanceDate: string }[],
+    keep: Set<string>,
+  ) => {
+    if (!targets.length) return;
+    setReportingChecking(true);
+    try {
+      let stored: StoredReporting | null = null;
+      try {
+        const raw = localStorage.getItem(REPORTING_STORAGE_KEY);
+        stored = raw ? JSON.parse(raw) as StoredReporting : null;
+      } catch { /* start clean */ }
+      const merged: Record<string, ReportingStatus> = {};
+      for (const [code, entry] of Object.entries(stored?.data ?? {})) {
+        if (keep.has(code)) merged[code] = entry;
+      }
+      for (let i = 0; i < targets.length; i += REPORTING_CHUNK) {
+        const res = await fetch("/api/redflags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reportingOnly: true,
+            codes: targets.slice(i, i + REPORTING_CHUNK).map((t) => ({ code: t.code, balanceDate: t.balanceDate })),
+          }),
+        });
+        if (!res.ok) throw new Error(`Reporting check ${res.status}`);
+        Object.assign(merged, await res.json() as Record<string, ReportingStatus>);
+        const next: StoredReporting = { timestamp: new Date().toISOString(), data: { ...merged } };
+        try { localStorage.setItem(REPORTING_STORAGE_KEY, JSON.stringify(next)); } catch { /* quota — state still holds it */ }
+        setReporting(next);
+      }
+    } catch (e) {
+      console.warn("Reporting check failed", e);
+    } finally {
+      setReportingChecking(false);
+    }
+  }, []);
+
   /** Replace the stored portfolio. Codes only — see lib/holdings-storage.ts. */
   const saveHoldingCodes = useCallback((codes: string[]) => {
     setHoldings(saveHoldings(codes));
@@ -1598,10 +1693,115 @@ export default function HomePage() {
    * Counts a commodity gate or a manual override too, since either also leaves
    * the holding reading Bearish on the scorecard.
    */
-  /** How many checked stocks carry a red flag — shown on the toolbar button. */
+  /**
+   * Every stock on the reporting-season hold, with the period Stock Doctor
+   * holds for it, in the order the ASX check should take them: those already
+   * past the earliest deadline first (the only ones that can be overdue), then
+   * anything on the buy list or held, then by QAV.
+   */
+  const holdTargets = useMemo(() => {
+    const today = todayIso();
+    const onBuyList = new Set(buyList.map((b) => b.Code));
+    return (allStocks ?? [])
+      .filter((s) => (s as Record<string, unknown>)._staleData === 1)
+      .map((s) => {
+        const balanceDate = String((s as Record<string, unknown>)._lastPeriod ?? "").slice(0, 10);
+        return {
+          code: s.Code,
+          balanceDate,
+          pastDeadline: !!balanceDate && today > addMonths(balanceDate, EARLIEST_DEADLINE_MONTHS),
+          wanted: onBuyList.has(s.Code) || ownedCodes.has(s.Code),
+          qav: s.QAV ?? 0,
+        };
+      })
+      .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.balanceDate))
+      .sort((a, b) =>
+        Number(b.pastDeadline) - Number(a.pastDeadline) ||
+        Number(b.wanted) - Number(a.wanted) ||
+        b.qav - a.qav);
+  }, [allStocks, buyList, ownedCodes]);
+
+  /** The stored answer for a stock, but only while it is about the period the
+   *  stock is still on — once Stock Doctor moves forward the old answer is void. */
+  const reportingFor = useCallback((code: string, balanceDate: string): ReportingStatus | null => {
+    const e = reporting?.data?.[code];
+    return e && e.balanceDate === balanceDate ? e : null;
+  }, [reporting]);
+
+  /**
+   * Run the ASX check for the hold, unprompted, once a day.
+   *
+   * Runs whenever the hold list holds a stock with no answer from today for the
+   * period it is on. `reportingTried` remembers the exact request last made, so
+   * a failed lookup is not retried on every re-score — the banner offers it
+   * again by hand instead. Capped: in the first weeks of a reporting season
+   * most of the list is on hold at once, and the ones that matter are sorted to
+   * the front.
+   */
+  const reportingTried = useRef("");
+  useEffect(() => {
+    if (!syncReady || holdTargets.length === 0) return;
+    const today = todayIso();
+    let stored: StoredReporting | null = null;
+    try {
+      const raw = localStorage.getItem(REPORTING_STORAGE_KEY);
+      stored = raw ? JSON.parse(raw) as StoredReporting : null;
+    } catch { /* treat as none */ }
+    const need = holdTargets
+      .filter((t) => {
+        const e = stored?.data?.[t.code];
+        return !(e && e.balanceDate === t.balanceDate && e.state !== "unknown" && localDay(e.checkedAt) === today);
+      })
+      .slice(0, AUTO_REPORTING_LIMIT);
+    if (need.length === 0) return;
+    const signature = `${today}|${need.map((t) => `${t.code}:${t.balanceDate}`).join(",")}`;
+    if (reportingTried.current === signature) return;
+    reportingTried.current = signature;
+    void checkReporting(need, new Set(holdTargets.map((t) => t.code)));
+  // checkReporting is stable; holdTargets carries everything this depends on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdTargets, syncReady]);
+
+  /**
+   * The red flags as shown: the stored check, plus "results overdue" from the
+   * reporting check. That one is merged in here, not written into the red-flag
+   * store, because the two are refreshed on different clocks — red flags when
+   * Doug presses the button, reporting every day — and an overdue marker must
+   * disappear by itself the day the company reports.
+   */
+  const redFlagView = useMemo(() => {
+    const out: Record<string, RedFlagEntry> = {};
+    const periodOf = new Map((allStocks ?? []).map((st) =>
+      [st.Code, String((st as Record<string, unknown>)._lastPeriod ?? "").slice(0, 10)] as [string, string]));
+    for (const [code, entry] of Object.entries(redFlags?.data ?? {})) {
+      // An "overdue" recorded by the full check is only true for the period it
+      // was measured on.
+      const stale = entry.reporting && periodOf.has(code) && periodOf.get(code) !== entry.reporting.balanceDate;
+      out[code] = stale
+        ? { ...entry, governance: entry.governance.filter((g) => g.kind !== "overdue") }
+        : entry;
+    }
+    for (const [code, r] of Object.entries(reporting?.data ?? {})) {
+      if (periodOf.get(code) !== r.balanceDate) continue;
+      const prev = out[code];
+      const rest = (prev?.governance ?? []).filter((g) => g.kind !== "overdue");
+      if (r.state !== "overdue") {
+        // Today's answer supersedes an older "overdue" from the full check.
+        if (prev && r.state !== "unknown" && rest.length !== prev.governance.length) out[code] = { ...prev, governance: rest };
+        continue;
+      }
+      const hit: GovernanceHit = { kind: "overdue", date: r.dueBy, detail: r.detail };
+      out[code] = prev
+        ? { ...prev, governance: [...rest, hit] }
+        : { audit: "unknown", auditReason: "audit not checked", governance: [hit], checkedAt: r.checkedAt };
+    }
+    return out;
+  }, [redFlags, reporting, allStocks]);
+
+  /** How many stocks carry a red flag — shown on the toolbar button. */
   const redFlagCount = useMemo(
-    () => Object.values(redFlags?.data ?? {}).filter(hasRedFlag).length,
-    [redFlags],
+    () => Object.values(redFlagView).filter(hasRedFlag).length,
+    [redFlagView],
   );
 
   const holdingAlertCount = useMemo(() => {
@@ -1903,12 +2103,16 @@ export default function HomePage() {
                           : "text-gray-500 border-gray-300 hover:bg-gray-50"
                     }`}
                     title={"Check the Appendix 4E for a qualified audit (Bible Column AR) and the ASX feed for corporate governance breaches (the Mill Rule).\n" +
-                           "Covers your holdings plus the top 20 of the buy list."}
+                           "Covers your holdings plus the top 20 of the buy list.\n" +
+                           "Results overdue — a reporting deadline passed with nothing lodged — is checked daily for every stock on the reporting-season hold, without pressing this."}
                   >
                     <AlertTriangle className="w-4 h-4" />
-                    {redFlags
-                      ? (redFlagCount > 0 ? `${redFlagCount} red flag${redFlagCount !== 1 ? "s" : ""}` : "Red flags ✓")
-                      : "Check Red Flags"}
+                    {/* The count comes first: a "results overdue" marker arrives
+                        from the daily reporting check, with or without this
+                        button ever having been pressed. */}
+                    {redFlagCount > 0
+                      ? `${redFlagCount} red flag${redFlagCount !== 1 ? "s" : ""}`
+                      : redFlags ? "Red flags ✓" : "Check Red Flags"}
                   </button>
                 )}
 
@@ -2179,43 +2383,158 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Reporting-season data-freshness reminder: numbers > 6 months old */}
+        {/* Reporting-season hold: numbers > 6 months old — and, from the ASX,
+            WHY each one is. Doug, 2026-11-14: "double check the ASX for any
+            announcements in relation to the numbers and why they are so late.
+            This could basically be a new red flag scenario."
+
+            One amber label was covering three different situations (see
+            lib/reporting.ts): a report that is simply not due yet, a report
+            that is out but not in Stock Doctor, and a report that is overdue.
+            Only the last is a red flag; only the second means the score is
+            built on superseded numbers. The hold itself is unchanged — all
+            three are still "do not buy on these numbers". */}
         {(() => {
           if (!allStocks) return null;
-          const stale = allStocks
+          const today = todayIso();
+          const onBuyList = new Set(buyList.map((b) => b.Code));
+          type Row = {
+            code: string; age: number; onBuyList: boolean; bucket: "overdue" | "reported" | "awaiting" | "unchecked";
+            dueBy: string | null; since: string | null; title: string;
+          };
+          const rows: Row[] = allStocks
             .filter((s) => (s as Record<string, unknown>)._staleData === 1)
-            .map((s) => ({
-              code: s.Code,
-              age: (s as Record<string, unknown>)._dataMonthsOld as number,
-              onBuyList: buyList.some((b) => b.Code === s.Code),
-            }))
-            .sort((a, b) => b.age - a.age);
-          if (stale.length === 0) return null;
-          const staleOnBuyList = stale.filter((s) => s.onBuyList);
+            .map((s) => {
+              const balanceDate = String((s as Record<string, unknown>)._lastPeriod ?? "").slice(0, 10);
+              const age = (s as Record<string, unknown>)._dataMonthsOld as number;
+              const r = reportingFor(s.Code, balanceDate);
+              const base = { code: s.Code, age, onBuyList: onBuyList.has(s.Code) };
+              const prefix = `${s.Code} — Stock Doctor's numbers are for ${periodLabel(balanceDate)}, ${age.toFixed(1)} months old. `;
+              if (r && r.state === "overdue") {
+                return { ...base, bucket: "overdue" as const, dueBy: r.dueBy, since: null, title: prefix + r.detail };
+              }
+              if (r && r.state === "reported") {
+                return { ...base, bucket: "reported" as const, dueBy: null, since: r.first?.date ?? null, title: prefix + r.detail };
+              }
+              if (r && (r.state === "awaiting" || r.state === "current")) {
+                return { ...base, bucket: "awaiting" as const, dueBy: r.dueBy, since: null, title: prefix + r.detail };
+              }
+              // Not checked (or the feed could not answer). Before the earliest
+              // possible deadline the dates alone settle it: it cannot be late.
+              const earliest = balanceDate ? addMonths(balanceDate, EARLIEST_DEADLINE_MONTHS) : null;
+              if (earliest && today <= earliest) {
+                return {
+                  ...base, bucket: "awaiting" as const, dueBy: earliest, since: null,
+                  title: prefix + `Not late: the next report is not due before ${formatDay(earliest)}. Not yet checked against the ASX.`,
+                };
+              }
+              return {
+                ...base, bucket: "unchecked" as const, dueBy: null, since: null,
+                title: prefix + (r ? r.detail : "Not yet checked against the ASX."),
+              };
+            })
+            .sort((a, b) => Number(b.onBuyList) - Number(a.onBuyList) || b.age - a.age);
+          if (rows.length === 0) return null;
+          const listed = rows.filter((r) => r.onBuyList).length;
+          const of = (bucket: Row["bucket"]) => rows.filter((r) => r.bucket === bucket);
+          const overdue = of("overdue"), reported = of("reported"), awaiting = of("awaiting"), unchecked = of("unchecked");
+          // "20 Aug" this year, "29 Sep 2023" otherwise — WMC's is three years old.
+          const shortDay = (iso: string | null) =>
+            !iso ? "" : iso.slice(0, 4) === today.slice(0, 4) ? formatDay(iso).replace(/ \d{4}$/, "") : formatDay(iso);
+          const chip = (r: Row, note: string, tone: string) => (
+            <a
+              key={r.code}
+              href={`https://www.asx.com.au/markets/company/${r.code}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`${r.title}${r.onBuyList ? " On your buy list." : ""} Opens the company's ASX page.`}
+              className={`px-2 py-0.5 rounded-full border text-xs hover:brightness-95 transition ${tone} ${r.onBuyList ? "font-semibold" : "opacity-80"}`}
+            >
+              {r.code}{note && <span className="opacity-70"> {note}</span>}
+            </a>
+          );
           return (
-            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-xl text-sm space-y-1">
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-xl text-sm space-y-2">
               <p className="font-semibold">
-                📅 Reporting-season hold: {stale.length} stock{stale.length !== 1 ? "s" : ""} running on numbers
-                older than {STALE_MONTHS} months{staleOnBuyList.length > 0 && (
-                  <> — {staleOnBuyList.length} on your buy list</>
-                )}. Check Stock Doctor for fresh data before buying.
+                📅 Reporting-season hold: {rows.length} stock{rows.length !== 1 ? "s" : ""} running on numbers
+                older than {STALE_MONTHS} months{listed > 0 && <> — {listed} on your buy list</>}.
+                {reportingChecking && <span className="font-normal text-amber-600"> Checking the ASX…</span>}
               </p>
-              {staleOnBuyList.length > 0 && (
-                <p className="font-mono text-xs">
-                  Buy list: {staleOnBuyList.map((s) => `${s.code} (${s.age.toFixed(1)}mo)`).join(", ")}
-                </p>
+              {overdue.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-red-700">
+                    ⚑ Results overdue — the deadline has passed and nothing has been lodged ({overdue.length}). Red flag.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {overdue.map((r) => chip(r, `due ${shortDay(r.dueBy)}`, "bg-red-50 border-red-300 text-red-700"))}
+                  </div>
+                </div>
+              )}
+              {reported.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold">
+                    Reported on the ASX, not yet in Stock Doctor ({reported.length}) — the score is on the previous
+                    period&apos;s numbers.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {reported.map((r) => chip(r, shortDay(r.since), "bg-white border-amber-400 text-amber-900"))}
+                  </div>
+                </div>
+              )}
+              {awaiting.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold">
+                    Awaiting results — not late ({awaiting.length}).
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {awaiting.map((r) => chip(r, `due ${shortDay(r.dueBy)}`, "bg-amber-50 border-amber-300 text-amber-800"))}
+                  </div>
+                </div>
+              )}
+              {unchecked.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold">
+                    Not checked against the ASX ({unchecked.length}) — past the earliest deadline, so these need a look.{" "}
+                    {!reportingChecking && (
+                      <button
+                        onClick={() => {
+                          reportingTried.current = "";
+                          void checkReporting(
+                            holdTargets.filter((t) => unchecked.some((u) => u.code === t.code)),
+                            new Set(holdTargets.map((t) => t.code)),
+                          );
+                        }}
+                        className="underline font-normal hover:text-amber-950"
+                      >
+                        Check now
+                      </button>
+                    )}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {unchecked.map((r) => chip(r, `${r.age.toFixed(1)}mo`, "bg-amber-50 border-amber-300 text-amber-800"))}
+                  </div>
+                </div>
               )}
             </div>
           );
         })()}
 
-        {/* Phase 2 collection prompt: buy-list stocks with no PE Hi/Lo or Equity
-            score yet. These are the names that have newly surfaced on the list
-            since the last Stock Doctor collection round — the sheet fills in
-            over time as stocks come on and off. */}
+        {/* Phase 2 collection prompt: every stock in the export whose PE Hi/Lo
+            and Equity history has never been collected from Stock Doctor.
+
+            Was the buy list only. Doug, 2026-11-14: "given the Stock Doctor
+            filter CSV is our first filter each time then at a minimum we should
+            have data on everything in that list, as well as a cross check that
+            we haven't missed any data on a stock." A missing score is also what
+            can be keeping a stock OFF the buy list, so the buy list alone could
+            never show those. Together with the out-of-date scan below this is
+            the cross check, run on every scoring: nothing in the export without
+            a history, nothing with a history older than Stock Doctor's.
+            Buy-list names come first and are drawn solid; the rest are dimmed. */}
         {(() => {
           if (!allStocks || !phase2Loaded) return null;
-          const gaps = buyList
+          const onBuyList = new Set(buyList.map((b) => b.Code));
+          const gaps = allStocks
             .filter((s) => (s as Record<string, unknown>)._missingPhase2 === 1)
             // "ETFs hidden" hides them here too. A fund has no PE or Equity row
             // on Stock Doctor's financials page at all, so with the toggle on
@@ -2225,15 +2544,18 @@ export default function HomePage() {
               code: s.Code,
               which: (s as Record<string, unknown>)._missingWhich as string,
               qav: s.QAV,
+              onBuyList: onBuyList.has(s.Code),
             }))
-            .sort((a, b) => (b.qav ?? 0) - (a.qav ?? 0));
+            .sort((a, b) => Number(b.onBuyList) - Number(a.onBuyList) || (b.qav ?? 0) - (a.qav ?? 0));
           if (gaps.length === 0) return null;
+          const listed = gaps.filter((g) => g.onBuyList).length;
           return (
             <div className="bg-sky-50 border border-sky-200 text-sky-900 px-5 py-3 rounded-xl text-sm space-y-2">
               <p className="font-semibold">
-                🔎 Phase 2 data needed: {gaps.length} buy-list stock{gaps.length !== 1 ? "s" : ""}{" "}
-                {gaps.length !== 1 ? "have" : "has"} no PE Hi/Lo or Equity score yet — collect from Stock
-                Doctor and add to the Phase 2 sheet (columns D/E), then re-upload.
+                🔎 Phase 2 data needed: {gaps.length} stock{gaps.length !== 1 ? "s" : ""} in this export{" "}
+                {gaps.length !== 1 ? "have" : "has"} no PE Hi/Lo or Equity score yet
+                {listed > 0 && <> — {listed} on your buy list</>}. Collect from Stock Doctor and add to the
+                Phase 2 sheet (columns D/E), then re-upload.
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {gaps.map((g) => (
@@ -2242,10 +2564,12 @@ export default function HomePage() {
                     href={`https://www.stockdoctor.com.au/Company/${g.code}?page=financials`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="px-2 py-0.5 rounded-full bg-white border border-sky-300 text-xs font-medium hover:bg-sky-100 transition-colors"
-                    title={`${g.code} — missing ${g.which}. Opens Stock Doctor financials: PE row for 'lowest in 3 years', Equity row for 'increasing YoY'.`}
+                    className={`px-2 py-0.5 rounded-full border text-xs font-medium hover:bg-sky-100 transition-colors ${
+                      g.onBuyList ? "bg-white border-sky-300" : "bg-sky-50 border-sky-200 text-sky-400"
+                    }`}
+                    title={`${g.code} — missing ${g.which}.${g.onBuyList ? " On your buy list." : " Not on your buy list."} Opens Stock Doctor financials: PE row for 'lowest in 3 years', Equity row for 'increasing YoY'.`}
                   >
-                    {g.code} <span className="text-sky-500">{g.which}</span> ↗
+                    {g.code} <span className={g.onBuyList ? "text-sky-500" : "text-sky-300"}>{g.which}</span> ↗
                   </a>
                 ))}
               </div>
@@ -2430,7 +2754,8 @@ export default function HomePage() {
               stocks={displayedStocks}
               showAll={showAll}
               ownedCodes={ownedCodes}
-              redFlags={redFlags?.data}
+              redFlags={redFlagView}
+              reporting={reporting?.data}
               hideEtfs={hideEtfs}
               onToggleEtfs={() => setHideEtfs((v) => !v)}
               filterSentiment={filterSentiment}
