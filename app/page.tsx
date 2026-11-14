@@ -148,6 +148,15 @@ function parseSdDate(v: unknown): string | null {
   return iso ? iso[0] : null;
 }
 
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-06-30" -> "Jun 26", the way Stock Doctor labels a reporting period. */
+function periodLabel(iso: string | null | undefined): string {
+  const m = (iso ?? "").match(/^(\d{4})-(\d{2})/);
+  if (!m) return iso || "—";
+  return `${MONTH_ABBR[Number(m[2]) - 1] ?? m[2]} ${m[1].slice(2)}`;
+}
+
 /**
  * Data-freshness straight from the Phase 1 CSV's "Last Period Analysed".
  *
@@ -208,6 +217,41 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     ].filter(Boolean);
     (enriched as Record<string, unknown>)._missingPhase2 = gaps.length ? 1 : null;
     (enriched as Record<string, unknown>)._missingWhich = gaps.join(" + ") || null;
+
+    // ── Phase 2 OUT OF DATE ────────────────────────────────────────────────
+    // Doug, 2026-11-14: "automating and scanning on each run for Phase 2 data
+    // that might be out of date."
+    //
+    // The test is the one the manual top-ups have always used to build their
+    // target list: Stock Doctor's "Last Period Analysed" (from this CSV) is a
+    // NEWER period than the newest one our PE / Equity history holds. That
+    // means the company has reported since the history was collected, so PE
+    // Hi/Lo is missing a reported PE and Equity Increasing is missing a year.
+    //
+    // `data.lastPeriod` is the right thing to compare against: it is the
+    // workbook's "Last Reported" column, which is written from the newest label
+    // on the PE_Equity_History row — checked against the workbook itself, the
+    // two agree for 547 of 547 rows. So it says what the history COVERS.
+    //
+    // Compared by month, because the CSV carries a day (30/06/2026) and the
+    // history a period label (Jun 26).
+    //
+    // Only a row that actually holds collected data can be out of date; one
+    // with nothing in it is already listed as missing, and saying both would
+    // count the same stock twice.
+    //
+    // Must be read BEFORE the freshness block below, which may move
+    // `_lastPeriod` forward — though only in the opposite case, where Phase 2
+    // is the newer of the two.
+    const csvPeriod = ((enriched as Record<string, unknown>)._lastPeriod as string | undefined) ?? null;
+    const p2Period = data.lastPeriod ?? null;
+    const holdsData = data.S_pe_hi_lo !== null || data.S_equity_inc !== null || !!data.peHistory;
+    const phase2Stale = holdsData && p2Period !== null && csvPeriod !== null &&
+      csvPeriod.slice(0, 7) > p2Period.slice(0, 7);
+    (enriched as Record<string, unknown>)._phase2Stale = phase2Stale ? 1 : null;
+    (enriched as Record<string, unknown>)._phase2Has = phase2Stale ? p2Period : null;
+    (enriched as Record<string, unknown>)._phase2Now = phase2Stale ? csvPeriod : null;
+
     // Data-freshness rule: numbers older than 6 months = HOLD OFF buying
     // until the company reports (reporting-season rule). Flag, don't score —
     // staleness says nothing about quality, only about buy timing.
@@ -800,8 +844,12 @@ export default function HomePage() {
     setAllStocks(scored);
     setBuyList(makeBuyList(scored));
     recordSnapshot(scored);
+  // `borrowingRate` was missing from this list, so editing "Borrowing Cost" in
+  // the Rates panel changed the threshold SHOWN in the breakdown while the
+  // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
+  // one until something else happened to trigger a re-score.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
+  }, [rawRows, cashRate, iv1Rate, borrowingRate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
@@ -896,42 +944,87 @@ export default function HomePage() {
 
     const codes = rawRows.map((r) => r.Code);
     const CHUNK = 20;
+    // Batches in flight at once. The run used to be strictly one batch after
+    // another — 23 round trips for ~450 stocks. Measured 2026-11-14 over the
+    // full 446-stock universe on a preview: 11.2s one batch at a time, 6.0s
+    // with three in flight (retry pass included), and the stored readings were
+    // identical for 446 of 446. Three, not more: each batch already fans out
+    // to 20 Yahoo requests inside the route, and the ETF ranker has run at
+    // this same setting across 388 funds without being throttled.
+    const CONCURRENCY = 3;
     const accumulated: StoredTrendlines["data"] = {};
+    // Codes the engine could not read on the first pass. A transient Yahoo
+    // failure comes back as `{ error: "insufficient data" }`, which is stored
+    // as a neutral Watch — the same answer a genuinely unreadable stock gets.
+    // With more requests in flight a hiccup is a little likelier, so every
+    // unread code gets ONE more attempt before that default is accepted.
+    const unread: string[] = [];
+
+    type EngineEntry = {
+      sentiment?: string; note?: string; error?: string;
+      events?: { kind?: string; date?: string }[];
+    };
+
+    /** Fetch one batch and fold each reading into `accumulated`. */
+    const runBatch = async (chunk: string[], firstPass: boolean) => {
+      const res = await fetch(TRENDLINE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codes: chunk }),
+      });
+      if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
+      const data = await res.json() as Record<string, EngineEntry>;
+      for (const [code, entry] of Object.entries(data)) {
+        if (firstPass && entry.error) { unread.push(code); continue; }
+        // Bible Column I: "has it breached the buy line" — so the signal is
+        // the most recent BUY event in the walk. enrichWithTrendlines then
+        // asks whether it falls after the last results' balance date.
+        let lastBuyBreach: string | null = null;
+        for (const e of entry.events ?? []) {
+          if (e.kind === "BUY" && typeof e.date === "string") {
+            if (!lastBuyBreach || e.date > lastBuyBreach) lastBuyBreach = e.date;
+          }
+        }
+        accumulated[code] = {
+          // v3 reports Buy / Sell / Watch / Josephine; toStoredSentiment maps
+          // both vocabularies, so flipping TRENDLINE_ENDPOINT back to v1
+          // needs no other change — v1 simply supplies no events, which
+          // leaves the upturn blank, and blank does not penalise.
+          sentiment: toStoredSentiment(entry.sentiment),
+          note: entry.note,
+          lastBuyBreach,
+        };
+      }
+    };
 
     try {
-      for (let i = 0; i < codes.length; i += CHUNK) {
-        const chunk = codes.slice(i, i + CHUNK);
-        const res = await fetch(TRENDLINE_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ codes: chunk }),
-        });
-        if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
-        const data = await res.json() as Record<string, {
-          sentiment?: string; note?: string;
-          events?: { kind?: string; date?: string }[];
-        }>;
-        for (const [code, entry] of Object.entries(data)) {
-          // Bible Column I: "has it breached the buy line" — so the signal is
-          // the most recent BUY event in the walk. enrichWithTrendlines then
-          // asks whether it falls after the last results' balance date.
-          let lastBuyBreach: string | null = null;
-          for (const e of entry.events ?? []) {
-            if (e.kind === "BUY" && typeof e.date === "string") {
-              if (!lastBuyBreach || e.date > lastBuyBreach) lastBuyBreach = e.date;
-            }
+      const chunks: string[][] = [];
+      for (let i = 0; i < codes.length; i += CHUNK) chunks.push(codes.slice(i, i + CHUNK));
+
+      // A small worker pool: each worker takes the next unclaimed batch until
+      // none are left. One failed batch still fails the whole run, as before —
+      // nothing is stored unless every batch came back.
+      let next = 0, done = 0, failed = false;
+      const worker = async () => {
+        while (!failed && next < chunks.length) {
+          const chunk = chunks[next++];
+          try {
+            await runBatch(chunk, true);
+          } catch (e) {
+            failed = true;
+            throw e;
           }
-          accumulated[code] = {
-            // v3 reports Buy / Sell / Watch / Josephine; toStoredSentiment maps
-            // both vocabularies, so flipping TRENDLINE_ENDPOINT back to v1
-            // needs no other change — v1 simply supplies no events, which
-            // leaves the upturn blank, and blank does not penalise.
-            sentiment: toStoredSentiment(entry.sentiment),
-            note: entry.note,
-            lastBuyBreach,
-          };
+          done += chunk.length;
+          setTrendlineProgress({ done: Math.min(done, codes.length), total: codes.length });
         }
-        setTrendlineProgress({ done: Math.min(i + CHUNK, codes.length), total: codes.length });
+      };
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+      // The second attempt, one batch at a time. Whatever comes back now is
+      // kept, error or not, so every code still ends the run with an entry.
+      const retry = unread.slice();
+      for (let i = 0; i < retry.length; i += CHUNK) {
+        await runBatch(retry.slice(i, i + CHUNK), false);
       }
 
       const stored: StoredTrendlines = {
@@ -1680,6 +1773,10 @@ export default function HomePage() {
           if (!allStocks || !phase2Loaded) return null;
           const gaps = buyList
             .filter((s) => (s as Record<string, unknown>)._missingPhase2 === 1)
+            // "ETFs hidden" hides them here too. A fund has no PE or Equity row
+            // on Stock Doctor's financials page at all, so with the toggle on
+            // these were nine of 24 chips asking for data that does not exist.
+            .filter((s) => !hideEtfs || !isEtfOrFund(s))
             .map((s) => ({
               code: s.Code,
               which: (s as Record<string, unknown>)._missingWhich as string,
@@ -1705,6 +1802,62 @@ export default function HomePage() {
                     title={`${g.code} — missing ${g.which}. Opens Stock Doctor financials: PE row for 'lowest in 3 years', Equity row for 'increasing YoY'.`}
                   >
                     {g.code} <span className="text-sky-500">{g.which}</span> ↗
+                  </a>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Phase 2 OUT OF DATE: stocks that have reported a newer period than
+            the newest one their PE / Equity history holds. Scanned on every
+            scoring run — see the note in enrichWithPhase2. The whole universe,
+            not just the buy list: a stale history can be what is keeping a
+            stock OFF the list, so the buy list alone would hide those. Buy-list
+            names come first and are drawn solid; the rest are dimmed. */}
+        {(() => {
+          if (!allStocks || !phase2Loaded) return null;
+          const onBuyList = new Set(buyList.map((b) => b.Code));
+          const stale = allStocks
+            .filter((s) => (s as Record<string, unknown>)._phase2Stale === 1)
+            .filter((s) => !hideEtfs || !isEtfOrFund(s))
+            .map((s) => ({
+              code: s.Code,
+              has: (s as Record<string, unknown>)._phase2Has as string | null,
+              now: (s as Record<string, unknown>)._phase2Now as string | null,
+              qav: s.QAV,
+              onBuyList: onBuyList.has(s.Code),
+            }))
+            .sort((a, b) => Number(b.onBuyList) - Number(a.onBuyList) || (b.qav ?? 0) - (a.qav ?? 0));
+          if (stale.length === 0) return null;
+          const listed = stale.filter((s) => s.onBuyList).length;
+          return (
+            <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 px-5 py-3 rounded-xl text-sm space-y-2">
+              <p className="font-semibold">
+                ♻️ Phase 2 out of date: {stale.length} stock{stale.length !== 1 ? "s have" : " has"} reported
+                since {stale.length !== 1 ? "their" : "its"} PE / Equity history was collected
+                {listed > 0 && <> — {listed} on your buy list</>}. PE Hi/Lo and Equity Increasing are
+                scored on the older history until it is re-collected from Stock Doctor.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {stale.map((g) => (
+                  <a
+                    key={g.code}
+                    href={`https://www.stockdoctor.com.au/Company/${g.code}?page=financials`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`px-2 py-0.5 rounded-full border text-xs font-medium hover:bg-indigo-100 transition-colors ${
+                      g.onBuyList
+                        ? "bg-white border-indigo-300"
+                        : "bg-indigo-50 border-indigo-200 text-indigo-400"
+                    }`}
+                    title={`${g.code} — Phase 2 history stops at ${periodLabel(g.has)}; Stock Doctor now has ${periodLabel(g.now)}.` +
+                           `${g.onBuyList ? " On your buy list." : " Not on your buy list."} Opens Stock Doctor financials.`}
+                  >
+                    {g.code}{" "}
+                    <span className={g.onBuyList ? "text-indigo-500" : "text-indigo-300"}>
+                      {periodLabel(g.has)} → {periodLabel(g.now)}
+                    </span>{" "}↗
                   </a>
                 ))}
               </div>

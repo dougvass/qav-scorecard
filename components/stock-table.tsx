@@ -488,6 +488,21 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                           🔎 P2
                         </a>
                       )}
+                      {/* Phase 2 history is behind Stock Doctor: the company has
+                          reported a newer period than the history holds. Set by
+                          enrichWithPhase2 on every scoring run. */}
+                      {(stock as Record<string, unknown>)._phase2Stale === 1 && (
+                        <a
+                          href={`https://www.stockdoctor.com.au/Company/${stock.Code}?page=financials`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-300 align-middle hover:bg-indigo-200"
+                          title={`Phase 2 out of date — PE / Equity history stops at ${String((stock as Record<string, unknown>)._phase2Has ?? "").slice(0, 7)}, Stock Doctor now has ${String((stock as Record<string, unknown>)._phase2Now ?? "").slice(0, 7)}. PE Hi/Lo and Equity Increasing are scored on the older history until it is re-collected.`}
+                        >
+                          ♻️ P2
+                        </a>
+                      )}
                       {(stock as Record<string, unknown>)._staleData === 1 && (
                         <span
                           className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 align-middle"
@@ -649,7 +664,11 @@ function ScoreBreakdown({ stock, borrowingRate, phase2Loaded }: { stock: ScoredS
             const src = " · auto 3PTL";
             if (val === 2)  subLabel = <span className="text-xs font-medium text-emerald-600">↑ Bullish{src}</span>;
             else if (val === -1) subLabel = <span className="text-xs font-medium text-red-500">↓ Bearish{src}</span>;
-            else subLabel = <span className="text-xs text-sky-600">⇔ Josephine{src}</span>;
+            // The 0 state is Watch unless it carries the dip marker — this
+            // label still called every 0 "Josephine", a leftover from before
+            // the 2026-10-06 rename, so a Watch stock's badge and its
+            // breakdown disagreed.
+            else subLabel = <span className="text-xs text-sky-600">⇔ {isJosephineDip(stock) ? "Josephine" : "Watch"}{src}</span>;
           } else if (meta.key === "S_buyback") {
             if (val === 1)  subLabel = <span className="text-xs font-medium text-emerald-600">✓ Active · ASX</span>;
             else subLabel = <span className="text-xs text-gray-400">Not detected · ASX</span>;
