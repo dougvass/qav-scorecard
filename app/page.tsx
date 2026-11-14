@@ -682,7 +682,7 @@ function AccountControl({
           {sync.busy ? "Syncing…" : sync.error ? "Not synced" : when ? `Synced ${when}` : "Synced"}
         </button>
         {open && (
-          <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-lg text-sm space-y-2">
+          <div className="absolute right-0 top-full mt-1 z-50 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg text-sm space-y-2">
             {sync.error && <p className="text-xs text-amber-700">{sync.error}</p>}
             <p className="text-xs text-gray-500">
               Stored on the server behind your passcode, so this opens the same on every device you sign in on.
@@ -755,7 +755,7 @@ function AccountControl({
         Sign in
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-lg space-y-2">
+        <div className="absolute right-0 top-full mt-1 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg space-y-2">
           <p className="text-xs text-gray-500">
             Signed out, everything stays in this browser only. Sign in to store it on the server and open it anywhere.
           </p>
@@ -1698,6 +1698,15 @@ export default function HomePage() {
     if (!rawRows || !syncReady || autoRanFor.current === rawRows) return;
     autoRanFor.current = rawRows;
 
+    // Where a run lands. Doug, 2026-11-14: "default in the auto run to
+    // activate the ETFs hidden button and finish on the buy list screen."
+    // Set once per CSV, here, so it is the starting point and not a lock: he
+    // can show the ETFs again or move to another tab and it stays that way
+    // until the next CSV arrives.
+    setHideEtfs(true);
+    setView("buy");
+    setShowAll(false);
+
     const today = todayIso();
     const ranToday = (iso: string | null | undefined): boolean => {
       if (!iso) return false;
@@ -1774,8 +1783,8 @@ export default function HomePage() {
           is three rows tall, it only stays pinned to the top from tablet
           width up — pinned on a phone it would cover a third of the screen. */}
       <header className="bg-white border-b border-gray-200 md:sticky md:top-0 z-10">
-        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-          <div className="flex items-center gap-3">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="order-1 flex items-center gap-3">
             <div className="bg-indigo-600 rounded-lg p-2">
               <BarChart2 className="w-5 h-5 text-white" />
             </div>
@@ -1784,8 +1793,19 @@ export default function HomePage() {
               <p className="hidden sm:block text-xs text-gray-400 mt-0.5">ASX Stock Ranker — Tony Kynaston method</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+          {/* SIGN IN — the far top right, at every width. It used to be the
+              first button of the group below, which put it at the LEFT end of
+              a wrapped row; its panel opens leftwards from the button, so it
+              ran off the left edge of the screen and the passcode box could
+              barely be reached (Doug, 2026-11-14). Up here its right edge is
+              the page's right edge, so the panel always opens on screen.
+              On a very wide window all three parts share one row and this is
+              ordered last; narrower, it stays on the title's row and the
+              buttons take the rows below. */}
+          <div className="order-2 2xl:order-3 ml-auto 2xl:ml-0">
             <AccountControl account={account} sync={syncStatus} onSyncNow={runSync} />
+          </div>
+          <div className="order-3 2xl:order-2 basis-full 2xl:basis-auto 2xl:ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
             {/* Phase 2 — opens in new tab so the CSV session is not lost */}
             <Link
               href="/phase2"

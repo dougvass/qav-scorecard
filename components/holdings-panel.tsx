@@ -225,9 +225,16 @@ export default function HoldingsPanel({
                       <span className={`px-2 py-0.5 rounded border text-xs font-medium ${TONE[r.sentiment] ?? "bg-gray-100 text-gray-500 border-gray-300"}`}>
                         {r.sentiment}
                       </span>
+                    ) : r.noChart && r.effective ? (
+                      // No 3PTL could be drawn, but he has read the chart and
+                      // set a sentiment by hand on the scorecard — show that.
+                      <span className={`px-2 py-0.5 rounded border text-xs font-medium ${TONE[r.effective] ?? "bg-gray-100 text-gray-500 border-gray-300"}`}
+                            title="Set by hand — there is too little price history for an automatic 3PTL">
+                        {r.effective} ✎
+                      </span>
                     ) : r.noChart ? (
                       <span className="px-2 py-0.5 rounded border text-xs font-medium bg-gray-100 text-gray-500 border-gray-300"
-                            title="Under a year of price history, so no 3PTL can be drawn yet — there is no sell line to break">
+                            title="Under a year of price history, so no 3PTL can be drawn yet. Set a sentiment by hand from the scorecard's Sentiment column once you have read the chart.">
                         No chart
                       </span>
                     ) : <span className="text-gray-400 text-xs">—</span>}
