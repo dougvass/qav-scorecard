@@ -1,23 +1,28 @@
 /**
- * 3PTL v3 — evaluation endpoint. SEPARATE FROM PRODUCTION BY DESIGN.
+ * 3PTL — the engine the scorecard runs.
  *
- * The live scorecard calls /api/trendline (v1) and is untouched by anything
- * here, as is /api/trendline-v2 (HQ's Brettalator port). v3 is the sequential
- * walk built from Doug's own chart readings — see lib/trendline-v3.ts.
+ *   GET  /api/trendline-v3?code=BOL          one stock, with its anchors
+ *   GET  /api/trendline-v3?commodities=1     the commodity complex on Yahoo
+ *                                            futures (the scorecard itself uses
+ *                                            /api/commodities instead)
+ *   POST /api/trendline-v3  {codes:[...]}    batch, <=25 codes
  *
- *   GET  /api/trendline-v3?code=BOL              v3 result for one stock
- *   GET  /api/trendline-v3?code=BOL&compare=1    v3 alongside v1 and v2
- *   POST /api/trendline-v3  {codes:[...]}        batch, <=25 codes
+ * The rules live in lib/trendline-v3.ts — the sequential walk built from Doug's
+ * own chart readings. This route is only the data layer: monthly closes and a
+ * live price from Yahoo, handed to `classifyV3`.
  *
- * Monthly bars come from the SAME Yahoo fetch v1 and v2 use, so any difference
- * in output is the algorithm and never the data.
+ * It can return a fourth sentiment the old engines could not: WATCH, for a
+ * stock sitting between its buy and sell lines. Doug's words — "they are not a
+ * sell nor a buy".
  *
- * v3 can return a fourth sentiment the other two cannot: WATCH, for a stock
- * sitting between its buy and sell lines. Doug's words — "they are not a sell
- * nor a buy". Any caller that switches to v3 has to handle it.
+ * HISTORY. This was once an evaluation endpoint beside two others: v1 at
+ * /api/trendline (the original classifier, 1,272 lines, which production ran
+ * until the buy list moved here) and v2 at /api/trendline-v2 (a port of QAV
+ * HQ's "Brettalator"). Both were removed on 2026-11-14 with Doug's agreement —
+ * nothing called them but this route's own `?compare=1` debug mode, which went
+ * with them. They are in git history if a comparison is ever wanted again.
  */
 import { classifyV3, V3Bar } from "@/lib/trendline-v3";
-import { classifyV2 } from "@/lib/trendline-v2";
 import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY } from "@/lib/commodities";
 import { monthOf, currentMonth } from "@/lib/exchange-months";
 
@@ -30,8 +35,18 @@ const YF_HEADERS = {
   Accept: "application/json,text/plain,*/*",
 };
 
+/**
+ * An ASX code gets the .AX suffix; anything already shaped like a Yahoo symbol
+ * (GC=F, U-UN.TO) passes through.
+ *
+ * ASX codes run to SIX characters, not four. The test used to stop at four, so
+ * PMGOLD and SGLLV were sent to Yahoo bare, came back 404, and were stored as a
+ * neutral Watch on every run — found 2026-11-14 when Doug asked for the
+ * "unreadable" codes to be cross-checked against the ASX. Both are listed and
+ * both have a full six years of bars under their .AX symbols.
+ */
 function yahooSymbol(code: string) {
-  return /^[A-Z0-9]{1,4}$/.test(code) ? `${code}.AX` : code;
+  return /^[A-Z0-9]{1,6}$/.test(code) ? `${code}.AX` : code;
 }
 
 /** Six years of monthly bars — RAW (unadjusted), matching what a chartist sees. */
@@ -94,32 +109,16 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
   } catch { return empty; }
 }
 
-async function run(code: string, withV2 = false) {
+async function run(code: string) {
   const bars = await fetchMonthly(code);
-  if (bars.length < 12) return { code, error: "insufficient data", months: bars.length };
+  // Under a year of monthly closes: no 3PTL can be drawn. `unreadable` tells
+  // the scorecard to leave the sentiment UNSCORED rather than file the stock
+  // under a neutral Watch it has not earned (Doug, 2026-11-14).
+  if (bars.length < 12) return { code, error: "insufficient data", unreadable: true, months: bars.length };
   const daily = await fetchDaily(code);
   const price = daily.price ?? bars[bars.length - 1].close;
   const r = classifyV3(bars, price, daily.prevMonthClose);
-
-  // v2 is computed from the SAME bars rather than fetched over HTTP. An edge
-  // function's fetch to its own sibling route does not carry the preview's
-  // share cookie, so deployment protection returned null for both comparisons;
-  // calling the library directly also guarantees one market snapshot. v1's
-  // logic lives in its route rather than a lib, so it still has to be fetched
-  // and will stay null on a protected preview.
-  let v2: unknown = null;
-  if (withV2) {
-    const d = classifyV2(bars, price, { lastMonthClose: daily.prevMonthClose });
-    const pv = (p: { m: number; p: number } | undefined | null) =>
-      p ? { date: bars[bars.length - 1 + p.m]?.date ?? null, close: p.p } : null;
-    v2 = {
-      sentiment: d.sentiment, buy: d.buy, sell: d.sell, note: d.note,
-      h1: pv(d.buyLine?.a), h2: pv(d.buyLine?.b),
-      l1: pv(d.sellLine?.a), l2: pv(d.sellLine?.b),
-    };
-  }
-
-  const base = {
+  return {
     code, price, months: bars.length,
     lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
@@ -129,8 +128,6 @@ async function run(code: string, withV2 = false) {
     // debugging a reading, not for a "date became sell" column.
     events: r.events,
   };
-  // Only carried when asked for, so a plain call's shape stays clean.
-  return withV2 ? { ...base, v2 } : base;
 }
 
 /**
@@ -190,33 +187,13 @@ export async function GET(request: Request) {
   const code = sp.get("code")?.trim().toUpperCase();
   if (!code) return Response.json({ error: "code required" }, { status: 400 });
 
-  const compare = !!sp.get("compare");
-  const r = await run(code, compare);
-  if (!compare) return Response.json(r);
-
-  const { v2, ...v3 } = r as Record<string, unknown>;
-  // v1's logic lives in its route rather than a lib, so it has to be fetched.
-  // On a protected preview that fetch carries no share cookie and v1 comes back
-  // null; on production it resolves. v2 above needs no fetch.
-  let v1: unknown = null;
-  try {
-    const origin = new URL(request.url).origin;
-    const res = await fetch(`${origin}/api/trendline?code=${encodeURIComponent(code)}`);
-    if (res.ok) {
-      const d = await res.json() as Record<string, unknown>;
-      v1 = { sentiment: d.sentiment, buy: d.buyLine, sell: d.sellLine,
-             h1: d.h1_detail, h2: d.h2_detail, l1: d.l1_detail, l2: d.l2_detail, note: d.note };
-    }
-  } catch { /* comparison is best-effort */ }
-  return Response.json({ code, v3, v2, v1 });
+  return Response.json(await run(code));
 }
 
 export async function POST(request: Request) {
   const { codes } = (await request.json()) as { codes?: string[] };
   const batch = (codes ?? []).slice(0, 25);
   if (!batch.length) return Response.json({ error: "codes required" }, { status: 400 });
-  // Not batch.map(run): map passes the index as the second argument, which
-  // would land in `withV2` and make every stock but the first compute v2.
   const results = await Promise.all(batch.map((c) => run(c)));
   const out: Record<string, unknown> = {};
   batch.forEach((c, i) => { out[c] = results[i]; });

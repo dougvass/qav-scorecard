@@ -87,8 +87,39 @@ However it arrives, every check that has not already run **today** then starts
 by itself — 3PTL, Commodities, MorningStar, Buybacks. Red flags stay on their
 button (each stock is an ASX feed plus a PDF that can run to 18MB).
 
-Everything is stored in the browser, not on the server: the CSV is Stock
-Doctor subscriber data and this site has no login.
+## Your data on every device: the passcode
+
+Signed out, everything stays in the browser it was loaded in, exactly as
+before. Signed in, the same stores are also kept on the server — the Stock
+Doctor CSV, Phase 2 (scores and PE history), the 3PTL run, holdings, manual
+overrides, buybacks, commodities and red flags — so the site opens the same on
+any device. They sit behind one passcode because the URL is public and the CSV
+is Stock Doctor subscriber data.
+
+**Turn it on (once):**
+
+1. Vercel → this project → **Settings → Environment Variables**.
+2. Add `QAV_PASSCODE`, value = the passcode you want, environment
+   **Production**. Make it long; it is the only thing protecting the data.
+3. **Redeploy** (Deployments → the latest → ⋯ → Redeploy). Environment
+   variables only take effect on a new deployment.
+4. Open the site, click **Sign in**, enter it. That browser's data goes up.
+
+Until step 2 is done the site has no sign-in button at all and nothing is
+stored on the server. Changing `QAV_PASSCODE` later signs every device out.
+
+Check it without signing in: `/api/auth` says whether a passcode is set,
+`/api/auth?selftest=1` and `/api/store?selftest=1` exercise the session code
+and the database round trip and return pass/fail only.
+
+**On the iPhone:** open the site in Safari, sign in, then Share → **Add to
+Home Screen**. It opens full-screen with its own icon, already holding your
+data; any check that has not run today starts by itself. A fresh Stock Doctor
+export still has to come from the desktop (the bookmark above) — the phone
+then picks it up the next time it is opened.
+
+How it decides which copy wins: each store carries the time it was last
+written, and the newer one wins, per store (`lib/server-store.ts`).
 
 ## What the scoring covers
 

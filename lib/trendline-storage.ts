@@ -1,6 +1,6 @@
 /**
  * Stored 3PTL (3-Point Trendline) calculation results.
- * Auto-calculated via /api/trendline from Yahoo Finance monthly OHLC data.
+ * Auto-calculated via /api/trendline-v3 from Yahoo Finance monthly closes.
  * Takes precedence over SDMAX but is itself overridden by manual sentiment overrides.
  */
 
@@ -27,7 +27,15 @@ export const TRENDLINE_STORAGE_KEY = "qav_trendline_v1";
 export type TrendlineSentiment = "Bullish" | "Watch" | "Josephine" | "Bearish";
 
 export interface TrendlineEntry {
-  sentiment: TrendlineSentiment;
+  /** null when no 3PTL could be drawn — see `unreadable`. */
+  sentiment: TrendlineSentiment | null;
+  /**
+   * Set when the engine had under a year of monthly closes to work with (a new
+   * listing, or a relisting) or could not fetch any. The stock's sentiment is
+   * then left UNSCORED rather than defaulted to Watch — Doug, 2026-11-14.
+   * The entry still exists so a run counts as having covered the code.
+   */
+  unreadable?: boolean;
   note?: string;
   /**
    * Month of the most recent BUY event in the walk — a breach of the buy line —
@@ -51,10 +59,6 @@ export interface TrendlineEntry {
    * this criterion was left unscored until the walk was fixed.
    */
   lastBuyBreach?: string | null;
-  /** @deprecated Never set: the note strings it was derived from were never
-   *  written by any engine, so S_new_upturn was always null. Superseded by
-   *  lastBuyBreach + the balance date. */
-  newUpturn?: boolean;
 }
 
 export interface StoredTrendlines {

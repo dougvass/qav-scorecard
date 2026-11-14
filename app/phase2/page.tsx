@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { BarChart2, FileSpreadsheet, Trash2, ArrowLeft, CheckCircle } from "lucide-react";
 import { PHASE2_STORAGE_KEY, Phase2Entry, StoredPhase2 } from "@/lib/phase2-storage";
+import { setSynced, removeSynced, authStatus, pushKey } from "@/lib/server-store";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,9 @@ export default function Phase2Page() {
       const raw = localStorage.getItem(PHASE2_STORAGE_KEY);
       if (raw) setStored(JSON.parse(raw) as StoredPhase2);
     } catch { /* ignore corrupt storage */ }
+    // This page is its own page load, so find out here whether this browser is
+    // signed in — otherwise an upload made here would stay local.
+    void authStatus();
   }, []);
 
   async function handleFile(file: File) {
@@ -63,8 +67,12 @@ export default function Phase2Page() {
         source: file.name,
         data: json as Record<string, Phase2Entry>,
       };
-      localStorage.setItem(PHASE2_STORAGE_KEY, JSON.stringify(record));
+      setSynced(PHASE2_STORAGE_KEY, JSON.stringify(record));
       setStored(record);
+      // Send it up straight away rather than on the usual short delay: this
+      // tab is often closed the moment the upload is done.
+      await authStatus();
+      void pushKey(PHASE2_STORAGE_KEY);
       setJustSaved(true);
       setTimeout(() => setJustSaved(false), 3000);
     } catch (e) {
@@ -75,7 +83,7 @@ export default function Phase2Page() {
   }
 
   function clearData() {
-    localStorage.removeItem(PHASE2_STORAGE_KEY);
+    removeSynced(PHASE2_STORAGE_KEY);
     setStored(null);
   }
 

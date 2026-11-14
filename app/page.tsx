@@ -10,6 +10,10 @@ import {
 import {
   SD_ORIGIN, SD_FILTER_NAME, BridgeAckMessage, isBridgeCsvMessage, bookmarkletHref,
 } from "@/lib/sd-bridge";
+import {
+  AccountStatus, SyncStatus, setSynced, authStatus, signIn, signOut, syncNow,
+  getSyncStatus, onSyncStatus,
+} from "@/lib/server-store";
 import { PHASE2_STORAGE_KEY, StoredPhase2, monthsOld, STALE_MONTHS, scorePeHiLoLive } from "@/lib/phase2-storage";
 import { BUYBACK_STORAGE_KEY, StoredBuybacks } from "@/lib/buyback-storage";
 import {
@@ -51,14 +55,13 @@ import {
 import {
   scoreStocks,
   makeBuyList,
-  starToIv3Score,
   isEtfOrFund,
   DEFAULT_CASH_RATE,
   DEFAULT_BORROWING_RATE,
   DEFAULT_RRR,
   ScoringRates,
 } from "@/lib/qav-scoring";
-import { StockRow, ScoredStock, MSRatings } from "@/lib/types";
+import { StockRow, ScoredStock } from "@/lib/types";
 import {
   HistorySeries, HistoryPoint, todayIso, mergeSeries,
   loadLocalHistory, saveLocalHistory,
@@ -78,30 +81,29 @@ import {
   Activity,
   Briefcase,
   AlertTriangle,
+  Lock,
+  Cloud,
 } from "lucide-react";
 
 /**
- * Which 3PTL engine the auto run uses for STOCKS.
+ * The 3PTL engine for STOCKS: the sequential walk built from Doug's own chart
+ * readings (lib/trendline-v3.ts) — 15/15 on his qualified set.
  *
- * v3 is the sequential walk built from Doug's own chart readings: 15/15 on his
- * qualified set and 83.3% agreement with HQ's published buy list, against v1's
- * 60%. Flip this back to "/api/trendline" to revert; nothing else needs to
- * change, because toStoredSentiment() accepts both vocabularies.
- *
- * The COMMODITY gate still calls v1 at /api/trendline?commodities=1 — that mode
- * only exists there.
+ * The two older engines this could once be pointed back at (v1 at
+ * /api/trendline, v2 at /api/trendline-v2) were deleted on 2026-11-14.
+ * toStoredSentiment() still accepts their vocabulary, so a result stored by
+ * either before then keeps resolving.
  */
 const TRENDLINE_ENDPOINT = "/api/trendline-v3";
 
 /**
- * The COMMODITY complex. /api/commodities runs v3 over World Bank Pink Sheet
- * monthly closes — gapless, which is what commodities actually needed: Yahoo's
- * monthly futures have calendar gaps and the engine indexes time by array
- * position, so a gap silently compresses it.
+ * The COMMODITY complex. /api/commodities runs the same engine over World Bank
+ * Pink Sheet monthly closes — gapless, which is what commodities actually
+ * needed: Yahoo's monthly futures have calendar gaps and the engine indexes
+ * time by array position, so a gap silently compresses it.
  *
- * Earlier alternatives, either of which can be restored by changing this line:
- *   "/api/trendline-v3?commodities=1"  v3 over Yahoo futures (gappy)
- *   "/api/trendline?commodities=1"     v1's separate commodity mode
+ * "/api/trendline-v3?commodities=1" (the same engine over Yahoo futures,
+ * gappy) still exists and can be restored by changing this line.
  */
 const COMMODITY_ENDPOINT = "/api/commodities";
 
@@ -109,7 +111,7 @@ const SCORE_KEYS = [
   "S_sentiment_long", "S_sentiment_short", "S_pcf", "S_div_yield",
   "S_pe_lt_dy", "S_pe_hi_lo", "S_equity_inc", "S_sp_lt_neps",
   "S_sp_lt_1.3neps", "S_geps_pe", "S_sp_lt_iv1", "S_sp_lt_iv2",
-  "S_sp_lt_0.5iv2", "S_sp_lt_iv3", "S_sp_lt_iv4", "S_star",
+  "S_sp_lt_0.5iv2", "S_sp_lt_iv4", "S_star",
   "S_fh_rating", "S_fh_trend", "S_ownership", "S_buyback", "S_new_upturn",
 ] as const;
 
@@ -118,29 +120,6 @@ type Phase2Map = Record<string, { S_equity_inc: number | null; S_pe_hi_lo: numbe
 
 // Buyback payload: Code → active flag
 type BuybackMap = Record<string, boolean>;
-
-function enrichWithMsRatings(stocks: ScoredStock[], ratings: MSRatings): ScoredStock[] {
-  const ratingMap: Record<string, number | null> = {};
-  for (const [ticker, entry] of Object.entries(ratings)) {
-    ratingMap[ticker] = entry.starRating ?? null;
-  }
-  return stocks.map((stock) => {
-    const rawStar = ratingMap[stock.Code] ?? null;
-    const iv3 = starToIv3Score(rawStar);
-    const enriched = { ...stock, S_sp_lt_iv3: iv3, _msStarRating: rawStar } as ScoredStock & { _msStarRating: number | null };
-    const vals = SCORE_KEYS
-      .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
-      .filter((v): v is number => v !== null);
-    enriched.Count = vals.length;
-    enriched.TotalScore = vals.reduce((a, b) => a + b, 0);
-    enriched.Quality = vals.length > 0 ? enriched.TotalScore / vals.length : null;
-    enriched.QAV =
-      enriched.Quality !== null && enriched.PCF !== null && enriched.PCF !== 0
-        ? Math.round((enriched.Quality / enriched.PCF) * 100 * 100) / 100
-        : null;
-    return enriched;
-  });
-}
 
 /** Stock Doctor writes dates as dd/mm/yyyy; Date.parse() reads that as US
  *  mm/dd/yyyy and silently mangles anything past the 12th. */
@@ -222,8 +201,19 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
       data.S_pe_hi_lo === null ? "PE Hi/Lo" : null,
       data.S_equity_inc === null ? "Equity" : null,
     ].filter(Boolean);
-    (enriched as Record<string, unknown>)._missingPhase2 = gaps.length ? 1 : null;
-    (enriched as Record<string, unknown>)._missingWhich = gaps.join(" + ") || null;
+    // "Data needed" means data that CAN be collected. A row with a
+    // `lastPeriod` has had its financials page read — the date is the newest
+    // period on its history row — so a score still blank after that is blank
+    // BY RULE: PE Hi/Lo for a company with no current PE (a loss-maker),
+    // Equity for one with a single annual period on record. Asking for those
+    // again was noise that never cleared: MME, CCX, AIZ, CLG, KSN, TEK and CYG
+    // sat in the box permanently. Doug, 2026-11-14: drop them. Only a row
+    // that was never collected (no date) still counts as missing; when one of
+    // these companies reports again, the out-of-date scan below picks it up.
+    const collected = !!data.lastPeriod;
+    const missing = gaps.length > 0 && !collected;
+    (enriched as Record<string, unknown>)._missingPhase2 = missing ? 1 : null;
+    (enriched as Record<string, unknown>)._missingWhich = missing ? gaps.join(" + ") : null;
 
     // ── Phase 2 OUT OF DATE ────────────────────────────────────────────────
     // Doug, 2026-11-14: "automating and scanning on each run for Phase 2 data
@@ -291,6 +281,35 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
   return stocks.map((stock) => {
     const entry = trendlines.data[stock.Code];
     if (!entry) return stock;
+
+    // NO CHART YET. Under a year of monthly closes there is no 3PTL to draw —
+    // a new listing, or a relisting whose history starts again. These used to
+    // be filed under a neutral Watch, which scores 0 and so pulled Quality
+    // DOWN for a stock nobody had read. Doug, 2026-11-14, after the seven then
+    // affected were checked against the ASX (all listed; five under a year
+    // old): "leave unscored". So the sentiment is blank — out of the Quality
+    // average altogether — and the SDMAX reading the CSV supplied does not
+    // stand in for it either: that is Stock Doctor's line, not Tony's.
+    if (entry.unreadable || entry.sentiment === null) {
+      const blank = {
+        ...stock,
+        S_sentiment_long: null,
+        S_new_upturn: null,
+        _positiveJosephine: null,
+        _noChart: 1,
+      } as ScoredStock;
+      const kept = SCORE_KEYS
+        .map((k) => (blank as Record<string, unknown>)[k] as number | null)
+        .filter((v): v is number => v !== null);
+      blank.Count = kept.length;
+      blank.TotalScore = kept.reduce((a, b) => a + b, 0);
+      blank.Quality = kept.length > 0 ? blank.TotalScore / kept.length : null;
+      blank.QAV =
+        blank.Quality !== null && blank.PCF !== null && blank.PCF !== 0
+          ? Math.round((blank.Quality / blank.PCF) * 100 * 100) / 100
+          : null;
+      return blank;
+    }
     // Josephine means ONE thing now: above both lines but below last month's
     // close. Everything else scoring 0 is between the lines, i.e. Watch.
     //
@@ -605,6 +624,149 @@ function SdBookmarklet({ compact }: { compact?: boolean }) {
   );
 }
 
+/**
+ * Sign in with the passcode, and say whether this browser is in step with the
+ * server. Renders nothing at all until a passcode has been set on the server —
+ * with none there is nothing to sign in to, and the app is browser-only as it
+ * always was.
+ *
+ * `card` is the larger form shown on the empty start screen, where signing in
+ * is the whole point: on a phone that has never loaded a CSV, it is how the
+ * data gets there.
+ *
+ * A successful sign-in reloads the page. That is the simplest way to make
+ * every mount-time load (the sync, QAV history) run again as a signed-in
+ * browser, and it happens once per device.
+ */
+function AccountControl({
+  account, sync, onSyncNow, card,
+}: {
+  account: AccountStatus | null;
+  sync: SyncStatus;
+  onSyncNow?: () => void;
+  card?: boolean;
+}) {
+  const [open, setOpen] = useState(!!card);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  if (!account?.configured) return null;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!code || busy) return;
+    setBusy(true);
+    setProblem(null);
+    const failed = await signIn(code);
+    if (failed) { setProblem(failed); setBusy(false); return; }
+    window.location.reload();
+  }
+
+  if (account.signedIn) {
+    const when = sync.lastSyncAt
+      ? new Date(sync.lastSyncAt).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })
+      : null;
+    return (
+      <div className="relative">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+            sync.error
+              ? "text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100"
+              : "text-sky-700 bg-sky-50 border-sky-200 hover:bg-sky-100"
+          }`}
+          title={sync.error ?? "Your CSV, Phase 2, 3PTL run, holdings and overrides are stored on the server and shared across your devices."}
+        >
+          <Cloud className={`w-4 h-4 ${sync.busy ? "animate-pulse" : ""}`} />
+          {sync.busy ? "Syncing…" : sync.error ? "Not synced" : when ? `Synced ${when}` : "Synced"}
+        </button>
+        {open && (
+          <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-lg text-sm space-y-2">
+            {sync.error && <p className="text-xs text-amber-700">{sync.error}</p>}
+            <p className="text-xs text-gray-500">
+              Stored on the server behind your passcode, so this opens the same on every device you sign in on.
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setOpen(false); onSyncNow?.(); }}
+                className="text-indigo-600 hover:text-indigo-800 underline"
+              >
+                Sync now
+              </button>
+              <button
+                onClick={async () => { await signOut(); window.location.reload(); }}
+                className="text-gray-500 hover:text-gray-700 underline"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const form = (
+    <form onSubmit={submit} className="flex items-center gap-2">
+      <input
+        type="password"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        placeholder="Passcode"
+        autoComplete="current-password"
+        autoFocus={!card}
+        className="min-w-0 flex-1 text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+      />
+      <button
+        type="submit"
+        disabled={busy || !code}
+        className="px-3 py-1.5 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+      >
+        {busy ? "Signing in…" : "Sign in"}
+      </button>
+    </form>
+  );
+
+  if (card) {
+    return (
+      <div className="w-full max-w-2xl rounded-xl border border-sky-200 bg-sky-50 px-5 py-4 space-y-2">
+        <p className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
+          <Lock className="w-4 h-4" /> Sign in to load your data on this device
+        </p>
+        <p className="text-xs text-sky-700">
+          Your CSV, Phase 2 data, 3PTL run and holdings are stored on the server. Enter the passcode once and this
+          device stays signed in.
+        </p>
+        {form}
+        {problem && <p className="text-xs text-red-600">{problem}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+        title="Sign in to store your data on the server and open it on any device"
+      >
+        <Lock className="w-4 h-4" />
+        Sign in
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-lg space-y-2">
+          <p className="text-xs text-gray-500">
+            Signed out, everything stays in this browser only. Sign in to store it on the server and open it anywhere.
+          </p>
+          {form}
+          {problem && <p className="text-xs text-red-600">{problem}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
@@ -621,12 +783,6 @@ export default function HomePage() {
   const [holdingsChecking, setHoldingsChecking] = useState(false);
   const [redFlags, setRedFlags] = useState<StoredRedFlags | null>(null);
   const [redFlagChecking, setRedFlagChecking] = useState<{ done: number; total: number } | null>(null);
-  const [msLoading, setMsLoading] = useState(false);
-  const [msLoaded, setMsLoaded] = useState(false);
-  const [msRatings, setMsRatings] = useState<MSRatings | null>(null);
-  /** How many stocks actually came back with a star rating. Zero means the
-   *  fetch "worked" but MorningStar supplied nothing — see api/morningstar. */
-  const [msRated, setMsRated] = useState(0);
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
@@ -654,6 +810,15 @@ export default function HomePage() {
     useState<{ loadedAt: string; source: StoredCsv["source"]; remembered: boolean } | null>(null);
   /** Set by the auto-run so a commodity refresh does not pop its panel open. */
   const commodityQuiet = useRef(false);
+  /** null until the server has said whether there is a passcode to sign in
+   *  with, and whether this browser already has. */
+  const [account, setAccount] = useState<AccountStatus | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(getSyncStatus());
+  /** False until the first sync with the server has finished (or it is known
+   *  there is none to do). The auto-run waits for it: on a phone the server
+   *  may already hold today's 3PTL run, and starting another before finding
+   *  that out would be 446 wasted requests. */
+  const [syncReady, setSyncReady] = useState(false);
   const [showRateSettings, setShowRateSettings] = useState(false);
   const [hideEtfs, setHideEtfs] = useState(false);
   /** Selected sentiment states; empty means no filter. Any combination works. */
@@ -900,12 +1065,8 @@ export default function HomePage() {
   // Re-score whenever raw rows, rates, or enrichment data changes
   useEffect(() => {
     if (!rawRows) return;
-    const msMap = msRatings
-      ? Object.fromEntries(Object.entries(msRatings).map(([k, v]) => [k, v.starRating ?? null]))
-      : undefined;
-    let scored = scoreStocks(rawRows, msMap, rates);
+    let scored = scoreStocks(rawRows, rates);
     scored = enrichWithCsvFreshness(scored, rawRows);   // freshness from the CSV first
-    if (msRatings)   scored = enrichWithMsRatings(scored, msRatings);
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
     if (trendlineData) scored = enrichWithTrendlines(scored, trendlineData);   // auto 3PTL
@@ -920,7 +1081,7 @@ export default function HomePage() {
   // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
   // one until something else happened to trigger a re-score.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, borrowingRate, msRatings, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
+  }, [rawRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
 
   /**
    * Load a Stock Doctor CSV from its decoded text, however it arrived — a file
@@ -960,23 +1121,81 @@ export default function HomePage() {
     }
   }, [ingestCsv]);
 
+  /** Load this browser's remembered CSV into the page, if there is one. */
+  const restoreCsv = useCallback(() => {
+    const c = loadStoredCsv();
+    if (!c) return;
+    try {
+      ingestCsv(c.text, c.name, c.source, { loadedAt: c.loadedAt, persist: false });
+    } catch { /* a remembered CSV that no longer parses is skipped, not fatal */ }
+  }, [ingestCsv]);
+
   // Reopen on the last CSV this browser loaded, and follow another tab if it
   // loads a newer one — the copy in localStorage is the single source of truth.
   useEffect(() => {
-    const restore = () => {
-      const c = loadStoredCsv();
-      if (!c) return;
-      try {
-        ingestCsv(c.text, c.name, c.source, { loadedAt: c.loadedAt, persist: false });
-      } catch { /* a remembered CSV that no longer parses is skipped, not fatal */ }
-    };
-    restore();
+    restoreCsv();
     const onStorage = (e: StorageEvent) => {
-      if (e.key === CSV_STORAGE_KEY && e.newValue) restore();
+      if (e.key === CSV_STORAGE_KEY && e.newValue) restoreCsv();
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [ingestCsv]);
+  }, [restoreCsv]);
+
+  /**
+   * SERVER SYNC (lib/server-store.ts). Everything above reads localStorage, so
+   * the page paints at once from this browser's own copy; this then asks the
+   * server whether it holds anything newer, pulls those stores down, pushes up
+   * whatever is newer here, and reloads exactly the stores that changed.
+   *
+   * Writing localStorage from this same tab raises no `storage` event, which
+   * is why the pulled keys are reloaded by hand here rather than through the
+   * listener above. The CSV goes last: by then the 3PTL, commodity and buyback
+   * stores it will be scored against are already in place, and the auto-run
+   * reads their timestamps to decide what still needs doing.
+   *
+   * It re-runs when the tab comes back into view, no more than once a minute,
+   * so a change made on the phone shows up on the desktop without a reload.
+   */
+  const lastSyncAttempt = useRef(0);
+  const runSync = useCallback(async () => {
+    lastSyncAttempt.current = Date.now();
+    const { pulled } = await syncNow();
+    const got = (key: string) => pulled.indexOf(key) >= 0;
+    if (got(PHASE2_STORAGE_KEY))    loadPhase2FromStorage();
+    if (got(BUYBACK_STORAGE_KEY))   loadBuybacksFromStorage();
+    if (got(SENTIMENT_STORAGE_KEY)) loadSentimentsFromStorage();
+    if (got(TRENDLINE_STORAGE_KEY)) loadTrendlineFromStorage();
+    if (got(COMMODITY_STORAGE_KEY)) loadCommoditiesFromStorage();
+    if (got(HOLDINGS_STORAGE_KEY))  setHoldings(loadHoldings());
+    if (got(REDFLAG_STORAGE_KEY))   readRedFlags();
+    if (got(CSV_STORAGE_KEY))       restoreCsv();
+  // The loaders are plain functions that only call state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreCsv]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const off = onSyncStatus((st) => { if (!cancelled) setSyncStatus(st); });
+    (async () => {
+      const st = await authStatus();
+      if (cancelled) return;
+      setAccount(st);
+      if (st.configured && st.signedIn) await runSync();
+      if (!cancelled) setSyncReady(true);
+    })();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!getSyncStatus().enabled) return;
+      if (Date.now() - lastSyncAttempt.current < 60_000) return;
+      void runSync();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      off();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [runSync]);
 
   // The Stock Doctor bridge: accept a CSV posted by the bookmarklet running in
   // a Stock Doctor tab. ONLY that origin is listened to, and the payload is
@@ -1009,24 +1228,6 @@ export default function HomePage() {
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [ingestCsv]);
-
-  const loadMorningstar = useCallback(async () => {
-    if (!rawRows) return;
-    setMsLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/morningstar");
-      if (!res.ok) throw new Error(`API error ${res.status}`);
-      const ratings: MSRatings = await res.json();
-      setMsRatings(ratings);
-      setMsRated(Object.values(ratings).filter((r) => r.starRating != null).length);
-      setMsLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? `MorningStar fetch failed: ${e.message}` : "Failed to load MorningStar ratings.");
-    } finally {
-      setMsLoading(false);
-    }
-  }, [rawRows]);
 
   /**
    * Auto-check: fetch each stock's ASX announcement HTML page via the edge
@@ -1068,7 +1269,7 @@ export default function HomePage() {
           Object.entries(accumulated).map(([c, active]) => [c, { active }])
         ),
       };
-      localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
       setBuybackData(accumulated);
       setBuybackCount(activeCount);
       setBuybackLoaded(true);
@@ -1099,14 +1300,14 @@ export default function HomePage() {
     const CONCURRENCY = 3;
     const accumulated: StoredTrendlines["data"] = {};
     // Codes the engine could not read on the first pass. A transient Yahoo
-    // failure comes back as `{ error: "insufficient data" }`, which is stored
-    // as a neutral Watch — the same answer a genuinely unreadable stock gets.
-    // With more requests in flight a hiccup is a little likelier, so every
-    // unread code gets ONE more attempt before that default is accepted.
+    // failure and a genuinely chartless stock both come back as
+    // `{ error: "insufficient data" }`. With more requests in flight a hiccup
+    // is a little likelier, so every unread code gets ONE more attempt before
+    // it is recorded as having no chart.
     const unread: string[] = [];
 
     type EngineEntry = {
-      sentiment?: string; note?: string; error?: string;
+      sentiment?: string; note?: string; error?: string; months?: number;
       events?: { kind?: string; date?: string }[];
     };
 
@@ -1121,6 +1322,19 @@ export default function HomePage() {
       const data = await res.json() as Record<string, EngineEntry>;
       for (const [code, entry] of Object.entries(data)) {
         if (firstPass && entry.error) { unread.push(code); continue; }
+        if (entry.error) {
+          // Still unread on the second attempt. Recorded — so the run counts
+          // as covering this code — but as "no chart", which leaves the
+          // sentiment unscored instead of defaulting it to Watch.
+          accumulated[code] = {
+            sentiment: null,
+            unreadable: true,
+            note: typeof entry.months === "number" && entry.months > 0
+              ? `No 3PTL yet — only ${entry.months} month${entry.months === 1 ? "" : "s"} of price history`
+              : "No 3PTL — no price history could be read",
+          };
+          continue;
+        }
         // Bible Column I: "has it breached the buy line" — so the signal is
         // the most recent BUY event in the walk. enrichWithTrendlines then
         // asks whether it falls after the last results' balance date.
@@ -1177,7 +1391,7 @@ export default function HomePage() {
         checkedCount: codes.length,
         data: accumulated,
       };
-      localStorage.setItem(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
       setTrendlineData(stored);
       setTrendlineLoaded(true);
     } catch (e) {
@@ -1212,7 +1426,7 @@ export default function HomePage() {
         auto,
         manual: commodityData?.manual ?? {},
       };
-      localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
       setCommodityData(stored);
       // A refresh the auto-run started should not pop the panel open.
       if (!commodityQuiet.current) setShowCommodityPanel(true);
@@ -1241,7 +1455,7 @@ export default function HomePage() {
     setCommodityData((prev) => {
       if (!prev) return prev;
       const stored: StoredCommodities = { ...prev, manual: {} };
-      localStorage.setItem(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(COMMODITY_STORAGE_KEY, JSON.stringify(stored));
       return stored;
     });
   }, []);
@@ -1280,7 +1494,7 @@ export default function HomePage() {
         setRedFlagChecking({ done: Math.min(i + 10, batch.length), total: batch.length });
       }
       const stored: StoredRedFlags = { timestamp: new Date().toISOString(), data: merged };
-      localStorage.setItem(REDFLAG_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(REDFLAG_STORAGE_KEY, JSON.stringify(stored));
       setRedFlags(stored);
     } catch (e) {
       setError(e instanceof Error ? `Red flags: ${e.message}` : "Red flag check failed.");
@@ -1320,9 +1534,14 @@ export default function HomePage() {
         });
         if (!res.ok) throw new Error(`Trendline API error ${res.status}`);
         const data = await res.json() as Record<string, {
-          sentiment?: string; note?: string; events?: { kind?: string; date?: string }[];
+          sentiment?: string; note?: string; error?: string;
+          events?: { kind?: string; date?: string }[];
         }>;
         for (const [code, entry] of Object.entries(data)) {
+          if (entry.error) {
+            merged[code] = { sentiment: null, unreadable: true, note: "No 3PTL — not enough price history" };
+            continue;
+          }
           let lastBuyBreach: string | null = null;
           for (const e of entry.events ?? []) {
             if (e.kind === "BUY" && typeof e.date === "string") {
@@ -1341,7 +1560,7 @@ export default function HomePage() {
         checkedCount: Object.keys(merged).length,
         data: merged,
       };
-      localStorage.setItem(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
+      setSynced(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
       setTrendlineData(stored);
       setTrendlineLoaded(true);
     } catch (e) {
@@ -1407,7 +1626,7 @@ export default function HomePage() {
       const next = { ...prev };
       if (value === null) delete next[code];
       else next[code] = value;
-      localStorage.setItem(SENTIMENT_STORAGE_KEY, JSON.stringify(next));
+      setSynced(SENTIMENT_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -1421,7 +1640,7 @@ export default function HomePage() {
       checkedCount: activeCodes.length,
       data: Object.fromEntries(activeCodes.map((c) => [c.toUpperCase(), { active: true }])),
     };
-    localStorage.setItem(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
+    setSynced(BUYBACK_STORAGE_KEY, JSON.stringify(stored));
     setBuybackData(map);
     setBuybackCount(activeCodes.length);
     setBuybackLoaded(true);
@@ -1456,7 +1675,6 @@ export default function HomePage() {
    *
    *   3PTL          unless today's run already covers every code in this CSV
    *   Commodities   unless refreshed today (quietly — the panel stays shut)
-   *   MorningStar   once per visit; the ratings are not kept between visits
    *   Buybacks      unless scanned today — and NOT when the stored list was
    *                 typed in by hand, which the scan would overwrite. The two
    *                 are told apart by shape: the scan stores every code it
@@ -1468,7 +1686,8 @@ export default function HomePage() {
    *
    * The timestamps are read straight from localStorage, not from state, so the
    * decision does not depend on which of this page's effects happened to run
-   * first on mount.
+   * first on mount. It also waits for the first server sync (`syncReady`), so a
+   * device that has just pulled today's run does not repeat it.
    *
    * Once per CSV: `autoRanFor` holds the row array it last ran for, so a
    * re-score from a rate change or an override does not start it again.
@@ -1476,7 +1695,7 @@ export default function HomePage() {
    */
   const autoRanFor = useRef<StockRow[] | null>(null);
   useEffect(() => {
-    if (!rawRows || autoRanFor.current === rawRows) return;
+    if (!rawRows || !syncReady || autoRanFor.current === rawRows) return;
     autoRanFor.current = rawRows;
 
     const today = todayIso();
@@ -1504,24 +1723,21 @@ export default function HomePage() {
       void checkCommodities();
     }
 
-    if (!msLoaded) void loadMorningstar();
-
     const bb = read(BUYBACK_STORAGE_KEY) as StoredBuybacks | null;
     const entries = bb ? Object.values(bb.data ?? {}) : [];
     const typedByHand = entries.length > 0 && entries.every((e) => e.active);
     if (!typedByHand && !ranToday(bb?.timestamp)) void checkBuybacks();
-  // Deliberately keyed on the CSV alone. The four callbacks are rebuilt on
-  // almost every render; listing them would re-run this on each one.
+  // Deliberately keyed on the CSV (and on the first server sync having
+  // finished). The callbacks are rebuilt on almost every render; listing them
+  // would re-run this on each one.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows]);
+  }, [rawRows, syncReady]);
 
   const reset = useCallback(() => {
     setRawRows(null);
     setAllStocks(null);
     setBuyList([]);
     setShowAll(false);
-    setMsLoaded(false);
-    setMsRatings(null);
     // Phase 2 + buybacks are stored in localStorage — persist across CSV uploads intentionally
     // "New CSV" also forgets the remembered one; otherwise the next visit
     // would reopen on the CSV he just chose to replace.
@@ -1552,18 +1768,24 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
+      {/* PHONE WIDTH. The header used to be one unwrapping row, so on a
+          phone everything after the first two buttons ran off the right edge
+          and could not be reached. It now wraps; and because a wrapped header
+          is three rows tall, it only stays pinned to the top from tablet
+          width up — pinned on a phone it would cover a third of the screen. */}
+      <header className="bg-white border-b border-gray-200 md:sticky md:top-0 z-10">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-600 rounded-lg p-2">
               <BarChart2 className="w-5 h-5 text-white" />
             </div>
             <div>
               <h1 className="text-lg font-bold text-gray-900 leading-none">QAV Scorecard</h1>
-              <p className="text-xs text-gray-400 mt-0.5">ASX Stock Ranker — Tony Kynaston method</p>
+              <p className="hidden sm:block text-xs text-gray-400 mt-0.5">ASX Stock Ranker — Tony Kynaston method</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            <AccountControl account={account} sync={syncStatus} onSyncNow={runSync} />
             {/* Phase 2 — opens in new tab so the CSV session is not lost */}
             <Link
               href="/phase2"
@@ -1594,37 +1816,6 @@ export default function HomePage() {
                   <Settings2 className="w-4 h-4" />
                   Rates
                 </button>
-
-                {/* MorningStar */}
-                {!msLoaded && (
-                  <button
-                    onClick={loadMorningstar}
-                    disabled={msLoading}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-60 transition-colors"
-                  >
-                    <Star className={`w-4 h-4 ${msLoading ? "animate-spin" : ""}`} />
-                    {msLoading ? "Loading MS ratings…" : "Load MS Ratings"}
-                  </button>
-                )}
-                {msLoaded && msRated > 0 && (
-                  <span className="flex items-center gap-1.5 text-sm text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
-                    <Star className="w-4 h-4" />
-                    MorningStar · {msRated} rated
-                  </span>
-                )}
-                {/* The fetch succeeded but carried no ratings. Saying "loaded"
-                    here was the bug: it read as a pass while the MS criterion
-                    was unscored for every stock. */}
-                {msLoaded && msRated === 0 && (
-                  <span
-                    className="flex items-center gap-1.5 text-sm text-amber-800 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200"
-                    title={"MorningStar's public screener is returning no star ratings at the moment — its API errors on that field for every stock.\n" +
-                           "So the MorningStar criterion is unscored across the board. Nothing is wrong with your CSV; it will pick up again by itself if their API recovers."}
-                  >
-                    <Star className="w-4 h-4" />
-                    MorningStar: no ratings
-                  </span>
-                )}
 
                 {/* 3PTL auto-calculation */}
                 {!trendlineChecking && (
@@ -1961,7 +2152,7 @@ export default function HomePage() {
         )}
       </header>
 
-      <main className="max-w-screen-2xl mx-auto px-6 py-8 space-y-8">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-5 py-3 rounded-xl text-sm">
             {error}
@@ -2107,6 +2298,7 @@ export default function HomePage() {
                 <strong>Quality At Value</strong> scorecard — 15+ scoring criteria, ranked by QAV score.
               </p>
             </div>
+            {account?.configured && !account.signedIn && <AccountControl account={account} sync={syncStatus} card />}
             <UploadZone onFile={handleFile} loading={loading} />
             <SdBookmarklet />
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl w-full text-center text-sm text-gray-500">
@@ -2119,8 +2311,8 @@ export default function HomePage() {
                 <p>PE Hi/Lo and Equity Inc — upload your QAV spreadsheet once via the <Link href="/phase2" target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">Phase 2 page</Link></p>
               </div>
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-                <p className="font-semibold text-gray-700 mb-1">Phase 3</p>
-                <p>MorningStar analyst star ratings for 200+ ASX stocks</p>
+                <p className="font-semibold text-gray-700 mb-1">Live checks</p>
+                <p>3PTL, commodities and buybacks run by themselves once a CSV is in</p>
               </div>
             </div>
           </div>
@@ -2154,7 +2346,7 @@ export default function HomePage() {
               <SdBookmarklet compact />
             </div>
 
-            <SummaryStats all={statsAll} buyList={statsBuyList} msLoaded={msLoaded} />
+            <SummaryStats all={statsAll} buyList={statsBuyList} />
 
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -2240,7 +2432,6 @@ export default function HomePage() {
                 <li><strong>IV2</strong> = Forecast EPS ÷ Market Hurdle ({(marketHurdle * 100).toFixed(2)}%) — driven by RBA cash rate ({cashRate}%) + 6%</li>
                 <li>Phase 1 (3PTL short sentiment) requires the manual Python pipeline</li>
                 <li><strong>Phase 2</strong> — upload your QAV analysis workbook once via the <Link href="/phase2" target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">Phase 2 page</Link>. Scores are stored in your browser and applied automatically every time you upload a CSV. PE Hi/Lo: +2 = lowest in 3yrs, 0 = middle, −1 = highest. Equity Inc: +1 = increasing, 0 = not</li>
-                <li>MorningStar: 4–5★ = stock trading below analyst fair value → S_sp_lt_iv3 = 1</li>
               </ul>
             </div>
           </div>
@@ -2250,7 +2441,7 @@ export default function HomePage() {
       <footer className="border-t border-gray-200 bg-white mt-16">
         <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between text-xs text-gray-400">
           <span>QAV method by Tony Kynaston — automated scoring pipeline</span>
-          <span>Phase 0 + Phase 2 (QAV Spreadsheet) + Phase 3 (MorningStar)</span>
+          <span>Phase 0 + Phase 2 (QAV Spreadsheet) + live 3PTL, commodities and buybacks</span>
         </div>
       </footer>
     </div>

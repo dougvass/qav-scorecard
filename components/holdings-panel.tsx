@@ -78,6 +78,9 @@ export default function HoldingsPanel({
       const gated = commoditySentiment === "Bearish" && !advisory;
       return {
         code, stock, sentiment, effective, gated,
+        // No 3PTL could be drawn for it (under a year of history). Known, not
+        // missing — so it must not be offered for a re-check that cannot help.
+        noChart: !!tl?.unreadable,
         commodity: def ? (def.label + (def.proxy ? "*" : "")) : null,
         note: tl?.note ?? null,
         alert: gated || isHoldingAlert(sentiment) || isHoldingAlert(effective),
@@ -88,7 +91,7 @@ export default function HoldingsPanel({
 
   const alerts = rows.filter((r) => r.alert);
   const gatedCount = rows.filter((r) => r.gated).length;
-  const unknown = rows.filter((r) => !r.sentiment).map((r) => r.code);
+  const unknown = rows.filter((r) => !r.sentiment && !r.noChart).map((r) => r.code);
 
   function removeCode(code: string) {
     onSave(codes.filter((c) => c !== code));
@@ -182,19 +185,19 @@ export default function HoldingsPanel({
       {/* The list itself. */}
       {codes.length > 0 && !editing && (
         <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm md:min-w-[640px]">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-gray-500 border-b border-gray-200">
                 <th className="text-left px-3 py-2 font-semibold">Code</th>
-                <th className="text-left px-3 py-2 font-semibold">Name</th>
+                <th className="hidden md:table-cell text-left px-3 py-2 font-semibold">Name</th>
                 <th className="text-left px-3 py-2 font-semibold">3PTL</th>
-                <th className="text-left px-3 py-2 font-semibold">Line</th>
+                <th className="hidden md:table-cell text-left px-3 py-2 font-semibold">Line</th>
                 <th className="text-right px-3 py-2 font-semibold">QAV</th>
                 <th className="text-center px-3 py-2 font-semibold"
                     title="Average score per column (TotalScore ÷ Count) — green ≥ 75%">
                   Quality
                 </th>
-                <th className="text-center px-3 py-2 font-semibold">Buy list</th>
+                <th className="hidden md:table-cell text-center px-3 py-2 font-semibold">Buy list</th>
                 <th className="w-8 px-2 py-2"><span className="sr-only">Remove</span></th>
               </tr>
             </thead>
@@ -209,7 +212,7 @@ export default function HoldingsPanel({
                       {r.code}
                     </a>
                   </td>
-                  <td className="px-3 py-2 text-gray-600 max-w-[220px] truncate">
+                  <td className="hidden md:table-cell px-3 py-2 text-gray-600 max-w-[220px] truncate">
                     {r.stock?.Name ?? <span className="text-gray-400">not in the loaded CSV</span>}
                   </td>
                   <td className="px-3 py-2">
@@ -221,6 +224,11 @@ export default function HoldingsPanel({
                     ) : r.sentiment ? (
                       <span className={`px-2 py-0.5 rounded border text-xs font-medium ${TONE[r.sentiment] ?? "bg-gray-100 text-gray-500 border-gray-300"}`}>
                         {r.sentiment}
+                      </span>
+                    ) : r.noChart ? (
+                      <span className="px-2 py-0.5 rounded border text-xs font-medium bg-gray-100 text-gray-500 border-gray-300"
+                            title="Under a year of price history, so no 3PTL can be drawn yet — there is no sell line to break">
+                        No chart
                       </span>
                     ) : <span className="text-gray-400 text-xs">—</span>}
                     {r.gated && (
@@ -234,7 +242,7 @@ export default function HoldingsPanel({
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-xs text-gray-500 max-w-[260px] truncate"
+                  <td className="hidden md:table-cell px-3 py-2 text-xs text-gray-500 max-w-[260px] truncate"
                       title={r.gated ? `${r.commodity} is a sell (QAV commodity rule)` : (r.note ?? "")}>
                     {r.gated ? `${r.commodity} is a sell` : (r.note ?? "")}
                   </td>
@@ -256,7 +264,7 @@ export default function HoldingsPanel({
                       </span>
                     ) : <span className="text-xs text-gray-300">—</span>}
                   </td>
-                  <td className="px-3 py-2 text-center">
+                  <td className="hidden md:table-cell px-3 py-2 text-center">
                     {r.stock && typeof r.stock.QAV === "number" && r.stock.QAV >= 10
                       ? <span className="text-emerald-600" title="Qualifies for the buy list">●</span>
                       : <span className="text-gray-300">·</span>}

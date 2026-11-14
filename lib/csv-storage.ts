@@ -16,11 +16,14 @@
  *
  * Stored as the decoded TEXT of the export, not the parsed rows: the text is
  * ~155KB against ~400KB of JSON, and re-parsing it on load takes a few
- * milliseconds. localStorage, like every other store in this app — so it is
- * per browser, not shared across devices. That is deliberate for now: the CSV
- * is Stock Doctor's subscriber data and this site has no login, so putting it
- * on the server would publish it.
+ * milliseconds. localStorage is the working copy, as for every other store in
+ * this app. Once Doug has set a passcode and signed in, it is also mirrored to
+ * the server (lib/server-store.ts) so the same CSV opens on his phone — behind
+ * the passcode, because it is Stock Doctor's subscriber data and the URL is
+ * public. Signed out, it stays in this browser only.
  */
+
+import { setSynced, removeSynced } from "./server-store";
 
 export const CSV_STORAGE_KEY = "qav_csv_v1";
 
@@ -49,16 +52,11 @@ export function loadStoredCsv(): StoredCsv | null {
 /** Returns false when the browser refused it (quota). The CSV still loads for
  *  this visit; it just will not be there on the next one. */
 export function saveStoredCsv(csv: StoredCsv): boolean {
-  try {
-    localStorage.setItem(CSV_STORAGE_KEY, JSON.stringify(csv));
-    return true;
-  } catch {
-    return false;
-  }
+  return setSynced(CSV_STORAGE_KEY, JSON.stringify(csv));
 }
 
 export function clearStoredCsv(): void {
-  try { localStorage.removeItem(CSV_STORAGE_KEY); } catch { /* nothing to clear */ }
+  removeSynced(CSV_STORAGE_KEY);
 }
 
 /** "14 Nov, 11:42 am" — when the remembered CSV was loaded. */

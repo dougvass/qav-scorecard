@@ -6,13 +6,15 @@ import { TrendingUp, Star, BarChart2, DollarSign } from "lucide-react";
 interface SummaryStatsProps {
   all: ScoredStock[];
   buyList: ScoredStock[];
-  msLoaded: boolean;
 }
 
-export function SummaryStats({ all, buyList, msLoaded }: SummaryStatsProps) {
+export function SummaryStats({ all, buyList }: SummaryStatsProps) {
   const topStock = buyList[0];
-  const msCovered = all.filter((s) => s.S_sp_lt_iv3 !== null).length;
-  const msBelowFV = all.filter((s) => s.S_sp_lt_iv3 === 1).length;
+  // The third tile used to be MorningStar coverage. MorningStar was dropped on
+  // 2026-11-14 (its public API stopped returning star ratings), so the tile
+  // now answers a question that is always live: how much of the buy list the
+  // 3PTL currently reads as a buy.
+  const bullish = buyList.filter((s) => s.S_sentiment_long === 2).length;
 
   const stats = [
     {
@@ -31,11 +33,11 @@ export function SummaryStats({ all, buyList, msLoaded }: SummaryStatsProps) {
     },
     {
       icon: <Star className="w-5 h-5 text-amber-600" />,
-      label: "MorningStar coverage",
-      value: msLoaded ? `${msCovered}` : "—",
-      sub: msLoaded
-        ? `${msBelowFV} below fair value (4–5★)`
-        : "Click 'Load MS Ratings' to fetch",
+      label: "Bullish on the buy list",
+      value: buyList.length > 0 ? `${bullish}` : "—",
+      sub: buyList.length > 0
+        ? `of ${buyList.length} — above both 3PTL lines`
+        : "Load a CSV to see",
       bg: "bg-amber-50",
     },
     {

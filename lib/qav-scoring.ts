@@ -234,11 +234,9 @@ function scoreOwnership(row: StockRow): number {
 // ─── Main scoring pipeline ─────────────────────────────────────────────────
 
 /** Compute Phase 0 QAV scores for a list of StockRow objects.
- *  MS ratings (Phase 3) can be passed in via msRatings dict.
  *  rates overrides the default hurdle rates (RRR for IV1, marketHurdle for IV2). */
 export function scoreStocks(
   rows: StockRow[],
-  msRatings?: Record<string, number | null>,
   rates: Partial<ScoringRates> = {}
 ): ScoredStock[] {
   const rrr = rates.rrr ?? DEFAULT_RRR;
@@ -260,7 +258,6 @@ export function scoreStocks(
       S_sp_lt_iv1: scoreSpLtIv1(row, rrr),
       S_sp_lt_iv2: scoreSpLtIv2(row, mh),
       "S_sp_lt_0.5iv2": scoreSpLtHalfIv2(row, mh),
-      S_sp_lt_iv3: msRatings ? (msRatings[row.Code] ?? null) : null,
       S_sp_lt_iv4: scoreSpLtIv4Consensus(row),
       S_star: scoreStarStock(row),
       S_fh_rating: scoreFhRating(row),
@@ -329,10 +326,4 @@ export function scoreColor(val: number | null): string {
   if (val > 0) return "text-emerald-700 font-semibold";
   if (val < 0) return "text-red-600 font-semibold";
   return "text-gray-400";
-}
-
-/** Convert a MorningStar star rating to S_sp_lt_iv3 score. */
-export function starToIv3Score(starRating: number | null): number | null {
-  if (starRating === null) return null;
-  return starRating >= 4 ? 1 : 0;
 }

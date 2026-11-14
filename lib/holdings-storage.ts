@@ -15,6 +15,8 @@
  * Codes live in localStorage, so they stay on this browser and never leave it.
  */
 
+import { setSynced } from "./server-store";
+
 export const HOLDINGS_STORAGE_KEY = "qav_holdings_v1";
 
 export interface StoredHoldings {
@@ -101,9 +103,9 @@ export function saveHoldings(codes: string[]): StoredHoldings {
     timestamp: new Date().toISOString(),
     codes: Array.from(new Set(codes.map((c) => c.toUpperCase()))).sort(),
   };
-  try {
-    localStorage.setItem(HOLDINGS_STORAGE_KEY, JSON.stringify(stored));
-  } catch { /* nothing to do: the list is still live in memory for this session */ }
+  // Mirrored to the server when signed in, so the phone watches the same
+  // list. A refused write leaves the list live in memory for this session.
+  setSynced(HOLDINGS_STORAGE_KEY, JSON.stringify(stored));
   return stored;
 }
 

@@ -14,6 +14,7 @@
  * IF NOT EXISTS on first use, which is idempotent and costs one round trip.
  */
 import { createPool, VercelPool } from "@vercel/postgres";
+import { requireSession } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,6 +76,11 @@ function iso(d: unknown): string {
 }
 
 export async function GET(request: Request) {
+  // Once a passcode exists, QAV history is protected like everything else the
+  // site stores. With none set it stays open, as it has been since September,
+  // so deploying the passcode feature changes nothing here until it is used.
+  const denied = requireSession(request, { openWhenUnconfigured: true });
+  if (denied) return denied;
   if (!configured()) {
     return Response.json({ configured: false, data: {}, reason: "POSTGRES_URL not set" });
   }
@@ -105,6 +111,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const denied = requireSession(request, { openWhenUnconfigured: true });
+  if (denied) return denied;
   const body = (await request.json()) as { date?: string; rows?: Row[] };
   const date = body.date;
   const rows = (body.rows ?? []).filter((r) => r?.code);
