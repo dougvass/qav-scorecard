@@ -225,6 +225,28 @@ const BACK_ON_THE_BOARDS = /admission\s+to\s+official\s+list|reinstatement\s+to\
 // ── The status ───────────────────────────────────────────────────────────────
 
 /**
+ * The reports in a feed that are about a LATER period than the one Stock
+ * Doctor holds, oldest first. The two rules are spelled out on
+ * `reportingStatus`, which is built on this; it is exported for the route that
+ * goes on to READ such a report (app/api/asx-financials).
+ */
+export function laterPeriodReports(items: FeedItem[], balanceDate: string): PeriodicReport[] {
+  const bal = balanceDate.slice(0, 10);
+  const nextPeriodEnd = addMonths(bal, 6);
+  const reports = periodicReports(items).filter((r) => r.date > bal);
+  const own = reports.find((r) => r.date < nextPeriodEnd);
+  return reports.filter((r) =>
+    r.date >= nextPeriodEnd ||
+    (!!own && own.kind !== "unknown" && r.kind !== "unknown" && r.kind !== own.kind && r.date > own.date));
+}
+
+/** A results day brings a presentation and a webcast notice tagged exactly
+ *  like the report. True for those — not the document with the statements. */
+export function isSupportingDocument(headline: string): boolean {
+  return SUPPORTING.test(headline);
+}
+
+/**
  * Classify one company.
  *
  * WHICH REPORTS ARE FOR A LATER PERIOD than the one Stock Doctor holds:
@@ -255,11 +277,7 @@ export function reportingStatus(
   const deadlineMonths: 2 | 3 = lodgesAppendix(items) ? 2 : 3;
   const dueBy = addMonths(nextPeriodEnd, deadlineMonths);
 
-  const reports = periodicReports(items).filter((r) => r.date > bal);
-  const own = reports.find((r) => r.date < nextPeriodEnd);
-  const newer = reports.filter((r) =>
-    r.date >= nextPeriodEnd ||
-    (!!own && own.kind !== "unknown" && r.kind !== "unknown" && r.kind !== own.kind && r.date > own.date));
+  const newer = laterPeriodReports(items, bal);
 
   let relisted: string | undefined;
   for (const it of items) {

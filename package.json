@@ -9,13 +9,15 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@vercel/postgres": "^0.10.0",
     "lucide-react": "^0.474.0",
     "next": "14.2.29",
     "react": "^18",
     "react-dom": "^18",
     "unpdf": "^0.12.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "typescript": "^5",

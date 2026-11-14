@@ -508,6 +508,16 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
                           ♻️ P2
                         </a>
                       )}
+                      {/* Scored from the company's own ASX report because Stock
+                          Doctor is a period behind — lib/asx-financials.ts. */}
+                      {!!(stock as Record<string, unknown>)._asxPeriod && (
+                        <span
+                          className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-800 border border-teal-300 align-middle cursor-help"
+                          title={String((stock as Record<string, unknown>)._asxNote ?? "")}
+                        >
+                          📄 ASX {String((stock as Record<string, unknown>)._asxPeriod).slice(0, 7)}
+                        </span>
+                      )}
                       {(stock as Record<string, unknown>)._staleData === 1 && (() => {
                         // What the ASX says about it, when the reporting check
                         // has an answer for the period this stock is still on.

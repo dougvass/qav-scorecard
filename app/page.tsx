@@ -46,6 +46,15 @@ import {
   formatDay,
 } from "@/lib/reporting";
 import {
+  ASX_FINANCIALS_STORAGE_KEY,
+  StoredAsxFinancials,
+  AsxFinancialsRecord,
+  AsxRead,
+  deriveFromReport,
+  isInForce,
+  applyToRow,
+} from "@/lib/asx-financials";
+import {
   HOLDINGS_STORAGE_KEY,
   StoredHoldings,
   loadHoldings,
@@ -267,7 +276,11 @@ function enrichWithPhase2(stocks: ScoredStock[], phase2: Phase2Map): ScoredStock
     // Must be read BEFORE the freshness block below, which may move
     // `_lastPeriod` forward — though only in the opposite case, where Phase 2
     // is the newer of the two.
-    const csvPeriod = ((enriched as Record<string, unknown>)._lastPeriod as string | undefined) ?? null;
+    // Against STOCK DOCTOR's period, not the ASX report's: the history is
+    // collected from Stock Doctor, so a stock scored from its own report is not
+    // "out of date" there — Stock Doctor has nothing newer to collect.
+    const csvPeriod = ((enriched as Record<string, unknown>)._sdPeriod as string | undefined)
+      ?? ((enriched as Record<string, unknown>)._lastPeriod as string | undefined) ?? null;
     const p2Period = data.lastPeriod ?? null;
     const holdsData = data.S_pe_hi_lo !== null || data.S_equity_inc !== null || !!data.peHistory;
     const phase2Stale = holdsData && p2Period !== null && csvPeriod !== null &&
@@ -815,6 +828,10 @@ export default function HomePage() {
    *  is re-derived from public data on every device, every day. */
   const [reporting, setReporting] = useState<StoredReporting | null>(null);
   const [reportingChecking, setReportingChecking] = useState(false);
+  /** Figures read from a company's own ASX report, standing in for Stock
+   *  Doctor's while it is a period behind — see lib/asx-financials.ts. */
+  const [asxFinancials, setAsxFinancials] = useState<StoredAsxFinancials | null>(null);
+  const [asxReading, setAsxReading] = useState<string | null>(null);
   const [phase2Loaded, setPhase2Loaded] = useState(false);
   const [phase2StockCount, setPhase2StockCount] = useState(0);
   const [phase2Data, setPhase2Data] = useState<Phase2Map | null>(null);
@@ -949,6 +966,13 @@ export default function HomePage() {
     } catch { /* an unreadable cache is the same as none */ }
   }, []);
 
+  const readAsxFinancials = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(ASX_FINANCIALS_STORAGE_KEY);
+      setAsxFinancials(raw ? JSON.parse(raw) as StoredAsxFinancials : null);
+    } catch { /* an unreadable cache is the same as none */ }
+  }, []);
+
   const readReporting = useCallback(() => {
     try {
       const raw = localStorage.getItem(REPORTING_STORAGE_KEY);
@@ -965,10 +989,12 @@ export default function HomePage() {
     setHoldings(loadHoldings());
     readRedFlags();
     readReporting();
+    readAsxFinancials();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === HOLDINGS_STORAGE_KEY)  setHoldings(loadHoldings());
       if (e.key === REDFLAG_STORAGE_KEY)   readRedFlags();
+      if (e.key === ASX_FINANCIALS_STORAGE_KEY) readAsxFinancials();
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
       if (e.key === BUYBACK_STORAGE_KEY)   loadBuybacksFromStorage();
       if (e.key === SENTIMENT_STORAGE_KEY) loadSentimentsFromStorage();
@@ -1105,8 +1131,20 @@ export default function HomePage() {
   // Re-score whenever raw rows, rates, or enrichment data changes
   useEffect(() => {
     if (!rawRows) return;
-    let scored = scoreStocks(rawRows, rates);
-    scored = enrichWithCsvFreshness(scored, rawRows);   // freshness from the CSV first
+    // Where Stock Doctor is a period behind and the company's own report has
+    // been read, score from the report. The swap happens on the ROW, before
+    // anything is scored, so every criterion, the buy list and the hold all
+    // follow from the same figures. It undoes itself: a record only applies
+    // while Stock Doctor is still on the period it was built on.
+    const rows = asxFinancials
+      ? rawRows.map((r) => {
+          const rec = asxFinancials.data[String(r.Code).toUpperCase()];
+          const sdPeriod = parseSdDate(r["Last Period Analysed"]);
+          return rec && sdPeriod && isInForce(rec, sdPeriod) ? applyToRow(r, rec) : r;
+        })
+      : rawRows;
+    let scored = scoreStocks(rows, rates);
+    scored = enrichWithCsvFreshness(scored, rows);      // freshness from the CSV first
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
     if (trendlineData) scored = enrichWithTrendlines(scored, trendlineData);   // auto 3PTL
@@ -1121,7 +1159,7 @@ export default function HomePage() {
   // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
   // one until something else happened to trigger a re-score.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides]);
+  }, [rawRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides, asxFinancials]);
 
   /**
    * Load a Stock Doctor CSV from its decoded text, however it arrived — a file
@@ -1208,6 +1246,7 @@ export default function HomePage() {
     if (got(COMMODITY_STORAGE_KEY)) loadCommoditiesFromStorage();
     if (got(HOLDINGS_STORAGE_KEY))  setHoldings(loadHoldings());
     if (got(REDFLAG_STORAGE_KEY))   readRedFlags();
+    if (got(ASX_FINANCIALS_STORAGE_KEY)) readAsxFinancials();
     if (got(CSV_STORAGE_KEY))       restoreCsv();
   // The loaders are plain functions that only call state setters.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1761,6 +1800,119 @@ export default function HomePage() {
   // checkReporting is stable; holdTargets carries everything this depends on.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdTargets, syncReady]);
+
+  /** Write the ASX-figures store (synced, like the other stores) and state. */
+  const saveAsxFinancials = useCallback((data: Record<string, AsxFinancialsRecord>) => {
+    const next: StoredAsxFinancials = { timestamp: new Date().toISOString(), data };
+    setSynced(ASX_FINANCIALS_STORAGE_KEY, JSON.stringify(next));
+    setAsxFinancials(next);
+  }, []);
+
+  /** The current store straight from localStorage — a run of reads updates it
+   *  several times, and state would be a render behind. */
+  const currentAsxFinancials = useCallback((): Record<string, AsxFinancialsRecord> => {
+    try {
+      const raw = localStorage.getItem(ASX_FINANCIALS_STORAGE_KEY);
+      return raw ? { ...(JSON.parse(raw) as StoredAsxFinancials).data } : {};
+    } catch { return {}; }
+  }, []);
+
+  /** Accept, reject or forget one reading. */
+  const updateAsxRecord = useCallback((code: string, change: Partial<AsxFinancialsRecord> | null) => {
+    const data = currentAsxFinancials();
+    if (change === null) delete data[code];
+    else if (data[code]) data[code] = { ...data[code], ...change };
+    saveAsxFinancials(data);
+  }, [currentAsxFinancials, saveAsxFinancials]);
+
+  /** Stock Doctor's own period for every code in the loaded export. */
+  const sdPeriods = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const r of rawRows ?? []) {
+      const iso = parseSdDate(r["Last Period Analysed"]);
+      if (iso) out[String(r.Code).toUpperCase()] = iso;
+    }
+    return out;
+  }, [rawRows]);
+
+  /**
+   * Read the ASX report for one stock and store what it says.
+   *
+   * The route does the reading and returns only what is in the public report.
+   * Stock Doctor's side of the reconciliation — its cash flow, EPS, equity and
+   * share count — is taken from the export here, in the browser.
+   */
+  const readAsxReport = useCallback(async (code: string): Promise<void> => {
+    const row = (rawRows ?? []).find((r) => String(r.Code).toUpperCase() === code);
+    const period = row ? parseSdDate(row["Last Period Analysed"]) : null;
+    if (!row || !period) return;
+    setAsxReading(code);
+    try {
+      const res = await fetch("/api/asx-financials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, balanceDate: period }),
+      });
+      if (!res.ok) throw new Error(`ASX report ${res.status}`);
+      const read = await res.json() as AsxRead;
+      const numberOf = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
+      const record = deriveFromReport({
+        period,
+        cf: numberOf(row["CF: Net Operating ($)"]),
+        eps: numberOf(row["EPS Bef Abnormals (c)"]),
+        equity: numberOf(row["Equity ($)"]),
+        sharesM: numberOf(row["Shares Outstanding (M)"]),
+      }, read);
+      const data = currentAsxFinancials();
+      data[code] = record;
+      saveAsxFinancials(data);
+    } catch (e) {
+      console.warn("ASX report read failed", code, e);
+    } finally {
+      setAsxReading(null);
+    }
+  }, [rawRows, currentAsxFinancials, saveAsxFinancials]);
+
+  /**
+   * Read the report, unprompted, for every buy-list stock the reporting check
+   * found has reported while Stock Doctor has not caught up.
+   *
+   * Doug, 2026-11-14: "for stocks on the buy list that are on the hold due to
+   * SD not updating their data. Download their updated reports from the ASX and
+   * read them ... We keep that data stored until a SD update is available."
+   *
+   * One read per (stock, Stock Doctor period): a stored record of any status —
+   * applied, waiting for his OK, rejected, unreadable — means it has been done.
+   * The same pass DROPS records Stock Doctor has since overtaken, which is the
+   * "until a SD update is available" half.
+   */
+  const asxTried = useRef(new Set<string>());
+  useEffect(() => {
+    if (!syncReady || !rawRows || !allStocks) return;
+    const data = currentAsxFinancials();
+    const overtaken = Object.keys(data).filter((code) => sdPeriods[code] !== data[code].basedOn);
+    if (overtaken.length) {
+      for (const code of overtaken) delete data[code];
+      saveAsxFinancials(data);
+      return;                       // the save re-runs this effect
+    }
+    if (asxReading) return;
+    // Companies only. A fund's annual report has a cash flow statement too,
+    // but its "operating cash flow" is distributions and unit trades — there is
+    // no QAV reading to be had from it, whatever the ETF toggle says.
+    const onBuyList = new Set(buyList.filter((b) => !isEtfOrFund(b)).map((b) => b.Code));
+    const next = Object.keys(reporting?.data ?? {}).find((code) => {
+      const r = reporting!.data[code];
+      const key = `${code}:${r.balanceDate}`;
+      return r.state === "reported" && sdPeriods[code] === r.balanceDate && onBuyList.has(code)
+        && !data[code] && !asxTried.current.has(key);
+    });
+    if (!next) return;
+    asxTried.current.add(`${next}:${reporting!.data[next].balanceDate}`);
+    void readAsxReport(next);
+  // readAsxReport and the two store helpers change only with rawRows.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncReady, rawRows, allStocks, buyList, reporting, asxFinancials, asxReading, sdPeriods]);
 
   /**
    * The red flags as shown: the stored check, plus "results overdue" from the
@@ -2515,6 +2667,126 @@ export default function HomePage() {
                   </div>
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* ASX reports standing in for Stock Doctor. Doug, 2026-11-14: "Download
+            their updated reports from the ASX and read them to extract the
+            relevant data to do our scoring. We keep that data stored until a SD
+            update is available."
+
+            Three groups, because a reading is only applied by itself when it
+            reconciles with what Stock Doctor already holds (lib/asx-financials):
+            in use; waiting for his OK, with the reason; and not readable. Every
+            row links to the report and shows before -> after, so a reading can
+            be checked against the PDF in one click. */}
+        {(() => {
+          if (!allStocks) return null;
+          const records = Object.values(asxFinancials?.data ?? {})
+            .filter((r) => sdPeriods[r.code] === r.basedOn)
+            .sort((a, b) => a.code.localeCompare(b.code));
+          if (records.length === 0 && !asxReading) return null;
+          const inUse = records.filter((r) => isInForce(r, r.basedOn));
+          const waiting = records.filter((r) => r.status === "review" && !r.accepted && !r.dismissed);
+          const unread = records.filter((r) => r.status === "failed" && !r.dismissed);
+          const ignored = records.filter((r) => r.dismissed);
+          const millions = (v: number | null) =>
+            v === null ? "—" : `${(v / 1e6).toLocaleString("en-AU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
+          const centsOf = (v: number | null) => (v === null ? "—" : `${v.toFixed(2)}c`);
+          const span = (r: AsxFinancialsRecord) =>
+            `${r.months === 6 ? "Half year" : r.months === 12 ? "Year" : `${r.months} months`} to ${formatDay(r.period)}` +
+            (r.reader === "claude" ? " · read by Claude" : "");
+          const figures = (r: AsxFinancialsRecord) => (
+            <span className="font-mono text-[11px]" title={r.basis.join("\n")}>
+              Cash flow A${millions(r.was.cf)} → A${millions(r.values.cf)} · EPS {centsOf(r.was.eps)} → {centsOf(r.values.eps)} ·
+              Equity A${millions(r.was.equity)} → A${millions(r.values.equity)}
+            </span>
+          );
+          const link = (r: AsxFinancialsRecord) => r.source && (
+            <a
+              href={r.source.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-teal-950"
+              title={`"${r.source.headline}", lodged ${formatDay(r.source.date)}. ` +
+                     Object.keys(r.evidence).map((k) => `${k}: p.${r.evidence[k].page}`).join(", ")}
+            >
+              report ↗
+            </a>
+          );
+          const button = (label: string, onClick: () => void, strong?: boolean) => (
+            <button
+              onClick={onClick}
+              disabled={!!asxReading}
+              className={`px-2 py-0.5 rounded-md border text-[11px] transition-colors disabled:opacity-50 ${
+                strong ? "bg-teal-700 border-teal-700 text-white hover:bg-teal-800" : "bg-white border-teal-300 hover:bg-teal-100"
+              }`}
+            >
+              {label}
+            </button>
+          );
+          const reasons = (r: AsxFinancialsRecord) => r.checks.filter((k) => !k.ok).map((k) => k.detail).join(" ");
+          return (
+            <div className="bg-teal-50 border border-teal-200 text-teal-900 px-5 py-3 rounded-xl text-sm space-y-2">
+              <p className="font-semibold">
+                📄 Scored from the company&apos;s own ASX report where Stock Doctor is a period behind
+                {inUse.length > 0 && <> — {inUse.length} in use</>}
+                {waiting.length > 0 && <>, {waiting.length} waiting for your OK</>}.
+                {asxReading && <span className="font-normal text-teal-600"> Reading {asxReading}…</span>}
+              </p>
+              {inUse.map((r) => (
+                <div key={r.code} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                  <span className="font-bold w-12">{r.code}</span>
+                  <span>{span(r)}</span>
+                  {figures(r)}
+                  {link(r)}
+                  {button("Read again", () => void readAsxReport(r.code))}
+                  {button("Stop using", () => updateAsxRecord(r.code, { dismissed: true }))}
+                </div>
+              ))}
+              {waiting.map((r) => (
+                <div key={r.code} className="space-y-1 text-xs border-t border-teal-200 pt-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="font-bold w-12">{r.code}</span>
+                    <span>{span(r)}</span>
+                    {figures(r)}
+                    {link(r)}
+                    {button("Use these numbers", () => updateAsxRecord(r.code, { accepted: true }), true)}
+                    {button("Ignore", () => updateAsxRecord(r.code, { dismissed: true }))}
+                    {button("Read again", () => void readAsxReport(r.code))}
+                  </div>
+                  <p className="text-amber-800">
+                    Needs your OK: {reasons(r)}
+                    {r.readerNote ? ` ${r.readerNote}` : ""}
+                  </p>
+                </div>
+              ))}
+              {unread.map((r) => (
+                <div key={r.code} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs border-t border-teal-200 pt-2">
+                  <span className="font-bold w-12">{r.code}</span>
+                  <span className="text-amber-800">Could not be read: {reasons(r) || "no figures found"}</span>
+                  {link(r)}
+                  {button("Try again", () => void readAsxReport(r.code))}
+                </div>
+              ))}
+              {ignored.length > 0 && (
+                <p className="text-xs text-teal-700 border-t border-teal-200 pt-2">
+                  Ignored — still on Stock Doctor&apos;s numbers and the hold:{" "}
+                  {ignored.map((r) => (
+                    <button
+                      key={r.code}
+                      onClick={() => updateAsxRecord(r.code, { dismissed: false })}
+                      className="underline mr-2 hover:text-teal-950"
+                      title="Bring this reading back"
+                    >
+                      {r.code}
+                    </button>
+                  ))}
+                </p>
+              )}
+              <p className="text-[11px] text-teal-700">
+                Cash flow and EPS are rolling twelve months in Australian dollars, the way Stock Doctor shows them. Financial
+                Health, Star Stock, forecasts, dividend yield and share count are carried over from Stock Doctor. Each reading
+                is dropped the day Stock Doctor shows the same period.
+              </p>
             </div>
           );
         })()}

@@ -43,6 +43,7 @@ export const SYNCED_KEYS = [
   "qav_buybacks_v1",
   "qav_commodity_v1",
   "qav_redflags_v1",
+  "qav_asx_financials_v1",
 ] as const;
 
 const SYNCED = new Set<string>(SYNCED_KEYS);
