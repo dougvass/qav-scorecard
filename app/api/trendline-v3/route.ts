@@ -109,11 +109,15 @@ async function fetchDaily(code: string): Promise<{ price: number | null; prevMon
   } catch { return empty; }
 }
 
-/** The reading as the engine gave it before the 2026-11-15 rules — same bars,
- *  same price — for `?compare=1`. See V3_RULES in lib/trendline-v3.ts. */
+/** The reading as PRODUCTION gives it — every 2026-11-15 rule off — from the
+ *  same bars and the same price, for `?compare=1`. See V3_RULES in
+ *  lib/trendline-v3.ts. */
 function before(bars: V3Bar[], price: number, lmc: number | null) {
   const w = classifyV3Before(bars, price, lmc);
-  return { sentiment: w.sentiment, buy: w.buy, sell: w.sell, note: w.note, h1: w.h1, h2: w.h2 };
+  return {
+    sentiment: w.sentiment, buy: w.buy, sell: w.sell, note: w.note,
+    h1: w.h1, h2: w.h2, l1: w.l1, l2: w.l2,
+  };
 }
 
 async function run(code: string, compare = false) {
@@ -131,6 +135,8 @@ async function run(code: string, compare = false) {
     lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
     h1: r.h1, h2: r.h2, l1: r.l1, l2: r.l2,
+    // The sell line is a safety net / is still forming under a holding.
+    net: r.net, forming: r.forming,
     // The walk's event dates are NOT a tradeable history — L2 selection is not
     // strictly causal (see the caveat in lib/trendline-v3.ts). Useful for
     // debugging a reading, not for a "date became sell" column.
@@ -157,7 +163,9 @@ async function runCommodity(name: string, compare = false) {
     if (bars.length < 12) return { symbol: "embedded", error: "insufficient data", months: bars.length };
     const price = bars[bars.length - 1].close;
     const lmc = bars.length >= 2 ? bars[bars.length - 2].close : null;
-    const r = classifyV3(bars, price, lmc);
+    // The price IS the last monthly close, so the lines are read at that month
+    // and not one on (the `live` flag of classifyV3).
+    const r = classifyV3(bars, price, lmc, undefined, false);
     return {
       ...(compare ? { was: before(bars, price, lmc) } : {}),
       symbol: "embedded", months: bars.length, asOf: emb.asOf,

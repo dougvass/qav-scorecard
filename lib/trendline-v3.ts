@@ -83,6 +83,12 @@ export interface V3Result {
   h1: V3Anchor | null;
   h2: V3Anchor | null;
   events: V3Event[];
+  /** The sell line is a SAFETY NET — the 8% waived — under a holding that has
+   *  no other line (Doug on MTS, 2026-11-15). */
+  net?: boolean;
+  /** Held, and the sell line is still being formed: price sits under it without
+   *  that being a sell (rule 10). */
+  forming?: boolean;
 }
 
 /** 8% separation, measured off the lower of the two prices. */
@@ -99,7 +105,28 @@ export const SEP = 0.08;
  *   lockH2WhileHolding   once H2 is a confirmed peak the buy line is locked for
  *                        as long as the stock is held (see the walk)
  */
-export const V3_RULES = { stepOffFlatTop: true, lockH2WhileHolding: true };
+export const V3_RULES = {
+  stepOffFlatTop: true,
+  lockH2WhileHolding: true,
+  // ── The buy/sell INTERACTION, from his real-time walks of LNAS, AMC and MTS
+  //    (2026-11-15). Mirrored in tools/cand_walk2.py, where each was measured
+  //    alone against every stock he has qualified. ──
+  /** Both lines are read at the CURRENT month, not the last complete one. */
+  readAtCurrentMonth: true,
+  /** A holding always has a sell line: normal rules, then L1 anywhere on a flat
+   *  bottom, then a safety net with the 8% waived. */
+  safetyNet: true,
+  /** While the holding's proper line is still forming, it stands on the net. */
+  netWhileForming: true,
+  /** After a holding is sold the buy line is re-anchored on the top made since
+   *  the buy; H1 moves forward only when that top cannot be an H2 for it. */
+  redrawAtSell: true,
+  /** With no sell line at all (a falling knife) a buy needs H2 to be a real
+   *  peak, not a provisional close on the way down. */
+  knifeNeedsPeak: true,
+  /** No buy in a month whose close broke the sell line. */
+  noBuyOnBreak: true,
+};
 
 const EPS = 1e-9;
 
@@ -156,6 +183,10 @@ export function sellLine(
   after?: number | null,
   advance = false,
   upto?: number | null,
+  // Only an INTACT line: skip the rule-5 fallback, which is a line already cut
+  // ahead of L2. Used where a line is being looked for to stand ON, not to
+  // describe a stock already trading under it.
+  strict = false,
 ): [number, number] | null {
   const n = c.length;
   if (n < 3) return null;
@@ -201,12 +232,76 @@ export function sellLine(
     if (fwdCut) continue;
     return [l1, l2];
   }
-  if (fallback >= 0) return [l1, fallback];
+  if (fallback >= 0 && !strict) return [l1, fallback];
 
   // Rule 6: L1 steps forward, but only in response to a break.
   // Bounded by `end`, not n-1: the advance must not step L1 past the causal
   // horizon either, or the walk reaches forward again through this path.
-  if (advance && l1 + 1 < end) return sellLine(c, l1 + 1, after, true, upto);
+  if (advance && l1 + 1 < end) return sellLine(c, l1 + 1, after, true, upto, strict);
+  return null;
+}
+
+/**
+ * A HOLDING's sell line when the lowest low gives none: L1 moves to a later bar
+ * of the same FLAT BOTTOM — any bar still within 8% of the low — and the first
+ * that gives an intact line is taken. The mirror of the buy line stepping off
+ * the first bar of a flat top.
+ *
+ *   S32  low Aug-25 2.72, next bar Sep-25 2.74. From the low, Sep-25 sits under
+ *        every ray; from Sep-25 the line he confirmed (L1 2.74) draws.
+ *   AMC  low Feb-24 68.35; Apr-24 69.10 cuts every ray from it. From Apr-24 the
+ *        line runs to L2 Dec-24 — "a sell walk with L1 Apr24 and L2 Dec24".
+ *   KSL  a bottom running Apr-23 0.73 … Jun-23 0.74, a two-month bump to 0.83,
+ *        then Oct/Nov-23 0.765. Only Nov-23 draws — in his words on flat
+ *        bottoms, "the last trough before the sustained rise".
+ *   MTS  nothing draws from any bar of its bottom, which is why he reaches for
+ *        the safety net instead.
+ *
+ * The 8% is what keeps it honest: a free bar-by-bar advance walks L1 up the
+ * recovery and pairs adjacent months (MTS May-25 -> Jun-25, 0.53 a month).
+ */
+export function sellLineBand(c: number[], t: number): [number, number] | null {
+  const end = Math.min(t, c.length - 1);
+  if (end < 3) return null;
+  let low = 1;
+  for (let i = 1; i < end; i++) if (c[i] < c[low]) low = i;
+  for (let j = low + 1; j < end; j++) {
+    if (!(c[j] < c[low] * (1 + SEP))) continue;
+    const r = sellLine(c, j, null, false, t, true);
+    if (r != null) return r;
+  }
+  return null;
+}
+
+/**
+ * The SAFETY NET: a sell line with the 8% waived, for a holding that has no
+ * other.
+ *
+ * Doug on MTS, 2026-11-15: "given it has been a falling knife since Apr 22
+ * there is no active sell line. In this instance we would break the flat bottom
+ * rule in L1 Oct24 and L2 Mar25 so we have some safety net. This would have
+ * triggered an MTS sell in Dec25."
+ *
+ * L1 is the low; L2 the LAST later close that works — rising, no cut behind it,
+ * no cut ahead of it. On MTS that is Mar-25: Dec-24, Feb-25 and Mar-25 lie on
+ * one 2c-a-month line from the Oct-24 low, and Apr-25 would cut Dec-24. The
+ * tolerance is for closes that sit exactly ON the line, as those three do.
+ */
+export function netLine(c: number[], t: number): [number, number] | null {
+  const end = Math.min(t, c.length - 1);
+  if (end < 3) return null;
+  let l1 = 1;
+  for (let i = 1; i < end; i++) if (c[i] < c[l1]) l1 = i;
+  const tol = 1e-6 * c[l1];
+  for (let l2 = end - 1; l2 > l1; l2--) {
+    if (!(c[l2] > c[l1] + tol)) continue;
+    const g = (c[l2] - c[l1]) / (l2 - l1);
+    let cut = false;
+    for (let k = l1 + 1; k < l2 && !cut; k++) if (c[k] < c[l1] + g * (k - l1) - tol) cut = true;
+    for (let k = l2 + 1; k < end && !cut; k++) if (c[k] < c[l1] + g * (k - l1) - tol) cut = true;
+    if (cut) continue;
+    return [l1, l2];
+  }
   return null;
 }
 
@@ -242,8 +337,11 @@ export function buyLine(
   pk: number[],
   upto: number,
   aboveAt?: number | null,
+  // H1 only ever moves FORWARD: once a sell has carried it past a peak (see
+  // redrawAtSell) the peaks behind that bar are no longer candidates.
+  floor = 0,
 ): [number, number, number | null] | null {
-  const avail = pk.filter((i) => i < upto);
+  const avail = pk.filter((i) => i < upto && i >= floor);
   if (avail.length < 2) return null;
 
   let top = avail[0];
@@ -341,11 +439,97 @@ export function buyLine(
   return found;
 }
 
+/** `j` is a peak that month `t` can already see has turned down. */
+function peakBy(c: number[], j: number, t: number): boolean {
+  return j > 0 && j < t && c[j] >= c[j - 1] && c[j] > c[j + 1];
+}
+
+/**
+ * The buy line after a HOLDING is sold. `since` is the month it was bought.
+ *
+ * 1. A line still ABOVE price stands. Doug on S32, whose line had been crossed
+ *    and was then wiped at the sell: it "remains the current buy line". FRI the
+ *    same.
+ *
+ * 2. Otherwise price has left the line behind, and the next one is anchored on
+ *    the TOP MADE SINCE THE BUY — the high the holding fell from:
+ *      LNAS  bought Nov-23, sold Feb-25, top Jan-25 11.12. It joins the Dec-21
+ *            top cleanly and 8% below it: "the H2 in Jan25 in real time is
+ *            correct".
+ *      AMC   bought Nov-23, sold Mar-25, top Oct-24 83.65. That is within 8% of
+ *            the Dec-22 top — a flat top WITH it, not an H2 for it — so H1 moves
+ *            up to it and the flat-top step carries it on to Feb-25 80.30:
+ *            "advanced the next buy line to H1 Feb25".
+ *    H1 moves forward ONLY then — when the top since the buy cannot be an H2
+ *    for it (a flat top with it, or a close cutting the line back). That is the
+ *    mirror of his sell-side rule: "we would only advance L1 if there is a
+ *    backwards cut from L2 to L1".
+ *
+ * A clean line to that top which price is ALREADY over changes nothing. That
+ * case matters: in a falling knife every line from the top is under price, and
+ * treating it as a reason to move H1 threw LNAS's 2021 top away at its first
+ * sell. So did keying this on "the latest confirmed peak" rather than the top
+ * since the buy — it fired on one-cent shelf peaks (BOL, HMY, KLS).
+ */
+function redrawAtSell(
+  c: number[],
+  pk: number[],
+  t: number,
+  buy: [number, number] | null,
+  floor: number,
+  since: number,
+): { buy: [number, number] | null; floor: number } {
+  if (buy != null && rayAt(c, buy[0], buy[1], t) > c[t]) return { buy, floor };
+  const lo = Math.max(1, since);
+  if (lo >= t) return { buy, floor };
+  let top = lo;
+  for (let i = lo; i < t; i++) if (c[i] >= c[top]) top = i;   // latest of equal highs
+  let cur: number;
+  if (buy != null) {
+    cur = buy[0];
+  } else {
+    const avail = pk.filter((i) => i < t && i >= floor);
+    if (avail.length === 0) return { buy, floor };
+    let hi = avail[0];
+    for (let i = 0; i < avail.length; i++) if (c[avail[i]] > c[hi]) hi = avail[i];
+    for (;;) {
+      const at: number = hi;
+      const nxt = avail.find((i) => i > at);
+      if (nxt === undefined || !(c[hi] < c[nxt] * (1 + SEP))) break;
+      hi = nxt;
+    }
+    cur = hi;
+  }
+  if (top <= cur) return { buy, floor };
+
+  const cutFrom = (h: number): boolean => {
+    const g = (c[top] - c[h]) / (top - h);
+    for (let k = h + 1; k < top; k++) if (c[k] > c[h] + g * (k - h) + EPS) return true;
+    return false;
+  };
+  const from: number = cur;
+  const seq = [from].concat(pk.filter((i) => i < t && i > from && i < top));
+  for (let s = 0; s < seq.length; s++) {
+    const h = seq[s];
+    if (c[h] <= c[top] || cutFrom(h)) continue;
+    if (c[h] < c[top] * (1 + SEP)) break;               // a flat top with it
+    if (c[t] < rayAt(c, h, top, t)) {
+      return { buy: [h, top], floor: h === from ? floor : Math.max(floor, h) };
+    }
+    return { buy, floor };                              // clean, but price is over it
+  }
+  return { buy: null, floor: Math.max(floor, top) };
+}
+
 interface WalkOut {
   sell: [number, number] | null;
   buy: [number, number] | null;
   state: "long" | "out" | null;
   events: V3Event[];
+  /** Has price closed back above the sell line since L2 — is it in force? */
+  confirmed: boolean;
+  /** The sell line is a safety net. */
+  isNet: boolean;
 }
 
 /**
@@ -361,14 +545,74 @@ export function walk(
 ): WalkOut {
   let sell: [number, number] | null = null;
   let confirmed = false;
+  let isNet = false;      // the standing line is a safety net (8% waived)
+  let prov = 0;           // 0 a line from the low, 1 from a flat-bottom bar, 2 a net
   let buy: [number, number] | null = null;
+  let floor = 0;          // H1 may not sit behind this bar
+  let since = 0;          // the month the current holding began
   let state: "long" | "out" | null = null;
   const events: V3Event[] = [];
+  const NET = V3_RULES.safetyNet;
 
   for (let t = 2; t < n; t++) {
+    // Whether the stock was HELD coming into this month. A holding is what the
+    // safety net is for, and it is the start-of-month position that a sell
+    // closes, so every test below reads this rather than `state`.
+    const holding = state === "long";
+    let broke = false;    // did this month's close break the sell line?
+    let sold = false;     // was a holding sold this month?
+
     if (sell == null) {
       sell = sellLine(c, null, null, advanceFirst, t);
       confirmed = false;
+      isNet = false;
+      prov = 0;
+      // A HOLDING ALWAYS HAS A SELL LINE. Before this, a stock bought in a
+      // falling knife could sit "held" for years with none: MTS from 2022
+      // through a fall from 4.79 to 2.72, AMC from 2023 to 53. The order is the
+      // normal draw, then L1 on a later bar of a flat bottom, then the net.
+      if (sell == null && holding && NET) {
+        sell = sellLineBand(c, t);
+        if (sell != null) prov = 1;
+      }
+      if (sell == null && holding && NET) {
+        const nl = netLine(c, t);
+        if (nl != null) {
+          sell = nl;
+          isNet = true;
+          prov = 2;
+        } else {
+          // Held, nothing drawable, and a new low: a falling knife.
+          let lowest = c[1];
+          for (let i = 1; i < t; i++) if (c[i] < lowest) lowest = c[i];
+          if (c[t] < lowest) {
+            events.push({ kind: "SELL", date: dt[t] });
+            state = "out";
+            sold = true;
+            broke = true;
+          }
+        }
+      }
+    } else if (prov > 0 && NET) {
+      // A flat-bottom line or a net stands only until a better one is
+      // ESTABLISHED — one this month's close is already above. A line from the
+      // true low first; for a net, a flat-bottom line too. On AMC the net of
+      // Feb-24 -> Apr-24 gives way in Jan-25 to Apr-24 -> Dec-24, the line he
+      // names, which then breaks in Mar-25.
+      let better: [number, number] | null = sellLine(c, null, null, advanceFirst, t, true);
+      let lvl = 0;
+      if (better == null && prov === 2) {
+        better = sellLineBand(c, t);
+        lvl = 1;
+      }
+      const s0: number = sell[0], s1: number = sell[1];
+      if (better != null && !(better[0] === s0 && better[1] === s1) &&
+          c[t] > rayAt(c, better[0], better[1], t)) {
+        sell = better;
+        confirmed = true;
+        isNet = false;
+        prov = lvl;
+      }
     }
 
     if (sell != null) {
@@ -398,32 +642,90 @@ export function walk(
         if (!confirmed) {
           if (c[t] > v) {
             confirmed = true;
-            if (state == null) state = "long";
+            if (state == null) {
+              state = "long";
+              since = t;
+            }
           } else if (c[t] < v && t < n - 1) {
             // At the final bar nothing re-anchors; the line stands as drawn.
-            const nxt: [number, number] | null =
-              c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true, t);
+            broke = true;
+            // A line still being formed is not in force, so a holding still
+            // stands on its NET. AMC, Sep-26: held, the line from the Apr-26 low
+            // still forming, and the close of 61.27 under the net — "another
+            // sell line L1 Apr26 and L2 Sep26 created a sell".
+            if (V3_RULES.netWhileForming && holding && NET && !isNet) {
+              const nl = netLine(c, t);
+              if (nl != null && c[t] < rayAt(c, nl[0], nl[1], t)) {
+                events.push({ kind: "SELL", date: dt[t] });
+                state = "out";
+                sold = true;
+              }
+            }
+            let nxt: [number, number] | null;
+            if (isNet) {
+              // A net re-anchors without the 8% as well.
+              const g = (c[t] - c[l1]) / (t - l1);
+              const tol = 1e-6 * c[l1];
+              let ok = c[t] > c[l1] + tol;
+              for (let k = l1 + 1; k < t && ok; k++) {
+                if (c[k] < c[l1] + g * (k - l1) - tol) ok = false;
+              }
+              nxt = ok ? [l1, t] : null;
+            } else {
+              nxt = c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true, t);
+            }
             if (nxt != null) {
               sell = nxt;
             } else {
               // Nothing can be re-anchored: price has fallen clean away and the
               // line is DEAD, not merely broken. Keeping it left ASH on a line
-              // rising to 0.998 while the stock traded at 0.305. Dropping it
-              // lets the walk rebuild from the new lows, which is how his ASH
-              // L1 2025-07 0.170 is reached.
+              // rising to 0.998 while the stock traded at 0.305. OUT of a
+              // position the walk rebuilds from the new lows, which is how his
+              // ASH L1 2025-07 0.170 is reached. IN one, the holding falls back
+              // on its net — and a close under that, or no net to draw at all,
+              // is the sell.
               sell = null;
               confirmed = false;
+              isNet = false;
+              prov = 0;
+              if (holding && NET && !sold) {
+                const nl = netLine(c, t);
+                if (nl != null && c[t] > rayAt(c, nl[0], nl[1], t)) {
+                  sell = nl;
+                  confirmed = true;
+                  isNet = true;
+                  prov = 2;
+                } else {
+                  events.push({ kind: "SELL", date: dt[t] });
+                  state = "out";
+                  sold = true;
+                }
+              }
             }
           }
         } else if (c[t] < v) {
           events.push({ kind: "SELL", date: dt[t] });
+          sold = holding;
           state = "out";
-          if (t < n - 1) {
+          broke = true;
+          if (isNet) {
+            // The net exists for a holding and ends with it.
+            sell = null;
+            isNet = false;
+            prov = 0;
+          } else if (t < n - 1) {
             sell = c[t] >= c[l1] * (1 + SEP) ? [l1, t] : sellLine(c, l1, t, true, t);
           }
           confirmed = false;
         }
       }
+    }
+
+    // A holding has just been sold: settle which buy line it now faces.
+    if (sold && V3_RULES.redrawAtSell) {
+      const rd = redrawAtSell(c, pk, t, buy, floor, since);
+      buy = rd.buy;
+      floor = rd.floor;
     }
 
     // Rule 11, refined. While SEEKING ENTRY the line is drawn afresh each
@@ -468,7 +770,7 @@ export function walk(
         const sl1: number = sell[0], sl2: number = sell[1];
         usable = rayAt(c, bh1, bh2, t) > rayAt(c, sl1, sl2, t);
       }
-      const b = buyLine(c, pk, t, usable ? t : null);
+      const b = buyLine(c, pk, t, usable ? t : null, floor);
       if (b != null) buy = [b[0], b[1]];
     } else if (!V3_RULES.lockH2WhileHolding || !confirmedPeak(c, buy[1])) {
       // HOLDING, and H2 is still a provisional non-peak: it advances freely to
@@ -522,14 +824,27 @@ export function walk(
       // buy, where the ray is 0.574 over a sell line at 0.563.
       let over = true;
       if (sell != null) over = bv > rayAt(c, sell[0], sell[1], t);
-      if (t > h2 && c[t] > bv && over) {
+      let ok = t > h2 && c[t] > bv && over;
+      // In a FALLING KNIFE — no sell line to stand over — only a line through a
+      // real peak counts. A provisional close on the way down is crossed by
+      // every bounce: MTS "bought" in Oct-22 over a line from the top through
+      // the previous month's low. Where a sell line DOES stand the provisional
+      // H2 still signals, because that is how he reads the V-recoveries on AEL
+      // and RSG — requiring a peak for every buy turned both back to Sell.
+      if (ok && V3_RULES.knifeNeedsPeak && sell == null) ok = peakBy(c, h2, t);
+      // A close that broke the sell line is not a buy. MTS's false buy of
+      // Jun-22 fired in the very month its forming sell line gave way and was
+      // dropped, which left "no sell line" and let the buy line govern alone.
+      if (ok && V3_RULES.noBuyOnBreak) ok = !broke;
+      if (ok) {
         events.push({ kind: "BUY", date: dt[t] });
         state = "long";
+        since = t;
       }
     }
   }
 
-  return { sell, buy, state, events };
+  return { sell, buy, state, events, confirmed, isNet };
 }
 
 /**
@@ -539,19 +854,27 @@ export function walk(
  * leak into another request: nothing else runs until it returns.
  */
 export function classifyV3Before(bars: V3Bar[], price?: number | null, lmc?: number | null, now?: Date): V3Result {
-  const step = V3_RULES.stepOffFlatTop, lock = V3_RULES.lockH2WhileHolding;
-  V3_RULES.stepOffFlatTop = false;
-  V3_RULES.lockH2WhileHolding = false;
+  // Every rule of 2026-11-15 off: the engine exactly as production runs it.
+  const saved = { ...V3_RULES };
+  const rules = V3_RULES as Record<string, boolean>;
+  Object.keys(rules).forEach((k) => { rules[k] = false; });
   try {
     return classifyV3(bars, price, lmc, now);
   } finally {
-    V3_RULES.stepOffFlatTop = step;
-    V3_RULES.lockH2WhileHolding = lock;
+    Object.assign(V3_RULES, saved);
   }
 }
 
-/** Walk the window, then read the sentiment off the lines it ends holding. */
-export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | null, now?: Date): V3Result {
+/**
+ * Walk the window, then read the sentiment off the lines it ends holding.
+ *
+ * `live`: the price is a quote from the month AFTER the last complete bar, so
+ * both lines are read one month on. A series whose price IS its last monthly
+ * close (the embedded and Pink Sheet commodities) passes false.
+ */
+export function classifyV3(
+  bars: V3Bar[], price?: number | null, lmc?: number | null, now?: Date, live = true,
+): V3Result {
   const w = window5y(bars, now);
   const dt = w.map((b) => b.date);
   const c = w.map((b) => b.close);
@@ -585,7 +908,19 @@ export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | 
     };
   }
 
-  const sellNow = rayAt(c, out.sell[0], out.sell[1], n - 1);
+  // BOTH LINES ARE READ AT THE CURRENT MONTH. PMGOLD, 2026-11-15: its buy line
+  // was 58.05 at October and 56.27 by November, the price 57.06 — read at the
+  // last complete month it was a Watch, and Doug: "should have just moved from
+  // watch to buy". The same on the sell side, where he reads AMC "only just
+  // above the current sell line" — 64.45 in November, not October's 62.86.
+  //
+  // It used to work by accident. Before the month-label fix of 2026-11-07 the
+  // in-progress bar carried the previous month's label, was never dropped, and
+  // so the lines were read at the current month all along — CCP's "15.018" in
+  // October was its October level. Fixing the labels left every reading a month
+  // stale.
+  const asOf = live && V3_RULES.readAtCurrentMonth ? n : n - 1;
+  const sellNow = rayAt(c, out.sell[0], out.sell[1], asOf);
   // The buy ray is FLOORED AT ZERO. A long-decayed declining ray extrapolates
   // below zero — copper reported -417 — which is meaningless to display and, in
   // principle, lets the Watch test be skipped by a line that is not really
@@ -593,12 +928,27 @@ export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | 
   // keeps the reported number sane. A buy line of exactly 0 means "decayed
   // away", not "a line at zero".
   const buyNow = out.buy != null
-    ? Math.max(0, rayAt(c, out.buy[0], out.buy[1], n - 1))
+    ? Math.max(0, rayAt(c, out.buy[0], out.buy[1], asOf))
     : null;
+
+  // A HOLDING whose sell line is still being formed is not sold by it — rule
+  // 10, "the stock would have been in a buy signal until both L1 and L2 are
+  // established". At month end a close under a forming line only moves L2 on,
+  // so calling it a sell mid-month contradicts the walk. CCP is the case: held,
+  // its line L1 May-26 -> L2 Sep-26 never yet confirmed, price 15.30 under the
+  // line's November level of 15.77. Until the line is established the holding
+  // stands on its safety net, and only a price under THAT is a sell.
+  const forming = out.state === "long" && !out.confirmed && !out.isNet &&
+    V3_RULES.safetyNet && p < sellNow;
+  let underNet = false;
+  if (forming) {
+    const nl = netLine(c, n);
+    underNet = nl != null && p < rayAt(c, nl[0], nl[1], asOf);
+  }
 
   let sentiment: V3Result["sentiment"];
   let note: string;
-  if (p < sellNow) {
+  if (p < sellNow && (!forming || underNet)) {
     sentiment = "Sell";
     note = `below sell line ${sellNow.toFixed(3)}`;
   } else if (buyNow != null && p < buyNow) {
@@ -642,5 +992,7 @@ export function classifyV3(bars: V3Bar[], price?: number | null, lmc?: number | 
     h1: out.buy != null ? anchor(out.buy[0]) : null,
     h2: out.buy != null ? anchor(out.buy[1]) : null,
     events: out.events,
+    net: out.isNet,
+    forming: forming && !underNet,
   };
 }

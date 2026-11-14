@@ -242,7 +242,9 @@ export async function GET() {
     const lastClose = bars[bars.length - 1].close;
     const p = price ?? lastClose;
     const lmc = price !== null ? lastClose : (bars.length >= 2 ? bars[bars.length - 2].close : null);
-    const r = classifyV3(bars, p, lmc);
+    // With a live quote the lines are read one month on from the last bar;
+    // without one the price is that bar's close and they are read at it.
+    const r = classifyV3(bars, p, lmc, undefined, price !== null);
     out[key] = {
       sentiment: r.sentiment, note: r.note, sell: r.sell, buy: r.buy,
       l1: r.l1, l2: r.l2, h1: r.h1, h2: r.h2,
