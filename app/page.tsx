@@ -45,6 +45,7 @@ import {
   addMonths,
   formatDay,
 } from "@/lib/reporting";
+import { saveFundScores, FundScore } from "@/lib/fund-scores";
 import {
   ASX_FINANCIALS_STORAGE_KEY,
   StoredAsxFinancials,
@@ -1152,8 +1153,36 @@ export default function HomePage() {
     if (Object.keys(sentimentOverrides).length > 0)
       scored = enrichWithSentimentOverrides(scored, sentimentOverrides);        // manual wins
     setAllStocks(scored);
-    setBuyList(makeBuyList(scored));
+    const list = makeBuyList(scored);
+    setBuyList(list);
     recordSnapshot(scored);
+
+    // Hand the funds' scores to the ETF page — see lib/fund-scores.ts. Every
+    // row Stock Doctor leaves without an industry group: the funds, plus the
+    // listed investment companies. The same numbers the list shows, after
+    // every enrichment above, so the two pages cannot disagree about a score.
+    const listed = new Set(list.map((s) => s.Code));
+    const funds: Record<string, FundScore> = {};
+    for (const s of scored) {
+      const group = s["Industry Group"];
+      if (group && String(group).trim() !== "" && String(group) !== "nan") continue;
+      funds[s.Code] = {
+        name: String(s.Name ?? ""),
+        isFund: isEtfOrFund(s),
+        qav: s.QAV,
+        quality: s.Quality ?? null,
+        pcf: s.PCF ?? null,
+        count: s.Count ?? null,
+        sentiment: s.S_sentiment_long === 2 ? "Buy"
+                 : s.S_sentiment_long === -1 ? "Sell"
+                 : s.S_sentiment_long === 0 ? (isJosephineDip(s) ? "Josephine" : "Watch")
+                 : null,
+        onBuyList: listed.has(s.Code),
+        hold: (s as Record<string, unknown>)._staleData === 1,
+        period: ((s as Record<string, unknown>)._lastPeriod as string | undefined) ?? null,
+      };
+    }
+    saveFundScores(funds);
   // `borrowingRate` was missing from this list, so editing "Borrowing Cost" in
   // the Rates panel changed the threshold SHOWN in the breakdown while the
   // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
@@ -2158,6 +2187,16 @@ export default function HomePage() {
             <AccountControl account={account} sync={syncStatus} onSyncNow={runSync} />
           </div>
           <div className="order-3 2xl:order-2 basis-full 2xl:basis-auto 2xl:ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            {/* The ETF ranker, which used to be a separate site. Same tab: the
+                CSV is remembered now, so coming back costs nothing. */}
+            <Link
+              href="/etf"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors text-gray-600 border-gray-300 hover:bg-gray-50"
+              title="Rank ASX ETFs by 3PTL and net yield — and see the QAV score of every fund in this list beside it"
+            >
+              <BarChart2 className="w-4 h-4" />
+              ETFs
+            </Link>
             {/* Phase 2 — opens in new tab so the CSV session is not lost */}
             <Link
               href="/phase2"
