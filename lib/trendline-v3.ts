@@ -129,8 +129,8 @@ export const V3_RULES = {
   /** No buy in a month whose close broke the sell line. */
   noBuyOnBreak: true,
   // ── From his review of the first mover list, 2026-11-15. ──
-  /** The flat-bottom step and the safety net are for EVERY stock with no other
-   *  line, not only a holding (A1N, LHGG, RGN, IHHY). */
+  /** The flat-bottom step and the safety net are also for a stock that is not
+   *  held but is over its buy line (A1N, RGN, IHHY, LHGG). */
   netForAll: true,
   /** A re-anchor on a breaking close must itself have no backwards cut. */
   backCutReanchor: true,
@@ -660,7 +660,17 @@ export function walk(
     // at all (MTS, AMC), and a stock with no clean 8% line was read off a line
     // already cut (A1N: "no possible sell line can be drawn unless you break
     // the flat bottom rule").
-    const wide: boolean = NET && (holding || V3_RULES.netForAll);
+    // ... for a HOLDING, or a stock that is over its buy line and so would be a
+    // buy if only it had a sell line. Every case he has ruled on is one of
+    // those (MTS and IHHY held; A1N "buy line fine so is a Buy"; RGN). A stock
+    // UNDER its buy line with no clean line stays as it was: given a net, 45
+    // Sells on his list turned Watch and iron ore stopped gating.
+    let aboveBuy: boolean = true;
+    if (buy != null) {
+      const ab0: number = buy[0], ab1: number = buy[1];
+      aboveBuy = c[t] > rayAt(c, ab0, ab1, t);
+    }
+    const wide: boolean = NET && (holding || (V3_RULES.netForAll && aboveBuy));
     if (sell == null) {
       confirmed = false;
       isNet = false;
@@ -877,9 +887,11 @@ export function walk(
       if (V3_RULES.flatTopFallback && state === "out" && sell != null && buy != null) {
         const q0: number = buy[0], q1: number = buy[1];
         const r0: number = sell[0], r1: number = sell[1];
-        if (rayAt(c, q0, q1, t) <= rayAt(c, r0, r1, t)) {
-          // The line the rules give is under the sell line, so it is no buy
-          // line (rule 12) and the stock could never get back in. WTL after its
+        if (!peakBy(c, q1, t) && rayAt(c, q0, q1, t) <= rayAt(c, r0, r1, t)) {
+          // The line the rules give runs to a close that is not a peak ("cannot
+          // be drawn ... not both peaks") AND is under the sell line, so the
+          // stock could never get back in. A proper peak-to-peak line that is
+          // merely under the sell line stays (JHX). WTL after its
           // May-26 sell: H1 stepped along the flat top to Feb-26 and the only
           // line from there is under the sell line. Doug: "Best fall back to
           // ensure possibility of getting into the stock is to break the flat
