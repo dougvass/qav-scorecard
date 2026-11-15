@@ -112,6 +112,12 @@ export function TrackRecord({
   // ── Who has been on the list, and since when ───────────────────────────────
   const entries = useMemo<Entry[]>(() => {
     const names = new Map(stocks.map((s) => [s.Code, String(s.Name ?? "")]));
+    // A code the export no longer carries cannot be classified by its row, and
+    // the records go back to when funds were still scored. ASX ordinary shares
+    // have three-character codes; a longer one that has dropped out of the
+    // export is a retired fund (TCAP, QGRU, KSM, MGOC), not a stock. A longer
+    // code that IS in the export is kept: it was classified there (SGLLV).
+    const notAStock = (code: string): boolean => isFund(code) || (!names.has(code) && code.length > 3);
     let latest = "";
     for (const pts of Object.values(history)) {
       const last = pts[pts.length - 1];
@@ -121,7 +127,7 @@ export function TrackRecord({
       typeof p.qav === "number" && p.qav >= MIN_QAV && (basis === "list" || p.sentiment === "Bullish");
     const out: Entry[] = [];
     for (const [code, raw] of Object.entries(history)) {
-      if (isFund(code) || raw.length === 0) continue;
+      if (notAStock(code) || raw.length === 0) continue;
       const pts = [...raw].sort((a, b) => a.d.localeCompare(b.d));
       const i = pts.findIndex(on);
       if (i < 0) continue;

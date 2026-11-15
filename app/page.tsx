@@ -829,6 +829,13 @@ export default function HomePage() {
    *  3PTL, buybacks, Phase 2, history, the reporting check) ever sees them. */
   const [fundRows, setFundRows] = useState<StockRow[]>([]);
   const [showFundCodes, setShowFundCodes] = useState(false);
+  /** Funds and LICs by code: the bundled lists, plus whatever this export set
+   *  aside by name (AQTY, OPPT ...). For the track record, whose history still
+   *  holds them from before they left the data set. */
+  const isNotAStock = useMemo(() => {
+    const setAside = new Set(fundRows.map((r) => String(r.Code).trim().toUpperCase()));
+    return (code: string): boolean => isFundCode(code) || setAside.has(code.trim().toUpperCase());
+  }, [fundRows]);
   const [allStocks, setAllStocks] = useState<ScoredStock[] | null>(null);
   const [buyList, setBuyList] = useState<ScoredStock[]>([]);
   const [history, setHistory] = useState<HistorySeries>({});
@@ -3141,7 +3148,7 @@ export default function HomePage() {
                 checking={holdingsChecking}
               />
             ) : view === "record" ? (
-              <TrackRecord history={history} stocks={allStocks} isFund={isFundCode} />
+              <TrackRecord history={history} stocks={allStocks} isFund={isNotAStock} />
             ) : (
             <StockTable
               stocks={displayedStocks}
