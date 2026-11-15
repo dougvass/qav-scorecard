@@ -24,6 +24,11 @@
  * Market data only: nothing from the Stock Doctor export reaches this route but
  * the codes themselves.
  */
+// Edge, like the other two price routes: Yahoo answers the edge runtime's
+// requests and refuses the Node runtime's (every series came back empty).
+export const runtime = "edge";
+export const dynamic = "force-dynamic";
+
 const YF_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
   Accept: "application/json",
