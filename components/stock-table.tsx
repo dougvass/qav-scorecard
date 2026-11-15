@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { ScoredStock, SCORE_COL_META, ScoreColumns } from "@/lib/types";
-import { qavColor, scoreColor, isEtfOrFund } from "@/lib/qav-scoring";
+import { qavColor, scoreColor } from "@/lib/qav-scoring";
 import { ChevronDown, ChevronUp, ChevronsUpDown, Info } from "lucide-react";
 import {
   StoredSentiments, SentimentOverride, SentimentKey, SENTIMENT_KEYS,
@@ -16,8 +16,6 @@ import { QavSparkline } from "@/components/qav-sparkline";
 interface StockTableProps {
   stocks: ScoredStock[];
   showAll: boolean;
-  hideEtfs: boolean;
-  onToggleEtfs: () => void;
   /** Selected sentiment states. EMPTY means no filter, i.e. show everything. */
   filterSentiment: SentimentKey[];
   onChangeFilterSentiment: (v: SentimentKey[]) => void;
@@ -200,7 +198,7 @@ function SentimentBadge({
   );
 }
 
-export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes, redFlags, reporting }: StockTableProps) {
+export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSentiment, borrowingRate, phase2Loaded, sentimentOverrides, onSentimentOverride, history, ownedCodes, redFlags, reporting }: StockTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("QAV");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
@@ -220,7 +218,6 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
 
   const filtered = useMemo(() => {
     let result = [...stocks];
-    if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
     if (minAdt > 0) {
       result = result.filter(
         (s) => (s["Avg Trade 3M ($000)"] ?? 0) >= minAdt
@@ -246,7 +243,7 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
       );
     }
     return result;
-  }, [stocks, minAdt, minYield, filterSentiment, hideEtfs, search]);
+  }, [stocks, minAdt, minYield, filterSentiment, search]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -374,17 +371,6 @@ export function StockTable({ stocks, showAll, hideEtfs, onToggleEtfs, filterSent
             <span className="text-xs text-gray-400">all</span>
           )}
         </div>
-        <button
-          onClick={onToggleEtfs}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-            hideEtfs
-              ? "bg-indigo-600 text-white border-indigo-600"
-              : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
-          }`}
-          title="Hide ETFs, managed funds, and LICs — also updates summary stats"
-        >
-          {hideEtfs ? "ETFs hidden" : "Hide ETFs/Funds"}
-        </button>
         <div className="flex items-center gap-1.5 ml-auto">
           <input
             type="text"
