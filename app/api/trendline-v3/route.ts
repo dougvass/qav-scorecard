@@ -140,6 +140,8 @@ async function run(code: string, compare = false) {
     h1: r.h1, h2: r.h2, l1: r.l1, l2: r.l2,
     // The sell line is a safety net / is still forming under a holding.
     net: r.net, forming: r.forming,
+    // A falling knife: no sell line passes the 8% test, so none is reported.
+    knife: r.knife,
     // The walk's event dates are NOT a tradeable history — L2 selection is not
     // strictly causal (see the caveat in lib/trendline-v3.ts). Useful for
     // debugging a reading, not for a "date became sell" column.

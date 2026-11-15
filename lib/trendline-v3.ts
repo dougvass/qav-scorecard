@@ -86,6 +86,9 @@ export interface V3Result {
   /** The sell line is a SAFETY NET — the 8% waived — under a holding that has
    *  no other line (Doug on MTS, 2026-11-15). */
   net?: boolean;
+  /** A FALLING KNIFE: the walk ended on a safety net and no line that passes
+   *  the 8% test can stand under the price. Sell, and no sell line reported. */
+  knife?: boolean;
   /** Held, and the sell line is still being formed: price sits under it without
    *  that being a sell (rule 10). */
   forming?: boolean;
@@ -140,6 +143,17 @@ export const V3_RULES = {
   flatTopFallback: true,
   /** A confirmed peak 8%+ above H1 voids the buy line of a stock that is out. */
   voidExceededH1: true,
+  // ── From his review of the second check page, 2026-11-15: "Not happy with
+  //    the safety net case. If falling knife exists and no sell line can be
+  //    drawn that passes the 8% test than it should read as a sell, no matter
+  //    the buy line. It's basically a trap." ──
+  /** READ side only. A stock left standing on a safety net, with no line that
+   *  passes the 8% test able to stand under the price, is a FALLING KNIFE:
+   *  Sell, whatever its buy line. The one stock a net still carries is a
+   *  holding that is not falling (see classifyV3). The walk is untouched —
+   *  blocking the buys inside it removed AMC's Mar-24 buy and with it the
+   *  Mar-25 sell that moves his H1 to Feb-25. */
+  fallingKnife: true,
 };
 
 const EPS = 1e-9;
@@ -319,6 +333,39 @@ export function netLine(c: number[], t: number): [number, number] | null {
     return [l1, l2];
   }
   return null;
+}
+
+/**
+ * Can ANY sell line that passes the 8% test stand under `price`?
+ *
+ * L1 is the low or a later bar of its flat bottom (within 8% of it), L2 any
+ * later close 8% or more above L1 with no close between them under the line —
+ * both among the bars before `end`; the line is read at month `at`. A cut AFTER
+ * L2 does not disqualify it: that cut was a sell signal, and a price back above
+ * the line is standing on it again (MTS: Apr-26 2.72 -> Aug-26 2.94, cut by
+ * Sep-26, 3.105 by November under a price of 3.41; Doug: "definitely a watch").
+ *
+ * When there is none, every line the rules allow is above the price — his words
+ * on HMY: "still below any possible sell line that could be drawn ...
+ * effectively in a falling knife scenario".
+ */
+export function lineUnder(c: number[], endIn: number, at: number, price: number): boolean {
+  const end: number = Math.min(endIn, c.length);
+  if (end < 3) return false;
+  let low = 1;
+  for (let i = 1; i < end; i++) if (c[i] <= c[low]) low = i;
+  for (let l1 = low; l1 < end; l1++) {
+    if (l1 !== low && !(c[l1] < c[low] * (1 + SEP))) continue;
+    for (let l2 = l1 + 1; l2 < end; l2++) {
+      if (c[l2] < c[l1] * (1 + SEP)) continue;
+      const g: number = (c[l2] - c[l1]) / (l2 - l1);
+      if (!(c[l1] + g * (at - l1) < price)) continue;
+      let cut = false;
+      for (let k = l1 + 1; k < l2 && !cut; k++) if (c[k] < c[l1] + g * (k - l1) - EPS) cut = true;
+      if (!cut) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -1031,6 +1078,38 @@ export function classifyV3(
     ? Math.max(0, rayAt(c, out.buy[0], out.buy[1], asOf))
     : null;
 
+  // A FALLING KNIFE. The walk ended on a safety net — no line that passes the
+  // 8% test — and no line that does pass it can stand under the price either.
+  // "It should read as a sell, no matter the buy line. It's basically a trap."
+  // The net is not reported as a sell line: there is none.
+  //
+  // The one stock a net still carries is a HOLDING that is not falling: its
+  // five-year low came before its five-year high and it is 8% clear of that
+  // low. That is the net as he drew it for MTS — "so we have some safety net" —
+  // and it is what keeps SKT, on a net from a staircase of sub-8% lows and at a
+  // five-year high, from being called a falling knife.
+  const netFails: boolean = out.isNet && c[out.sell[1]] < c[out.sell[0]] * (1 + SEP);
+  if (V3_RULES.fallingKnife && netFails && !lineUnder(c, asOf, asOf, p)) {
+    let lo = 1;
+    for (let i = 1; i < asOf; i++) if (c[i] <= c[lo]) lo = i;
+    let hi = 0;
+    for (let i = 0; i < n; i++) if (c[i] >= c[hi]) hi = i;
+    const bar: number = c[lo] * (1 + SEP);
+    let lifted = false;
+    for (let k = lo + 1; k < asOf && !lifted; k++) if (c[k] >= bar) lifted = true;
+    const falling: boolean = lo > hi;
+    const atLow: boolean = p < bar || !lifted;
+    if (out.state !== "long" || falling || atLow) {
+      return {
+        sentiment: "Sell", note: "falling knife — no sell line passes the 8% test",
+        sell: null, buy: buyNow, l1: null, l2: null,
+        h1: out.buy != null ? anchor(out.buy[0]) : null,
+        h2: out.buy != null ? anchor(out.buy[1]) : null,
+        events: out.events, net: false, forming: false, knife: true,
+      };
+    }
+  }
+
   // A HOLDING whose sell line is still being formed is not sold by it — rule
   // 10, "the stock would have been in a buy signal until both L1 and L2 are
   // established". At month end a close under a forming line only moves L2 on,
@@ -1093,7 +1172,10 @@ export function classifyV3(
     h1: out.buy != null ? anchor(out.buy[0]) : null,
     h2: out.buy != null ? anchor(out.buy[1]) : null,
     events: out.events,
-    net: out.isNet,
+    // Reported only where the 8% really is waived: a net that has walked onto
+    // a line 8% clear of its L1 passes the test like any other.
+    net: V3_RULES.fallingKnife ? netFails : out.isNet,
     forming: forming && !underNet,
+    knife: false,
   };
 }
