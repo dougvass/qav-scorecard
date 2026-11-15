@@ -125,6 +125,14 @@ export function setAsideKind(row: Classifiable): "etf" | "lic" | null {
   return null;
 }
 
+/** A code that is on the ETF list or the LIC list. For places that have only
+ *  a code to go on — the score history still holds funds from before they were
+ *  set aside. */
+export function isFundCode(code: string): boolean {
+  const c = code.trim().toUpperCase();
+  return ETF_UNIVERSE.has(c) || LIC_CODES.has(c);
+}
+
 /** A row that is a fund or a LIC, not a business — see setAsideKind. */
 export function isSetAsideFund(row: Classifiable): boolean {
   return setAsideKind(row) !== null;

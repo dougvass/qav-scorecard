@@ -24,7 +24,8 @@
  */
 import { classifyV3, classifyV3Before, V3Bar } from "@/lib/trendline-v3";
 import { COMMODITY_SYMBOLS, EMBEDDED_MONTHLY } from "@/lib/commodities";
-import { monthOf, currentMonth } from "@/lib/exchange-months";
+import { monthOf, monthOrdinal, currentMonth } from "@/lib/exchange-months";
+import { totalReturns, type AdjPoint } from "@/lib/total-return";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -49,23 +50,28 @@ function yahooSymbol(code: string) {
   return /^[A-Z0-9]{1,6}$/.test(code) ? `${code}.AX` : code;
 }
 
-/** Six years of monthly bars — RAW (unadjusted), matching what a chartist sees. */
-async function fetchMonthly(code: string): Promise<V3Bar[]> {
+/**
+ * Six years of monthly bars — RAW (unadjusted), matching what a chartist sees —
+ * for the 3PTL, plus the dividend-ADJUSTED closes from the same response for
+ * the total-return columns (lib/total-return.ts). One request serves both.
+ */
+async function fetchMonthly(code: string): Promise<{ bars: V3Bar[]; adj: AdjPoint[] }> {
+  const EMPTY: { bars: V3Bar[]; adj: AdjPoint[] } = { bars: [], adj: [] };
   const end = Math.floor(Date.now() / 1000);
   const start = end - 6 * 372 * 24 * 3600;
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(code))}` +
               `?interval=1mo&period1=${start}&period2=${end}&includePrePost=false&events=div%2Csplit`;
   try {
     const res = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(9_000) });
-    if (!res.ok) return [];
+    if (!res.ok) return EMPTY;
     const json = await res.json() as Record<string, unknown>;
     const r = ((json?.chart as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0];
-    if (!r) return [];
+    if (!r) return EMPTY;
     const ts = r.timestamp as number[];
     const off = ((r.meta as Record<string, unknown>)?.gmtoffset as number) ?? 0;
     const q = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0];
     const closes = q?.close as number[];
-    if (!ts || !closes) return [];
+    if (!ts || !closes) return EMPTY;
     const out: V3Bar[] = [];
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
@@ -75,8 +81,17 @@ async function fetchMonthly(code: string): Promise<V3Bar[]> {
     // Yahoo can repeat the current month; keep the last close per calendar month.
     const byMonth = new Map<string, V3Bar>();
     for (const b of out) byMonth.set(b.date, b);
-    return Array.from(byMonth.values()).sort((a, b) => a.date.localeCompare(b.date));
-  } catch { return []; }
+    // The adjusted close, falling back to the raw close where Yahoo gives none
+    // (a stock that has never paid a dividend).
+    const adjCloses = ((r.indicators as Record<string, unknown>)?.adjclose as Record<string, unknown>[])?.[0]?.adjclose as number[] | undefined;
+    const adj: AdjPoint[] = [];
+    for (let i = 0; i < ts.length; i++) {
+      const a = adjCloses?.[i] ?? closes[i];
+      if (a == null || isNaN(a) || a <= 0) continue;
+      adj.push({ m: monthOrdinal(ts[i], off), adj: a });
+    }
+    return { bars: Array.from(byMonth.values()).sort((a, b) => a.date.localeCompare(b.date)), adj };
+  } catch { return EMPTY; }
 }
 
 /** Live price plus the previous month's close (the Bible's uptick test). */
@@ -121,7 +136,7 @@ function before(bars: V3Bar[], price: number, lmc: number | null) {
 }
 
 async function run(code: string, compare = false) {
-  const bars = await fetchMonthly(code);
+  const { bars, adj } = await fetchMonthly(code);
   // Under a year of monthly closes: no 3PTL can be drawn. `unreadable` tells
   // the scorecard to leave the sentiment UNSCORED rather than file the stock
   // under a neutral Watch it has not earned (Doug, 2026-11-14).
@@ -142,6 +157,10 @@ async function run(code: string, compare = false) {
     net: r.net, forming: r.forming,
     // A falling knife: no sell line passes the 8% test, so none is reported.
     knife: r.knife,
+    // 1, 3 and 5-year TOTAL return, percent — dividends reinvested. Nothing to
+    // do with the 3PTL (which reads raw closes); it rides along because the
+    // adjusted closes arrive in the same response.
+    perf: totalReturns(adj),
     // The walk's event dates are NOT a tradeable history — L2 selection is not
     // strictly causal (see the caveat in lib/trendline-v3.ts). Useful for
     // debugging a reading, not for a "date became sell" column.
@@ -181,7 +200,7 @@ async function runCommodity(name: string, compare = false) {
   }
   const symbol = COMMODITY_SYMBOLS[name];
   if (!symbol) return { symbol: null, error: "no series for this commodity" };
-  const bars = await fetchMonthly(symbol);
+  const { bars } = await fetchMonthly(symbol);
   if (bars.length < 12) return { symbol, error: "insufficient data", months: bars.length };
   const daily = await fetchDaily(symbol);
   const price = daily.price ?? bars[bars.length - 1].close;

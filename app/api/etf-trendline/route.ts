@@ -51,6 +51,7 @@
  */
 import { classifyV3, V3Bar } from "@/lib/trendline-v3";
 import { monthOf, monthOrdinal, currentMonth } from "@/lib/exchange-months";
+import { totalReturn, type AdjPoint } from "@/lib/total-return";
 
 export const runtime = "edge";
 
@@ -161,8 +162,6 @@ const NULL_PERF: Perf = { r6m: null, r1y: null, r3y: null, r5y: null };
  */
 interface Risk { posFrac: number | null; maxDD: number | null }
 const NULL_RISK: Risk = { posFrac: null, maxDD: null };
-// A calendar month as a single integer (year*12 + 0-based month), for offsets.
-interface AdjPoint { m: number; adj: number }
 
 // ── Yahoo Finance ──────────────────────────────────────────────────────────────
 
@@ -343,26 +342,6 @@ async function fetchDaily(code: string): Promise<{
     const avgDailyValue = valueDays > 0 ? Math.round(valueSum / valueDays) : null;
     return { price, prevMonthClose, prevMonth, avgDailyValue };
   } catch { return empty; }
-}
-
-/**
- * Total return over a horizon, from the adjusted series. `base` is the latest
- * point on or before the target month; more than two months short of it means
- * the fund simply has not existed that long and the horizon is null rather than
- * a flattering partial number.
- */
-function totalReturn(series: AdjPoint[], months: number): number | null {
-  if (series.length < 2) return null;
-  const now = series[series.length - 1];
-  const targetM = now.m - months;
-  let base: AdjPoint | null = null;
-  for (const p of series) {
-    if (p.m <= targetM) base = p;   // latest point on or before the target month
-    else break;
-  }
-  if (!base || base.adj <= 0 || now.adj <= 0) return null;
-  if (targetM - base.m > 2) return null; // not enough history to reach this horizon
-  return Math.round((now.adj / base.adj - 1) * 1000) / 10;
 }
 
 /** `posFrac` and `maxDD` from a total-return monthly series. See `Risk`. */

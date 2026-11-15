@@ -63,6 +63,9 @@ export interface TrendlineEntry {
    *  lower highs not yet beaten since its low, or nothing but a safety net
    *  under it. The row is tagged, as a commodity-gated one is. */
   knife?: boolean;
+  /** 1, 3 and 5-year TOTAL return in percent — dividends reinvested — from the
+   *  same run. null where the stock has not been listed that long. */
+  perf?: { r1y: number | null; r3y: number | null; r5y: number | null };
 }
 
 /**
@@ -76,8 +79,10 @@ export interface TrendlineEntry {
  * the safety net and flat-bottom step, redraw at a sell, the flat-top fallback,
  * and the falling-knife reading.
  * 2026-11-15-knife-gate: the falling knife became a gate on every stock.
+ * 2026-11-15-returns: no rule changed; the run now also records each stock's
+ * total returns, so an older run is re-read to fill them in.
  */
-export const TRENDLINE_ENGINE = "2026-11-15-knife-gate";
+export const TRENDLINE_ENGINE = "2026-11-15-returns";
 
 export interface StoredTrendlines {
   timestamp: string;        // ISO date of calculation run

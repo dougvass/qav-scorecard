@@ -64,6 +64,7 @@ import {
   isHoldingAlert,
 } from "@/lib/holdings-storage";
 import HoldingsPanel from "@/components/holdings-panel";
+import { TrackRecord } from "@/components/track-record";
 import {
   COMMODITIES,
   STOCK_COMMODITY,
@@ -382,6 +383,10 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       // whatever the lines say. Tagged on the badge; the note says since when.
       _fallingKnife: entry.knife ? 1 : null,
       _knifeNote: entry.knife ? (entry.note ?? null) : null,
+      // Total return over 1, 3 and 5 years (percent), for the far-right columns.
+      _tr1y: entry.perf?.r1y ?? null,
+      _tr3y: entry.perf?.r3y ?? null,
+      _tr5y: entry.perf?.r5y ?? null,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -1426,6 +1431,7 @@ export default function HomePage() {
       sentiment?: string; note?: string; error?: string; months?: number;
       events?: { kind?: string; date?: string }[];
       knife?: boolean;
+      perf?: { r1y: number | null; r3y: number | null; r5y: number | null };
     };
 
     /** Fetch one batch and fold each reading into `accumulated`. */
@@ -1470,6 +1476,7 @@ export default function HomePage() {
           note: entry.note,
           lastBuyBreach,
           ...(entry.knife === true ? { knife: true } : {}),
+          ...(entry.perf ? { perf: entry.perf } : {}),
         };
       }
     };
@@ -1711,6 +1718,7 @@ export default function HomePage() {
           sentiment?: string; note?: string; error?: string;
           events?: { kind?: string; date?: string }[];
           knife?: boolean;
+          perf?: { r1y: number | null; r3y: number | null; r5y: number | null };
         }>;
         for (const [code, entry] of Object.entries(data)) {
           if (entry.error) {
@@ -1728,6 +1736,7 @@ export default function HomePage() {
             note: entry.note,
             lastBuyBreach,
             ...(entry.knife === true ? { knife: true } : {}),
+            ...(entry.perf ? { perf: entry.perf } : {}),
           };
         }
       }

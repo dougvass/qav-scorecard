@@ -36,7 +36,22 @@ interface StockTableProps {
   reporting?: Record<string, ReportingStatus>;
 }
 
-type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield";
+type SortKey = "QAV" | "Quality" | "PCF" | "Code" | keyof ScoreColumns | "adt" | "yield" | "tr1y" | "tr3y" | "tr5y";
+
+/** Total return over a horizon, percent, as the 3PTL run recorded it. */
+const TR_FIELD = { tr1y: "_tr1y", tr3y: "_tr3y", tr5y: "_tr5y" } as const;
+function totalReturnOf(stock: ScoredStock, key: keyof typeof TR_FIELD): number | null {
+  const v = (stock as Record<string, unknown>)[TR_FIELD[key]];
+  return typeof v === "number" ? v : null;
+}
+function TotalReturnCell({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-xs text-gray-300">—</span>;
+  return (
+    <span className={`font-mono text-xs ${value > 0 ? "text-emerald-700" : value < 0 ? "text-red-600" : "text-gray-500"}`}>
+      {value > 0 ? "+" : ""}{value.toFixed(1)}%
+    </span>
+  );
+}
 type SortDir = "asc" | "desc";
 
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -265,6 +280,9 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
       } else if (sortKey === "adt") {
         av = a["Avg Trade 3M ($000)"] ?? -Infinity;
         bv = b["Avg Trade 3M ($000)"] ?? -Infinity;
+      } else if (sortKey === "tr1y" || sortKey === "tr3y" || sortKey === "tr5y") {
+        av = totalReturnOf(a, sortKey) ?? -Infinity;
+        bv = totalReturnOf(b, sortKey) ?? -Infinity;
       } else {
         av = (a as Record<string, unknown>)[sortKey] as number | null;
         bv = (b as Record<string, unknown>)[sortKey] as number | null;
@@ -427,6 +445,12 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
                   far right of the columns, so off screen, even better track it
                   on the phase 2 records sheet." It is the last column here and
                   also sits on the Phase 2 page. */}
+              {/* Total return — price plus dividends reinvested — over 1, 3 and
+                  5 years. Out at the far right with Trend: reference, not part
+                  of the score. */}
+              <Th label="1Y TR" col="tr1y" title="Total return over 1 year: price change plus dividends reinvested (franking credits not included)" className="hidden md:table-cell text-right" />
+              <Th label="3Y TR" col="tr3y" title="Total return over 3 years: price change plus dividends reinvested (franking credits not included)" className="hidden md:table-cell text-right" />
+              <Th label="5Y TR" col="tr5y" title="Total return over 5 years: price change plus dividends reinvested (franking credits not included)" className="hidden md:table-cell text-right" />
               <th className="hidden md:table-cell px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide" title="QAV over time — click for the full history">Trend</th>
             </tr>
           </thead>
@@ -612,13 +636,16 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
                         <Info className="w-4 h-4 text-indigo-400 hover:text-indigo-600" />
                       </button>
                     </td>
+                    <td className="hidden md:table-cell px-3 py-3 text-right"><TotalReturnCell value={totalReturnOf(stock, "tr1y")} /></td>
+                    <td className="hidden md:table-cell px-3 py-3 text-right"><TotalReturnCell value={totalReturnOf(stock, "tr3y")} /></td>
+                    <td className="hidden md:table-cell px-3 py-3 text-right"><TotalReturnCell value={totalReturnOf(stock, "tr5y")} /></td>
                     <td className="hidden md:table-cell px-3 py-3 text-center">
                       <QavSparkline code={stock.Code} points={history?.[stock.Code]} />
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${stock.Code}-expand`} className="bg-indigo-50 border-b border-indigo-100">
-                      <td colSpan={16} className="px-6 py-4">
+                      <td colSpan={19} className="px-6 py-4">
                         <ScoreBreakdown stock={stock} borrowingRate={borrowingRate} phase2Loaded={phase2Loaded} />
                       </td>
                     </tr>
