@@ -130,7 +130,10 @@ async function run(code: string, compare = false) {
   const price = daily.price ?? bars[bars.length - 1].close;
   const r = classifyV3(bars, price, daily.prevMonthClose);
   return {
-    ...(compare ? { was: before(bars, price, daily.prevMonthClose) } : {}),
+    // Compare mode also hands back the closes it read, so a rule can be replayed
+    // offline over the whole list instead of needing a build per variant.
+    ...(compare ? { was: before(bars, price, daily.prevMonthClose),
+                    closes: bars.map((b) => [b.date, b.close]) } : {}),
     code, price, months: bars.length,
     lastMonthClose: daily.prevMonthClose,
     sentiment: r.sentiment, buy: r.buy, sell: r.sell, note: r.note,
