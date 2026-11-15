@@ -109,8 +109,10 @@ function industryGroup(row: Classifiable): string {
  *          industry group means the code now belongs to something else, and
  *          the row stays.
  * Everything else Stock Doctor leaves unclassified stays and is scored. On the
- * 14 Nov 2026 export: 90 unclassified rows, 68 ETFs and funds, 21 LICs (plus
- * three more with an industry group), and one row left — PMGOLD.
+ * 14 Nov 2026 export: 90 unclassified rows — 69 ETFs and funds (PMGOLD among
+ * them since it was added to lib/etfs.ts: "PMGOLD should move to the ETF/LIC
+ * ranker as well") and 21 LICs, plus three more LICs with an industry group.
+ * None is left over. Both kinds are ranked on the ETF & LIC page.
  */
 export function setAsideKind(row: Classifiable): "etf" | "lic" | null {
   const group = industryGroup(row);

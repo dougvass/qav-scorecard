@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ETFS, type EtfMeta } from "@/lib/etfs";
+import { LICS } from "@/lib/lics";
 import { loadFundScores, type StoredFundScores } from "@/lib/fund-scores";
 
 // ── This page used to be its own site ────────────────────────────────────────
@@ -16,6 +17,8 @@ import { loadFundScores, type StoredFundScores } from "@/lib/fund-scores";
 // The one join with the scorecard: a fund the Stock Doctor list has and this
 // page's bundled universe does not is ADDED to the run, so it gets a 3PTL, a
 // yield and a Quality like any other, and the list can be used as a filter.
+// (The scorecard no longer scores any of them: ETFs, funds, LICs and PMGOLD are
+// set aside when the CSV is loaded and ranked only here.)
 //
 // There WAS a QAV column, showing the scorecard's own score for each fund in
 // that list ("the ETFs from the QAV list do have scores, even though they're
@@ -387,7 +390,22 @@ const tradingViewUrl = (code: string) =>
 
 type SortKey = "rank" | "code" | "qual" | "yield" | "mer" | "net" | "price" | "r6m" | "r1y" | "r3y" | "r5y" | "liq";
 
-const BUNDLED = new Set(ETFS.map((e) => e.code));
+// ── Listed investment companies ──────────────────────────────────────────────
+//
+// Doug, 2026-11-15: "LICs should go to the ETF page as with funds. We can
+// compare them all in terms of their MER (if any) and return metrics." So the
+// 91 LICs and LITs of lib/lics.ts are part of this page's universe, ranked in
+// the same table by the same rule. Four of them (DN1, MA1, MRE, WMX) were
+// already on Market Index's ETF list and keep the fee recorded there; the rest
+// have no fee on file, so their net yield is their gross yield and the fee
+// check is not assessed. A LIC is tagged in the table and can be filtered.
+const LIC_CODES = new Set(LICS.map((l) => l.code));
+const ETF_CODES = new Set(ETFS.map((e) => e.code));
+const LIC_ONLY: EtfMeta[] = LICS
+  .filter((l) => !ETF_CODES.has(l.code))
+  .map((l) => ({ code: l.code, name: l.name, mer: null }));
+const BASE_UNIVERSE: EtfMeta[] = ETFS.concat(LIC_ONLY);
+const BUNDLED = new Set(BASE_UNIVERSE.map((e) => e.code));
 
 export default function Page() {
   const [rows, setRows] = useState<RankedEtf[]>([]);
@@ -401,6 +419,7 @@ export default function Page() {
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [qavListOnly, setQavListOnly] = useState(false);
+  const [kindFilter, setKindFilter] = useState<"All" | "ETF" | "LIC">("All");
 
   // The scorecard's scores for the funds in the Stock Doctor list. Read on
   // mount and again whenever this tab comes back into view, since the usual
@@ -419,8 +438,7 @@ export default function Page() {
   }, []);
 
   // Funds the scorecard set aside from the Stock Doctor list that the bundled
-  // universe does not have. `isFund` is false for the listed investment
-  // companies it also sets aside: they are not ranked here.
+  // universe (ETFs and LICs) does not have.
   const extras = useMemo<EtfMeta[]>(() => {
     const data = fundScores?.data ?? {};
     return Object.keys(data)
@@ -428,13 +446,15 @@ export default function Page() {
       .sort()
       .map((code) => ({ code, name: data[code].name, mer: null }));
   }, [fundScores]);
-  const universe = useMemo(() => ETFS.concat(extras), [extras]);
+  const universe = useMemo(() => BASE_UNIVERSE.concat(extras), [extras]);
 
-  // In the list but not in the run on screen: the run predates them.
+  // In the universe but not in the run on screen: the run predates them. That
+  // is a fund newly in the Stock Doctor list — or, for a run remembered from
+  // before 2026-11-15, every LIC.
   const notYetRun = useMemo(() => {
     const have = new Set(rows.map((r) => r.code));
-    return extras.filter((e) => !have.has(e.code)).map((e) => e.code);
-  }, [rows, extras]);
+    return universe.filter((e) => !have.has(e.code)).map((e) => e.code);
+  }, [rows, universe]);
 
   const total = universe.length;
 
@@ -564,6 +584,7 @@ export default function Page() {
       v = v.filter((r) => r.avgDailyValue !== null && r.avgDailyValue >= minLiq * 1000);
     }
     if (qavListOnly) v = v.filter((r) => !!fundScores?.data[r.code]);
+    if (kindFilter !== "All") v = v.filter((r) => LIC_CODES.has(r.code) === (kindFilter === "LIC"));
     const dir = sortDir === "asc" ? 1 : -1;
     const keyVal = (r: RankedEtf): number | string => {
       switch (sortKey) {
@@ -587,7 +608,7 @@ export default function Page() {
       if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv) * dir;
       return ((av as number) - (bv as number)) * dir;
     });
-  }, [rows, sentimentFilter, search, minLiquidity, sortKey, sortDir, rankByCode, qavListOnly, fundScores]);
+  }, [rows, sentimentFilter, search, minLiquidity, sortKey, sortDir, rankByCode, qavListOnly, fundScores, kindFilter]);
 
   const counts = useMemo(() => {
     const c = { Buy: 0, Watch: 0, Josephine: 0, Sell: 0, errored: 0 };
@@ -611,11 +632,13 @@ export default function Page() {
         <Link href="/" className="text-sm font-medium text-indigo-600 hover:underline">
           ← QAV scorecard
         </Link>
-        <h1 className="mt-1 text-2xl font-bold text-gray-900">QAV ETF Ranker — ASX ETFs</h1>
+        <h1 className="mt-1 text-2xl font-bold text-gray-900">QAV ETF &amp; LIC Ranker</h1>
         <p className="mt-1 text-sm text-gray-600">
-          {total} ASX ETFs ranked by Tony Kynaston&rsquo;s 3-Point Trendline trend, then by net
-          distribution yield (yield − management fee). Trend &amp; yield are live from Yahoo Finance;
-          fees are from marketindex.com.au.
+          {total} ASX funds — {total - LIC_CODES.size} ETFs and {LIC_CODES.size} listed investment
+          companies — ranked by Tony Kynaston&rsquo;s 3-Point Trendline trend, then by net
+          distribution yield (yield − management fee). Trend, yield and returns are live from Yahoo
+          Finance; ETF fees are from marketindex.com.au. Most LICs have no fee on file, so their
+          net yield is their gross yield.
         </p>
         <p className="mt-2 text-xs text-gray-500">
           The 3PTL reads <span className="font-semibold">total return</span> — distributions
@@ -653,7 +676,10 @@ export default function Page() {
         )}
         {rows.length > 0 && notYetRun.length > 0 && !running && (
           <span className="text-xs text-amber-700">
-            {notYetRun.join(", ")} {notYetRun.length !== 1 ? "are" : "is"} in your QAV list but not in this run — re-run to include {notYetRun.length !== 1 ? "them" : "it"}.
+            {notYetRun.length <= 8
+              ? `${notYetRun.join(", ")} ${notYetRun.length !== 1 ? "are" : "is"}`
+              : `${notYetRun.length} funds and LICs are`}{" "}
+            not in this run — re-run to include {notYetRun.length !== 1 ? "them" : "it"}.
           </span>
         )}
         {running && (
@@ -704,6 +730,16 @@ export default function Page() {
               <option value="Josephine">Josephine only</option>
               <option value="Sell">Sell only</option>
               <option value="NoData">No data only</option>
+            </select>
+            <select
+              value={kindFilter}
+              onChange={(e) => setKindFilter(e.target.value as "All" | "ETF" | "LIC")}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+              title="Listed investment companies and trusts are ranked in the same table as the ETFs"
+            >
+              <option value="All">ETFs and LICs</option>
+              <option value="ETF">ETFs only</option>
+              <option value="LIC">LICs only</option>
             </select>
             <div className="flex items-center gap-1">
               <input
@@ -763,6 +799,16 @@ export default function Page() {
                     </td>
                     <td className="max-w-md truncate px-3 py-2 text-gray-600">
                       {r.name}
+                      {LIC_CODES.has(r.code) && (
+                        <span
+                          className="ml-2 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700"
+                          title={r.mer == null
+                            ? "A listed investment company or trust. No fee is on file, so its net yield is its gross yield and the fee check is not assessed."
+                            : "A listed investment company or trust."}
+                        >
+                          LIC
+                        </span>
+                      )}
                       {r.fromQavList && (
                         <span
                           className="ml-2 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700"
