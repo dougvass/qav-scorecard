@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ETFS, type EtfMeta } from "@/lib/etfs";
-import { loadFundScores, type StoredFundScores, type FundScore } from "@/lib/fund-scores";
+import { loadFundScores, type StoredFundScores } from "@/lib/fund-scores";
 
 // ── This page used to be its own site ────────────────────────────────────────
 //
@@ -11,15 +11,18 @@ import { loadFundScores, type StoredFundScores, type FundScore } from "@/lib/fun
 // Doug, 2026-11-14: "combine the ETF ranker as a separate page." It is now
 // /etf here: one home-screen app, one sign-in, and ONE copy of the 3PTL engine
 // (lib/trendline-v3.ts) where there were two that had to be kept identical by
-// hand. Its ranking is unchanged — nothing below the QAV column was touched.
+// hand. Its ranking is unchanged.
 //
-// What is new is the join with the scorecard. Doug: "the ETFs from the QAV list
-// do have scores, even though they're not businesses... it might be interesting
-// to have them populate on the ETF ranker as well." So:
-//   - a QAV column shows the scorecard's score for every fund that is in the
-//     Stock Doctor list (lib/fund-scores.ts says what that number is and is not);
-//   - a fund the list has and this page's bundled universe does not is ADDED to
-//     the run, so it gets a 3PTL, a yield and a Quality like any other.
+// The one join with the scorecard: a fund the Stock Doctor list has and this
+// page's bundled universe does not is ADDED to the run, so it gets a 3PTL, a
+// yield and a Quality like any other, and the list can be used as a filter.
+//
+// There WAS a QAV column, showing the scorecard's own score for each fund in
+// that list ("the ETFs from the QAV list do have scores, even though they're
+// not businesses"). Measured across the 68 funds the two pages share, it had no
+// relation to this page's rank (correlation 0.27, driven by near-zero
+// price-to-cashflow), and Doug had it removed on 2026-11-15: "we've proven
+// there is no correlation."
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -382,30 +385,9 @@ const yahooUrl = (code: string) => `https://finance.yahoo.com/quote/${code}.AX`;
 const tradingViewUrl = (code: string) =>
   `https://www.tradingview.com/chart/?symbol=ASX%3A${code}&interval=1M`;
 
-type SortKey = "rank" | "code" | "qual" | "qav" | "yield" | "mer" | "net" | "price" | "r6m" | "r1y" | "r3y" | "r5y" | "liq";
+type SortKey = "rank" | "code" | "qual" | "yield" | "mer" | "net" | "price" | "r6m" | "r1y" | "r3y" | "r5y" | "liq";
 
 const BUNDLED = new Set(ETFS.map((e) => e.code));
-
-/** The scorecard's own colour bands for a QAV score. */
-function qavColor(q: number): string {
-  if (q >= 20) return "text-emerald-700";
-  if (q >= 10) return "text-amber-700";
-  return "text-gray-500";
-}
-
-/** Everything the scorecard knows about a fund, for the QAV cell's tooltip. */
-function qavTooltip(code: string, f: FundScore, scoredAt: string): string {
-  return [
-    `${code} on the QAV scorecard, scored ${scoredAt}:`,
-    `QAV ${f.qav === null ? "—" : f.qav.toFixed(1)} = Quality ${f.quality === null ? "—" : `${Math.round(f.quality * 100)}%`}` +
-      ` ÷ price-to-cashflow ${f.pcf === null ? "—" : f.pcf.toFixed(2)}` +
-      (f.count ? ` (${f.count} criteria scored)` : ""),
-    `Scorecard 3PTL: ${f.sentiment ?? "none"} — read on raw price, where this page reads total return.`,
-    f.onBuyList ? "On the buy list (QAV 10 or more)." : "Not on the buy list.",
-    f.hold ? `On the reporting-season hold: Stock Doctor's numbers are for ${f.period ?? "an old period"}.` : "",
-    "A fund is not a business: its 'cash flow' is mostly distributions and units traded, so read this as Stock Doctor's arithmetic beside the rank, not as a valuation.",
-  ].filter(Boolean).join("\n");
-}
 
 export default function Page() {
   const [rows, setRows] = useState<RankedEtf[]>([]);
@@ -448,14 +430,6 @@ export default function Page() {
   }, [fundScores]);
   const universe = useMemo(() => ETFS.concat(extras), [extras]);
 
-  const scoreOf = (code: string): FundScore | null => fundScores?.data[code] ?? null;
-  const scoredAt = fundScores
-    ? new Date(fundScores.timestamp).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })
-    : "";
-  const inQavList = useMemo(
-    () => rows.filter((r) => !!fundScores?.data[r.code]).length,
-    [rows, fundScores],
-  );
   // In the list but not in the run on screen: the run predates them.
   const notYetRun = useMemo(() => {
     const have = new Set(rows.map((r) => r.code));
@@ -595,7 +569,6 @@ export default function Page() {
       switch (sortKey) {
         case "code": return r.code;
         case "qual": return r.quality ?? -Infinity;
-        case "qav": return fundScores?.data[r.code]?.qav ?? -Infinity;
         case "yield": return r.yieldPct ?? -Infinity;
         case "mer": return r.mer ?? Infinity;
         case "net": return r.netYield ?? -Infinity;
@@ -658,21 +631,13 @@ export default function Page() {
           windows positive, and a shallower 5-year drawdown than {BENCHMARK}. Hover a score to see
           each check. It is <em>not</em> part of the rank.
         </p>
-        <p className="mt-1 text-xs text-gray-500">
-          <span className="font-semibold">QAV</span> is the score the scorecard gives a fund that is
-          in your Stock Doctor list —{" "}
-          {fundScores
-            ? <>{inQavList || Object.keys(fundScores.data).filter((c) => BUNDLED.has(c) || fundScores.data[c].isFund).length} funds, as scored {scoredAt}</>
-            : <>none yet on this device: open the <Link href="/" className="underline">scorecard</Link> with a CSV loaded</>}
-          . It is Quality ÷ price-to-cashflow on Stock Doctor&rsquo;s figures, which for a fund are
-          mostly distributions and units traded, so it sits beside the rank, not in it. Hover a
-          score for the detail.
-          {extras.length > 0 && (
-            <> {extras.length} fund{extras.length !== 1 ? "s" : ""} from that list {extras.length !== 1 ? "are" : "is"} not
+        {extras.length > 0 && (
+          <p className="mt-1 text-xs text-gray-500">
+            {extras.length} fund{extras.length !== 1 ? "s" : ""} from your Stock Doctor list {extras.length !== 1 ? "are" : "is"} not
             in this page&rsquo;s bundled universe and {extras.length !== 1 ? "are" : "is"} added to the
-            run: {extras.map((e) => e.code).join(", ")}.</>
-          )}
-        </p>
+            run: {extras.map((e) => e.code).join(", ")}.
+          </p>
+        )}
       </header>
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -753,7 +718,7 @@ export default function Page() {
               <span className="text-xs text-gray-500">$k/day</span>
             </div>
             {fundScores && (
-              <label className="flex items-center gap-1.5 text-sm text-gray-700" title="Show only the funds that are in your Stock Doctor list and so have a QAV score">
+              <label className="flex items-center gap-1.5 text-sm text-gray-700" title="Show only the funds that are in your Stock Doctor list">
                 <input type="checkbox" checked={qavListOnly} onChange={(e) => setQavListOnly(e.target.checked)} />
                 In QAV list only
               </label>
@@ -770,7 +735,6 @@ export default function Page() {
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">Name</th>
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">3PTL</th>
                   <Th onClick={() => toggleSort("qual")} active={sortKey === "qual"} dir={sortDir} right>Quality</Th>
-                  <Th onClick={() => toggleSort("qav")} active={sortKey === "qav"} dir={sortDir} right>QAV</Th>
                   <Th onClick={() => toggleSort("price")} active={sortKey === "price"} dir={sortDir} right>Price</Th>
                   <Th onClick={() => toggleSort("yield")} active={sortKey === "yield"} dir={sortDir} right>Yield %</Th>
                   <Th onClick={() => toggleSort("mer")} active={sortKey === "mer"} dir={sortDir} right>MER %</Th>
@@ -834,7 +798,9 @@ export default function Page() {
                         chart ↗
                       </a>
                     </td>
-                    {/* Quality: the pass count, with every check spelled out on
+                    {/* Quality: the pass RATE as a percentage (it was shown as a
+                        0–1 fraction until 2026-11-15), with the pass count
+                        beside it and every check spelled out on
                         hover so a score is never a number you have to trust.
                         A check that can't be assessed (a fund under 3 years old,
                         a missing fee) is excluded from the denominator, which is
@@ -854,7 +820,7 @@ export default function Page() {
                       ) : (
                         <>
                           <span className={`font-semibold ${qualityColor(r.quality)}`}>
-                            {r.quality.toFixed(2)}
+                            {Math.round(r.quality * 100)}%
                           </span>
                           <span className="ml-1 text-xs text-gray-400">
                             {r.qualityChecks.filter((c) => c.pass).length}/
@@ -863,24 +829,6 @@ export default function Page() {
                         </>
                       )}
                     </td>
-                    {/* The scorecard's QAV for a fund that is in the Stock Doctor
-                        list; blank for the rest. Joined live by code, not saved
-                        with the run, so it follows the scorecard's last scoring. */}
-                    {(() => {
-                      const f = scoreOf(r.code);
-                      if (!f) return <td className="px-3 py-2 text-right text-gray-300">—</td>;
-                      return (
-                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums" title={qavTooltip(r.code, f, scoredAt)}>
-                          {f.qav === null ? (
-                            <span className="text-gray-400">n/a</span>
-                          ) : (
-                            <span className={`font-semibold ${qavColor(f.qav)}`}>{f.qav.toFixed(1)}</span>
-                          )}
-                          {f.onBuyList && <span className="ml-1 text-xs text-emerald-600" aria-label="on the buy list">★</span>}
-                          {f.hold && <span className="ml-1 text-xs text-amber-600" aria-label="on the reporting-season hold">📅</span>}
-                        </td>
-                      );
-                    })()}
                     <td className="px-3 py-2 text-right tabular-nums text-gray-700">{fmt(r.price)}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-gray-700">{fmt(r.yieldPct, 1)}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-gray-500">{fmt(r.mer, 2)}</td>
