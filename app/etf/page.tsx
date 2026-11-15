@@ -419,8 +419,8 @@ export default function Page() {
   }, []);
 
   // Funds the scorecard set aside from the Stock Doctor list that the bundled
-  // universe does not have. (`isFund` is always true in a record written since
-  // 2026-11-15; an older one also held unclassified companies with it false.)
+  // universe does not have. `isFund` is false for the listed investment
+  // companies it also sets aside: they are not ranked here.
   const extras = useMemo<EtfMeta[]>(() => {
     const data = fundScores?.data ?? {};
     return Object.keys(data)
