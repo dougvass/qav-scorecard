@@ -59,6 +59,10 @@ export interface TrendlineEntry {
    * this criterion was left unscored until the walk was fixed.
    */
   lastBuyBreach?: string | null;
+  /** The engine read this stock as a FALLING KNIFE, which is why it is Bearish:
+   *  lower highs not yet beaten since its low, or nothing but a safety net
+   *  under it. The row is tagged, as a commodity-gated one is. */
+  knife?: boolean;
 }
 
 /**
@@ -71,8 +75,9 @@ export interface TrendlineEntry {
  * 2026-11-15-walk: the rebuilt walk went live — current month as the final bar,
  * the safety net and flat-bottom step, redraw at a sell, the flat-top fallback,
  * and the falling-knife reading.
+ * 2026-11-15-knife-gate: the falling knife became a gate on every stock.
  */
-export const TRENDLINE_ENGINE = "2026-11-15-walk";
+export const TRENDLINE_ENGINE = "2026-11-15-knife-gate";
 
 export interface StoredTrendlines {
   timestamp: string;        // ISO date of calculation run

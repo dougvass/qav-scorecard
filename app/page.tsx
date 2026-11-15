@@ -378,6 +378,10 @@ function enrichWithTrendlines(stocks: ScoredStock[], trendlines: StoredTrendline
       S_new_upturn: scoreNewUpturn(entry.lastBuyBreach, stock),
       // 1 = Josephine (the dip), null = Watch (between the lines).
       _positiveJosephine: isDip ? 1 : null,
+      // The falling-knife gate: Bearish because its highs are still falling,
+      // whatever the lines say. Tagged on the badge; the note says since when.
+      _fallingKnife: entry.knife ? 1 : null,
+      _knifeNote: entry.knife ? (entry.note ?? null) : null,
     } as ScoredStock;
     const vals = SCORE_KEYS
       .map((k) => (enriched as Record<string, unknown>)[k] as number | null)
@@ -1421,6 +1425,7 @@ export default function HomePage() {
     type EngineEntry = {
       sentiment?: string; note?: string; error?: string; months?: number;
       events?: { kind?: string; date?: string }[];
+      knife?: boolean;
     };
 
     /** Fetch one batch and fold each reading into `accumulated`. */
@@ -1464,6 +1469,7 @@ export default function HomePage() {
           sentiment: toStoredSentiment(entry.sentiment),
           note: entry.note,
           lastBuyBreach,
+          ...(entry.knife === true ? { knife: true } : {}),
         };
       }
     };
@@ -1704,6 +1710,7 @@ export default function HomePage() {
         const data = await res.json() as Record<string, {
           sentiment?: string; note?: string; error?: string;
           events?: { kind?: string; date?: string }[];
+          knife?: boolean;
         }>;
         for (const [code, entry] of Object.entries(data)) {
           if (entry.error) {
@@ -1720,6 +1727,7 @@ export default function HomePage() {
             sentiment: toStoredSentiment(entry.sentiment),
             note: entry.note,
             lastBuyBreach,
+            ...(entry.knife === true ? { knife: true } : {}),
           };
         }
       }

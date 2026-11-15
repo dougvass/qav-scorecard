@@ -152,6 +152,12 @@ function SentimentBadge({
     colorCls = SENTIMENT_COLORS["positive_josephine"];
   }
   if (commoditySell) label = `Bearish ⛏`;
+  // Falling-knife gate (set by the 3PTL engine, see lib/trendline-v3.ts): the
+  // highs are still falling, so it reads Bearish whatever the lines say.
+  const knife = !isOverridden && !commoditySell && v === -1 &&
+    (stock as Record<string, unknown>)._fallingKnife === 1;
+  const knifeNote = (stock as Record<string, unknown>)._knifeNote as string | null | undefined;
+  if (knife) label = `Bearish 🔪`;
 
   return (
     <div ref={ref} className="relative inline-block">
@@ -161,6 +167,8 @@ function SentimentBadge({
         title={
           commoditySell
             ? `Commodity gate: ${commodity} is in Sell status — stock forced Bearish (QAV rule). Manual override still available.`
+            : knife
+            ? `Falling knife gate: ${knifeNote ?? "its highs are still falling"}. Each high since the top is lower than the last and none has been beaten, so it reads Bearish whatever the buy and sell lines say. Manual override still available.`
             : isOverridden ? `Manual override: ${override}. Click to change.`
             : (v === null || v === undefined) ? "Too little price history for a 3PTL yet, so sentiment is left unscored. Click to set it by hand."
             : "Click to manually set 3PTL sentiment"
@@ -409,12 +417,17 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
               <Th label="ADT $k" col="adt" title="Average Daily Traded (3 month, $000)" className="hidden md:table-cell text-right" />
               <Th label="DIV YLD" col="yield" title="Forward dividend yield from Stock Doctor where scraped (marked f), otherwise the CSV trailing yield" className="hidden md:table-cell text-right" />
               <Th label="QAV" col="QAV" title="Quality / PCF × 100 — the main ranking score" className="text-center" />
-              <th className="hidden md:table-cell px-2 py-2 text-center font-semibold text-gray-600" title="QAV over time — click for the full history">Trend</th>
               <Th label="Quality" col="Quality" title="Average score per column (TotalScore ÷ Count) — green ≥ 75%" className="text-center" />
               <Th label="PCF" col="PCF" title="Price to Cash Flow — lower is cheaper" className="hidden md:table-cell text-center" />
               <th className="px-1.5 md:px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Sentiment</th>
               <th className="hidden md:table-cell px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide" title="Active on-market buyback detected via ASX announcements">BB</th>
               <th className="px-1.5 md:px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide"><span className="hidden md:inline">Breakdown</span></th>
+              {/* QAV over time. Doug, 2026-11-15: "the historic trend aspect I
+                  don't feel is providing much value here. Can we move it to the
+                  far right of the columns, so off screen, even better track it
+                  on the phase 2 records sheet." It is the last column here and
+                  also sits on the Phase 2 page. */}
+              <th className="hidden md:table-cell px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide" title="QAV over time — click for the full history">Trend</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -558,9 +571,6 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
                         {stock.QAV !== null ? stock.QAV.toFixed(1) : "—"}
                       </span>
                     </td>
-                    <td className="hidden md:table-cell px-2 py-3 text-center">
-                      <QavSparkline code={stock.Code} points={history?.[stock.Code]} />
-                    </td>
                     <td className="px-1.5 md:px-3 py-3 text-center">
                       {stock.Quality !== null ? (
                         <span className={`inline-flex items-center justify-center min-w-[52px] rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -601,6 +611,9 @@ export function StockTable({ stocks, showAll, filterSentiment, onChangeFilterSen
                       >
                         <Info className="w-4 h-4 text-indigo-400 hover:text-indigo-600" />
                       </button>
+                    </td>
+                    <td className="hidden md:table-cell px-3 py-3 text-center">
+                      <QavSparkline code={stock.Code} points={history?.[stock.Code]} />
                     </td>
                   </tr>
                   {isExpanded && (

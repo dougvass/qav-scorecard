@@ -5,6 +5,8 @@ import Link from "next/link";
 import { BarChart2, FileSpreadsheet, Trash2, ArrowLeft, CheckCircle } from "lucide-react";
 import { PHASE2_STORAGE_KEY, Phase2Entry, StoredPhase2 } from "@/lib/phase2-storage";
 import { setSynced, removeSynced, authStatus, pushKey } from "@/lib/server-store";
+import { loadLocalHistory, type HistorySeries } from "@/lib/history-storage";
+import { QavSparkline } from "@/components/qav-sparkline";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,11 @@ export default function Phase2Page() {
   const [justSaved, setJustSaved] = useState(false);
   const [error, setError]         = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // QAV over time, per code — the scorecard's own record, read from this
+  // browser's copy of it. Doug, 2026-11-15: the trend "I don't feel is
+  // providing much value" on the stock list — "even better track it on the
+  // phase 2 records sheet". It is drawn here beside each Phase 2 record.
+  const [history, setHistory] = useState<HistorySeries>({});
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -47,6 +54,7 @@ export default function Phase2Page() {
       const raw = localStorage.getItem(PHASE2_STORAGE_KEY);
       if (raw) setStored(JSON.parse(raw) as StoredPhase2);
     } catch { /* ignore corrupt storage */ }
+    setHistory(loadLocalHistory()?.data ?? {});
     // This page is its own page load, so find out here whether this browser is
     // signed in — otherwise an upload made here would stay local.
     void authStatus();
@@ -234,6 +242,7 @@ export default function Phase2Page() {
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Code</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">PE Hi/Lo</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Equity Inc</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide" title="QAV score over time, as recorded by the scorecard on this device — click for the full history">QAV trend</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -255,6 +264,9 @@ export default function Phase2Page() {
                         </td>
                         <td className={`px-4 py-2.5 text-center font-mono text-sm ${pe.cls}`}>{pe.text}</td>
                         <td className={`px-4 py-2.5 text-center font-mono text-sm ${eq.cls}`}>{eq.text}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          <QavSparkline code={code} points={history[code]} />
+                        </td>
                       </tr>
                     );
                   })}

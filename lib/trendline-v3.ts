@@ -86,8 +86,10 @@ export interface V3Result {
   /** The sell line is a SAFETY NET — the 8% waived — under a holding that has
    *  no other line (Doug on MTS, 2026-11-15). */
   net?: boolean;
-  /** A FALLING KNIFE: the walk ended on a safety net and no line that passes
-   *  the 8% test can stand under the price. Sell, and no sell line reported. */
+  /** A FALLING KNIFE, and the reading is Sell because of it. Either the walk
+   *  ended on a safety net with no line passing the 8% test under the price (no
+   *  sell line is then reported), or the gate: lower highs not yet beaten since
+   *  the low, with both lines still reported. */
   knife?: boolean;
   /** Held, and the sell line is still being formed: price sits under it without
    *  that being a sell (rule 10). */
@@ -177,6 +179,16 @@ export const V3_RULES = {
   /** A stock on a net with no such line is still not a falling knife while it
    *  is making a higher high (see higherHigh). */
   higherHighEndsKnife: true,
+  // ── After the walk went live, on VGN at the top of the buy list on valid
+  //    lines: "doesn't our falling knife check preclude it? each respective
+  //    high point in the walk is lower than previous, it hasn't beat one yet?
+  //    We need a falling knife gate that we can then tag." ──
+  /** The falling knife as a GATE on every stock, lines or no lines: from its
+   *  five-year low until a completed month closes above the latest confirmed
+   *  peak, a stock whose low came after its high reads Sell and is tagged (see
+   *  fallingKnife). The safety-net test above is unchanged and stricter; this
+   *  adds the stocks that DO have a sell line. */
+  knifeGate: true,
 };
 
 const EPS = 1e-9;
@@ -629,6 +641,38 @@ export function higherHigh(c: number[], end: number): boolean {
   if (pkLast < 0) return false;
   const last: number = end - 1;
   return last > pkLast && c[last] > c[pkLast];
+}
+
+/**
+ * The falling-knife GATE. `end` is the bar the price sits on; the bars before
+ * it are complete. Returns the index of the low if the stock is a falling
+ * knife, else -1.
+ *
+ * Doug on VGN, 2026-11-15: "each respective high point in the walk is lower
+ * than previous, it hasn't beat one yet". VGN: top Sep-25 3.62, then peaks
+ * 3.50, 3.14, 3.07 and 2.86, a low of 2.17 in Apr-26, and no month since has
+ * closed above the peak standing at the time.
+ *
+ * So: the five-year low came AFTER the five-year high (it has been falling),
+ * and since that low no completed month has closed above the latest confirmed
+ * peak — whether that peak was made before the low or after it. The first such
+ * close ends the knife (RHT Oct-25 0.049 over 0.044; MTS Oct-26 3.21 over 3.04;
+ * ORA Oct-26 1.53 over 1.46); a new five-year low starts it again. The month in
+ * progress confirms a peak but is not itself a high (KMD, EDV).
+ */
+export function fallingKnife(c: number[], end: number): number {
+  if (end < 3) return -1;
+  let lo = 1;
+  for (let i = 1; i < end; i++) if (c[i] <= c[lo]) lo = i;
+  let hi = 0;
+  for (let i = 0; i < c.length; i++) if (c[i] >= c[hi]) hi = i;
+  if (hi > lo) return -1;                 // it has made its high since the low
+  let ref = -1;                           // the latest confirmed peak so far
+  for (let k = 1; k < end; k++) {         // completed months, in order
+    if (k - 1 >= 1 && c[k - 1] >= c[k - 2] && c[k - 1] > c[k]) ref = k - 1;
+    if (k > lo && ref >= 0 && c[k] > c[ref]) return -1;   // a higher high since the low
+  }
+  return lo;
 }
 
 /**
@@ -1258,6 +1302,19 @@ export function classifyV3(
     note = "above the sell line";
   }
 
+  // THE FALLING-KNIFE GATE: lower highs that have not yet been beaten, whatever
+  // the two lines say. The lines are still reported — they are real — and the
+  // row is tagged so it is plain why a stock above both lines reads Sell.
+  let knife = false;
+  if (V3_RULES.knifeGate && sentiment !== "Sell") {
+    const kl: number = fallingKnife(c, asOf);
+    if (kl >= 0) {
+      sentiment = "Sell";
+      knife = true;
+      note = `falling knife — no higher high since the ${dt[kl]} low`;
+    }
+  }
+
   return {
     sentiment, note,
     sell: sellNow,
@@ -1271,6 +1328,6 @@ export function classifyV3(
     // a line 8% clear of its L1 passes the test like any other.
     net: V3_RULES.fallingKnife ? netFails : out.isNet,
     forming: forming && !underNet,
-    knife: false,
+    knife,
   };
 }
