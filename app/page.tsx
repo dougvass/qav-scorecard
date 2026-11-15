@@ -74,6 +74,7 @@ import {
   scoreStocks,
   makeBuyList,
   isEtfOrFund,
+  isSetAsideFund,
   DEFAULT_CASH_RATE,
   DEFAULT_BORROWING_RATE,
   DEFAULT_RRR,
@@ -811,6 +812,11 @@ function AccountControl({
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [rawRows, setRawRows] = useState<StockRow[] | null>(null);
+  /** The ETFs and funds in the export, set aside before scoring — see
+   *  isSetAsideFund. They are not in rawRows, so nothing downstream (scores,
+   *  3PTL, buybacks, Phase 2, history, the reporting check) ever sees them. */
+  const [fundRows, setFundRows] = useState<StockRow[]>([]);
+  const [showFundCodes, setShowFundCodes] = useState(false);
   const [allStocks, setAllStocks] = useState<ScoredStock[] | null>(null);
   const [buyList, setBuyList] = useState<ScoredStock[]>([]);
   const [history, setHistory] = useState<HistorySeries>({});
@@ -870,7 +876,6 @@ export default function HomePage() {
    *  that out would be 446 wasted requests. */
   const [syncReady, setSyncReady] = useState(false);
   const [showRateSettings, setShowRateSettings] = useState(false);
-  const [hideEtfs, setHideEtfs] = useState(false);
   /** Selected sentiment states; empty means no filter. Any combination works. */
   const [filterSentiment, setFilterSentiment] = useState<SentimentKey[]>([]);
 
@@ -1157,29 +1162,16 @@ export default function HomePage() {
     setBuyList(list);
     recordSnapshot(scored);
 
-    // Hand the funds' scores to the ETF page — see lib/fund-scores.ts. Every
-    // row Stock Doctor leaves without an industry group: the funds, plus the
-    // listed investment companies. The same numbers the list shows, after
-    // every enrichment above, so the two pages cannot disagree about a score.
-    const listed = new Set(list.map((s) => s.Code));
+    // Tell the ETF page which funds the Stock Doctor list holds — see
+    // lib/fund-scores.ts. They are set aside when the CSV is loaded and are not
+    // scored here any more, so the record carries the name only.
     const funds: Record<string, FundScore> = {};
-    for (const s of scored) {
-      const group = s["Industry Group"];
-      if (group && String(group).trim() !== "" && String(group) !== "nan") continue;
-      funds[s.Code] = {
-        name: String(s.Name ?? ""),
-        isFund: isEtfOrFund(s),
-        qav: s.QAV,
-        quality: s.Quality ?? null,
-        pcf: s.PCF ?? null,
-        count: s.Count ?? null,
-        sentiment: s.S_sentiment_long === 2 ? "Buy"
-                 : s.S_sentiment_long === -1 ? "Sell"
-                 : s.S_sentiment_long === 0 ? (isJosephineDip(s) ? "Josephine" : "Watch")
-                 : null,
-        onBuyList: listed.has(s.Code),
-        hold: (s as Record<string, unknown>)._staleData === 1,
-        period: ((s as Record<string, unknown>)._lastPeriod as string | undefined) ?? null,
+    for (const r of fundRows) {
+      funds[String(r.Code).trim().toUpperCase()] = {
+        name: String(r.Name ?? ""),
+        isFund: true,
+        qav: null, quality: null, pcf: null, count: null, sentiment: null,
+        onBuyList: false, hold: false, period: null,
       };
     }
     saveFundScores(funds);
@@ -1188,7 +1180,7 @@ export default function HomePage() {
   // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
   // one until something else happened to trigger a re-score.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides, asxFinancials]);
+  }, [rawRows, fundRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides, asxFinancials]);
 
   /**
    * Load a Stock Doctor CSV from its decoded text, however it arrived — a file
@@ -1204,16 +1196,24 @@ export default function HomePage() {
     source: StoredCsv["source"],
     opts?: { loadedAt?: string; persist?: boolean },
   ): number => {
-    const rows = parseStockDoctorText(text);
-    if (rows.length === 0) throw new Error("No stock rows found in CSV.");
+    const parsed = parseStockDoctorText(text);
+    if (parsed.length === 0) throw new Error("No stock rows found in CSV.");
+    // ETFs and funds leave the data set HERE, before anything is scored. They
+    // are ranked on the ETF page by total return; on the scorecard they were
+    // only ever hidden, while still costing a 3PTL request each and counting in
+    // the history. What stays is every company — including one too new to have
+    // a GICS code, which is why the export carries the unclassified rows at all.
+    const rows = parsed.filter((r) => !isSetAsideFund(r));
     const loadedAt = opts?.loadedAt ?? new Date().toISOString();
     const persist = opts?.persist !== false;
     setError(null);
     setRawRows(rows);
+    setFundRows(parsed.filter((r) => isSetAsideFund(r)));
     setFileName(name);
     setCsvMeta({ loadedAt, source, remembered: !persist });
     if (persist) saveStoredCsv({ name, loadedAt, source, text });
-    return rows.length;
+    // The count the sender is told is what arrived, funds included.
+    return parsed.length;
   }, []);
 
   const handleFile = useCallback(async (file: File) => {
@@ -2079,12 +2079,11 @@ export default function HomePage() {
     if (!rawRows || !syncReady || autoRanFor.current === rawRows) return;
     autoRanFor.current = rawRows;
 
-    // Where a run lands. Doug, 2026-11-14: "default in the auto run to
-    // activate the ETFs hidden button and finish on the buy list screen."
+    // Where a run lands. Doug, 2026-11-14: "finish on the buy list screen."
     // Set once per CSV, here, so it is the starting point and not a lock: he
-    // can show the ETFs again or move to another tab and it stays that way
-    // until the next CSV arrives.
-    setHideEtfs(true);
+    // can move to another tab and it stays that way until the next CSV
+    // arrives. (The same instruction switched on "ETFs hidden"; the funds are
+    // now out of the data set altogether, so there is nothing left to hide.)
     setView("buy");
     setShowAll(false);
 
@@ -2125,6 +2124,7 @@ export default function HomePage() {
 
   const reset = useCallback(() => {
     setRawRows(null);
+    setFundRows([]);
     setAllStocks(null);
     setBuyList([]);
     setShowAll(false);
@@ -2141,7 +2141,6 @@ export default function HomePage() {
 
   function applyTableFilters(arr: ScoredStock[]): ScoredStock[] {
     let result = arr;
-    if (hideEtfs) result = result.filter((s) => !isEtfOrFund(s));
     if (filterSentiment.length > 0) {
       result = result.filter((s) => {
         const k = sentimentKeyOf(s.S_sentiment_long, isJosephineDip(s));
@@ -2847,10 +2846,6 @@ export default function HomePage() {
           const onBuyList = new Set(buyList.map((b) => b.Code));
           const gaps = allStocks
             .filter((s) => (s as Record<string, unknown>)._missingPhase2 === 1)
-            // "ETFs hidden" hides them here too. A fund has no PE or Equity row
-            // on Stock Doctor's financials page at all, so with the toggle on
-            // these were nine of 24 chips asking for data that does not exist.
-            .filter((s) => !hideEtfs || !isEtfOrFund(s))
             .map((s) => ({
               code: s.Code,
               which: (s as Record<string, unknown>)._missingWhich as string,
@@ -2899,7 +2894,6 @@ export default function HomePage() {
           const onBuyList = new Set(buyList.map((b) => b.Code));
           const stale = allStocks
             .filter((s) => (s as Record<string, unknown>)._phase2Stale === 1)
-            .filter((s) => !hideEtfs || !isEtfOrFund(s))
             .map((s) => ({
               code: s.Code,
               has: (s as Record<string, unknown>)._phase2Has as string | null,
@@ -2980,6 +2974,19 @@ export default function HomePage() {
               <span>
                 Loaded <strong className="text-gray-700">{fileName}</strong> —{" "}
                 {allStocks.length} stocks scored
+                {fundRows.length > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setShowFundCodes((v) => !v)}
+                      className="underline decoration-dotted underline-offset-2 hover:text-gray-700"
+                      title="ETFs and funds are taken out before scoring. Click to see which."
+                    >
+                      {fundRows.length} ETF{fundRows.length === 1 ? "" : "s"} and funds set aside
+                    </button>
+                  </>
+                )}
                 {csvMeta && (() => {
                   // How old the numbers on screen are. The CSV is now
                   // remembered between visits, so "loaded just now" can no
@@ -3000,6 +3007,20 @@ export default function HomePage() {
               </span>
               <SdBookmarklet compact />
             </div>
+            {showFundCodes && fundRows.length > 0 && (
+              <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+                <p>
+                  These {fundRows.length} rows of the export are ETFs or funds: no industry group, and
+                  either in the ETF page&rsquo;s universe or named as an ETF or Fund. They are not scored
+                  here and are ranked on the{" "}
+                  <a href="/etf" className="text-indigo-600 underline">ETF page</a>. Every other
+                  unclassified row is scored as a stock.
+                </p>
+                <p className="mt-2 font-mono text-xs leading-relaxed text-gray-500 break-words">
+                  {fundRows.map((r) => String(r.Code)).sort().join(" · ")}
+                </p>
+              </div>
+            )}
 
             <SummaryStats all={statsAll} buyList={statsBuyList} />
 
@@ -3067,8 +3088,6 @@ export default function HomePage() {
               ownedCodes={ownedCodes}
               redFlags={redFlagView}
               reporting={reporting?.data}
-              hideEtfs={hideEtfs}
-              onToggleEtfs={() => setHideEtfs((v) => !v)}
               filterSentiment={filterSentiment}
               onChangeFilterSentiment={setFilterSentiment}
               borrowingRate={borrowingRate}

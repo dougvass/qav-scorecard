@@ -1,41 +1,30 @@
 /**
- * QAV scores of the funds in the Stock Doctor list, handed from the scorecard
- * to the ETF page.
+ * The funds in the Stock Doctor list, handed from the scorecard to the ETF
+ * page.
  *
- * Doug, 2026-11-14: "the ETFs from the QAV list do have scores, even though
- * they're not businesses... it might be interesting to have them populate on
- * the ETF ranker as well."
+ * The export carries ETFs and funds because Doug exports the unclassified rows
+ * so as not to miss a company too new to have a GICS code. The scorecard sets
+ * the funds aside when it loads the CSV (isSetAsideFund in lib/qav-scoring.ts)
+ * and writes their codes and names here; the ETF page adds any that its bundled
+ * universe lacks to its own run.
  *
- * The two pages rank funds by different things and neither replaces the other.
- * The ETF page ranks ~390 ASX funds by 3PTL then net yield, with its own
- * seven-check Quality. The scorecard gives every row of the Stock Doctor export
- * a QAV score — Quality ÷ price-to-cashflow — and that export contains funds
- * too: 66 by the scorecard's name test on 14 Nov 2026, 59 of them already in
- * the ETF universe and 7 not (AQTY, B1SM, OPPT, V1AC, CDO, OPH, RF1).
+ * HISTORY. Until 2026-11-15 the scorecard SCORED these rows and this record
+ * carried the QAV score, shown as a column on the ETF page. The column was
+ * removed on 2026-11-16 (no correlation with the ETF rank) and the funds now
+ * leave the data set before scoring — Doug: "Bond funds like these should be
+ * captured not in QAV but in the ETF under total return ... ETFs should be
+ * pulled from the data set automatically." The score fields are kept in the
+ * type so an older stored record still parses; they are written as null.
  *
- * What a fund's QAV score IS: Stock Doctor reports a cash flow, EPS and equity
- * for a fund like any other listed entity, so the arithmetic runs. What it
- * MEANS is weaker than for a company — a fund's "operating cash flow" is mostly
- * distributions received and units traded — which is why the ETF page shows it
- * as a column beside its own rank and does not fold it in.
- *
- * WHICH ROWS ARE STORED. Every row with no industry group: that is the funds,
- * plus the listed investment companies and trusts Stock Doctor also leaves
- * unclassified (WAM, CAM, MXT ...). The ETF page picks from these — a code in
- * its own universe, or one the scorecard's name test calls a fund — so the
- * two pages do not need to share a list.
- *
- * Written by the scorecard on every scoring run, so it carries the SAME score
- * the stock list shows (Phase 2, the 3PTL, buybacks and overrides included),
- * not a re-derivation. This browser only: it is rebuilt whenever the scorecard
- * opens, on any device.
+ * This browser only: it is rebuilt whenever the scorecard opens, on any device.
  */
 
 export const FUND_SCORES_STORAGE_KEY = "qav_fund_scores_v1";
 
 export interface FundScore {
   name: string;
-  /** The scorecard's own fund test: the name says ETF or Fund. */
+  /** Set aside by the scorecard as a fund. Always true in records written since
+   *  2026-11-15; older ones also held unclassified companies with it false. */
   isFund: boolean;
   qav: number | null;
   /** Mean of the criteria that could be scored, as a fraction (0.8 = 80%). */

@@ -418,9 +418,9 @@ export default function Page() {
     };
   }, []);
 
-  // Funds the scorecard's list has and the bundled universe does not. Only
-  // those its name test calls a fund: the list also holds listed investment
-  // companies, which are companies and belong on the scorecard.
+  // Funds the scorecard set aside from the Stock Doctor list that the bundled
+  // universe does not have. (`isFund` is always true in a record written since
+  // 2026-11-15; an older one also held unclassified companies with it false.)
   const extras = useMemo<EtfMeta[]>(() => {
     const data = fundScores?.data ?? {};
     return Object.keys(data)

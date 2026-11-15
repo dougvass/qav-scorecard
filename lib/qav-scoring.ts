@@ -6,6 +6,7 @@
  */
 
 import { StockRow, ScoredStock, ScoreColumns } from "./types";
+import { ETFS } from "./etfs";
 
 // ─── Defaults (match row 35 of QAV_updated) ────────────────────────────────
 
@@ -73,6 +74,32 @@ export function isEtfOrFund(stock: { Name: string; "Industry Group": string | nu
   const ig = stock["Industry Group"];
   if (ig && String(ig).trim() !== "" && String(ig) !== "nan") return false;
   return ETF_FUND_RE.test(String(stock.Name));
+}
+
+const ETF_UNIVERSE: Set<string> = new Set(ETFS.map((e) => e.code));
+
+/**
+ * A row that is a FUND and is pulled out of the data set before anything is
+ * scored. Doug, 2026-11-15: "Bond funds like these should be captured not in
+ * QAV but in the ETF under total return ... ETFs should be pulled from the data
+ * set automatically. I have to export them from SD as some new unclassified
+ * stocks still need to be scored when they're new to market. They don't get
+ * GICS codes for a while and I could miss them otherwise."
+ *
+ * So the test must never take a new company with it. A row goes only if it has
+ * NO industry group and is positively a fund: its code is in the ETF page's own
+ * universe, or its name says ETF or Fund. Everything else Stock Doctor leaves
+ * unclassified stays and is scored — the listed investment companies (WAM, CAM,
+ * FGG ...), the income trusts, PMGOLD, and any company too new to have a GICS
+ * code. On the 14 Nov 2026 export that is 68 of the 90 unclassified rows set
+ * aside and 22 kept.
+ */
+export function isSetAsideFund(
+  row: { Code: string; Name: string; "Industry Group": string | number | null },
+): boolean {
+  const ig = row["Industry Group"];
+  if (ig && String(ig).trim() !== "" && String(ig) !== "nan") return false;
+  return ETF_UNIVERSE.has(String(row.Code).trim().toUpperCase()) || ETF_FUND_RE.test(String(row.Name));
 }
 
 // ─── Individual scoring functions ──────────────────────────────────────────
