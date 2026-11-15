@@ -27,6 +27,7 @@ import {
 } from "@/lib/sentiment-storage";
 import {
   TRENDLINE_STORAGE_KEY,
+  TRENDLINE_ENGINE,
   StoredTrendlines,
   TRENDLINE_SCORES,
   toStoredSentiment,
@@ -1501,6 +1502,7 @@ export default function HomePage() {
         timestamp: new Date().toISOString(),
         checkedCount: codes.length,
         data: accumulated,
+        engine: TRENDLINE_ENGINE,
       };
       setSynced(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
       setTrendlineData(stored);
@@ -1725,6 +1727,8 @@ export default function HomePage() {
         timestamp: new Date().toISOString(),
         checkedCount: Object.keys(merged).length,
         data: merged,
+        // Only the holdings were re-read: the run keeps the stamp it had.
+        engine: trendlineData?.engine,
       };
       setSynced(TRENDLINE_STORAGE_KEY, JSON.stringify(stored));
       setTrendlineData(stored);
@@ -2106,7 +2110,9 @@ export default function HomePage() {
     };
 
     const tl = read(TRENDLINE_STORAGE_KEY) as StoredTrendlines | null;
-    const covered = !!tl && ranToday(tl.timestamp) && rawRows.every((r) => !!tl.data?.[r.Code]);
+    // A run made under different rules does not count, whatever its date.
+    const covered = !!tl && tl.engine === TRENDLINE_ENGINE && ranToday(tl.timestamp)
+      && rawRows.every((r) => !!tl.data?.[r.Code]);
     if (!covered) void calculateTrendlines();
 
     const com = read(COMMODITY_STORAGE_KEY) as StoredCommodities | null;

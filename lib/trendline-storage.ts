@@ -61,10 +61,25 @@ export interface TrendlineEntry {
   lastBuyBreach?: string | null;
 }
 
+/**
+ * Which set of 3PTL rules a stored run was read with. BUMP THIS whenever the
+ * engine's rules change (lib/trendline-v3.ts): a stored run carrying a
+ * different stamp, or none, no longer counts as today's run, so the scorecard
+ * reads the list again the next time it opens instead of showing yesterday's
+ * rules under today's date.
+ *
+ * 2026-11-15-walk: the rebuilt walk went live — current month as the final bar,
+ * the safety net and flat-bottom step, redraw at a sell, the flat-top fallback,
+ * and the falling-knife reading.
+ */
+export const TRENDLINE_ENGINE = "2026-11-15-walk";
+
 export interface StoredTrendlines {
   timestamp: string;        // ISO date of calculation run
   checkedCount: number;
   data: Record<string, TrendlineEntry>;
+  /** TRENDLINE_ENGINE at the time of the run; absent on runs before it existed. */
+  engine?: string;
 }
 
 export const TRENDLINE_SCORES: Record<TrendlineSentiment, number> = {
