@@ -129,8 +129,8 @@ export const V3_RULES = {
   /** No buy in a month whose close broke the sell line. */
   noBuyOnBreak: true,
   // ── From his review of the first mover list, 2026-11-15. ──
-  /** The flat-bottom step and the safety net are also for a stock that is not
-   *  held but is over its buy line (A1N, RGN, IHHY, LHGG). */
+  /** The flat-bottom step and the safety net are for every stock with no clean
+   *  line, not only a holding (A1N, RGN, IHHY, LHGG, ZIM). */
   netForAll: true,
   /** A re-anchor on a breaking close must itself have no backwards cut. */
   backCutReanchor: true,
@@ -660,17 +660,13 @@ export function walk(
     // at all (MTS, AMC), and a stock with no clean 8% line was read off a line
     // already cut (A1N: "no possible sell line can be drawn unless you break
     // the flat bottom rule").
-    // ... for a HOLDING, or a stock that is over its buy line and so would be a
-    // buy if only it had a sell line. Every case he has ruled on is one of
-    // those (MTS and IHHY held; A1N "buy line fine so is a Buy"; RGN). A stock
-    // UNDER its buy line with no clean line stays as it was: given a net, 45
-    // Sells on his list turned Watch and iron ore stopped gating.
-    let aboveBuy: boolean = true;
-    if (buy != null) {
-      const ab0: number = buy[0], ab1: number = buy[1];
-      aboveBuy = c[t] > rayAt(c, ab0, ab1, t);
-    }
-    const wide: boolean = NET && (holding || (V3_RULES.netForAll && aboveBuy));
+    // ... for EVERY stock with no clean line. Limiting it to a holding or a
+    // stock over its buy line left the rest on the old first-draw fallback —
+    // "the latest 8% point with no backwards cut, and let the cut be the
+    // signal" — which for a stock basing under its line is two adjacent months
+    // extended for years: ZIM read a sell line of 33.21 at a price of 13.89,
+    // and production shows IHEB at 170 and CYL at 5.29 the same way.
+    const wide: boolean = NET && (holding || V3_RULES.netForAll);
     if (sell == null) {
       confirmed = false;
       isNet = false;
