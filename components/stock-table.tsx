@@ -168,7 +168,7 @@ function SentimentBadge({
           commoditySell
             ? `Commodity gate: ${commodity} is in Sell status — stock forced Bearish (QAV rule). Manual override still available.`
             : knife
-            ? `Falling knife gate: ${knifeNote ?? "its highs are still falling"}. Each high since the top is lower than the last and none has been beaten, so it reads Bearish whatever the buy and sell lines say. Manual override still available.`
+            ? `Falling knife gate: ${(knifeNote ?? "its highs are still falling").replace(/^falling knife — /, "")}. It reads Bearish whatever the buy and sell lines say. Manual override still available.`
             : isOverridden ? `Manual override: ${override}. Click to change.`
             : (v === null || v === undefined) ? "Too little price history for a 3PTL yet, so sentiment is left unscored. Click to set it by hand."
             : "Click to manually set 3PTL sentiment"
