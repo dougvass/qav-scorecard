@@ -390,6 +390,39 @@ const tradingViewUrl = (code: string) =>
 
 type SortKey = "rank" | "code" | "qual" | "yield" | "mer" | "net" | "price" | "r6m" | "r1y" | "r3y" | "r5y" | "liq";
 
+// ── Multi-level sort ─────────────────────────────────────────────────────────
+//
+// Doug, 2026-11-15: "First click is order 1 sort, second click is order 2 sort,
+// etc. Only 3 levels needed." So a click on a column that is not yet in the
+// sort ADDS it as the next level. A click on one that is reverses it, and a
+// further click takes it out again (the levels below move up). With three
+// levels already set, a click on a fourth column starts a new sort from it.
+interface SortLevel { key: SortKey; dir: "asc" | "desc" }
+const MAX_SORT_LEVELS = 3;
+
+/** The direction a column starts in: best first. Lower is better for a rank, a
+ *  fee and a code read alphabetically; higher is better for everything else. */
+const firstDir = (k: SortKey): "asc" | "desc" =>
+  k === "code" || k === "rank" || k === "mer" ? "asc" : "desc";
+
+const SORT_LABEL: Record<SortKey, string> = {
+  rank: "Rank", code: "Code", qual: "Quality", yield: "Yield", mer: "MER", net: "Net",
+  price: "Price", r6m: "6M", r1y: "1Y", r3y: "3Y", r5y: "5Y", liq: "3M $/day",
+};
+
+function nextSortLevels(levels: SortLevel[], k: SortKey): SortLevel[] {
+  const i = levels.findIndex((l) => l.key === k);
+  if (i >= 0) {
+    // Already sorting by it: first reverse, then remove.
+    if (levels[i].dir === firstDir(k)) {
+      return levels.map((l, j) => (j === i ? { key: k, dir: firstDir(k) === "asc" ? "desc" : "asc" } : l));
+    }
+    return levels.filter((_, j) => j !== i);
+  }
+  const added: SortLevel = { key: k, dir: firstDir(k) };
+  return levels.length < MAX_SORT_LEVELS ? [...levels, added] : [added];
+}
+
 // ── Listed investment companies ──────────────────────────────────────────────
 //
 // Doug, 2026-11-15: "LICs should go to the ETF page as with funds. We can
@@ -415,9 +448,12 @@ export default function Page() {
 
   const [sentimentFilter, setSentimentFilter] = useState<Sentiment | "All" | "NoData">("All");
   const [search, setSearch] = useState("");
-  const [minLiquidity, setMinLiquidity] = useState("");  // min 3M avg daily $ traded ($k)
-  const [sortKey, setSortKey] = useState<SortKey>("rank");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  // Minimum 3-month average daily traded value, in $thousands; 0 = any. The
+  // same steps as the scorecard's "Min ADT $" filter.
+  const [minAdt, setMinAdt] = useState(0);
+  // Up to three sort levels, in the order the columns were clicked. Empty means
+  // the page's own order: by rank.
+  const [sortLevels, setSortLevels] = useState<SortLevel[]>([]);
   const [qavListOnly, setQavListOnly] = useState(false);
   const [kindFilter, setKindFilter] = useState<"All" | "ETF" | "LIC">("All");
 
@@ -578,37 +614,53 @@ export default function Page() {
       const q = search.trim().toLowerCase();
       v = v.filter((r) => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
     }
-    // Min liquidity: input is in $thousands of 3M average daily traded value.
-    const minLiq = parseFloat(minLiquidity);
-    if (!Number.isNaN(minLiq) && minLiq > 0) {
-      v = v.filter((r) => r.avgDailyValue !== null && r.avgDailyValue >= minLiq * 1000);
+    // Min ADT: in $thousands of 3M average daily traded value.
+    if (minAdt > 0) {
+      v = v.filter((r) => r.avgDailyValue !== null && r.avgDailyValue >= minAdt * 1000);
     }
     if (qavListOnly) v = v.filter((r) => !!fundScores?.data[r.code]);
     if (kindFilter !== "All") v = v.filter((r) => LIC_CODES.has(r.code) === (kindFilter === "LIC"));
-    const dir = sortDir === "asc" ? 1 : -1;
-    const keyVal = (r: RankedEtf): number | string => {
-      switch (sortKey) {
+
+    // A fund with no value in a column goes to the bottom whichever way that
+    // column is sorted — "no 5-year return" is neither the best nor the worst.
+    const valueOf = (r: RankedEtf, k: SortKey): number | string | null => {
+      switch (k) {
         case "code": return r.code;
-        case "qual": return r.quality ?? -Infinity;
-        case "yield": return r.yieldPct ?? -Infinity;
-        case "mer": return r.mer ?? Infinity;
-        case "net": return r.netYield ?? -Infinity;
-        case "price": return r.price ?? -Infinity;
-        case "r6m": return r.perf.r6m ?? -Infinity;
-        case "r1y": return r.perf.r1y ?? -Infinity;
-        case "r3y": return r.perf.r3y ?? -Infinity;
-        case "r5y": return r.perf.r5y ?? -Infinity;
-        case "liq": return r.avgDailyValue ?? -Infinity;
+        case "qual": return r.quality;
+        case "yield": return r.yieldPct;
+        case "mer": return r.mer;
+        case "net": return r.netYield;
+        case "price": return r.price;
+        case "r6m": return r.perf.r6m;
+        case "r1y": return r.perf.r1y;
+        case "r3y": return r.perf.r3y;
+        case "r5y": return r.perf.r5y;
+        case "liq": return r.avgDailyValue;
         case "rank":
-        default: return rankByCode.get(r.code) ?? Infinity;
+        default: return rankByCode.get(r.code) ?? null;
       }
     };
+    const compareBy = (a: RankedEtf, b: RankedEtf, level: SortLevel): number => {
+      const av = valueOf(a, level.key), bv = valueOf(b, level.key);
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      const d = typeof av === "string" && typeof bv === "string"
+        ? av.localeCompare(bv)
+        : (av as number) - (bv as number);
+      return level.dir === "asc" ? d : -d;
+    };
+    // The levels in the order they were clicked, then rank and code so that
+    // equal rows always come out in the same order.
+    const levels: SortLevel[] = sortLevels.concat([{ key: "rank", dir: "asc" }, { key: "code", dir: "asc" }]);
     return [...v].sort((a, b) => {
-      const av = keyVal(a), bv = keyVal(b);
-      if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv) * dir;
-      return ((av as number) - (bv as number)) * dir;
+      for (const level of levels) {
+        const d = compareBy(a, b, level);
+        if (d !== 0) return d;
+      }
+      return 0;
     });
-  }, [rows, sentimentFilter, search, minLiquidity, sortKey, sortDir, rankByCode, qavListOnly, fundScores, kindFilter]);
+  }, [rows, sentimentFilter, search, minAdt, sortLevels, rankByCode, qavListOnly, fundScores, kindFilter]);
 
   const counts = useMemo(() => {
     const c = { Buy: 0, Watch: 0, Josephine: 0, Sell: 0, errored: 0 };
@@ -620,8 +672,14 @@ export default function Page() {
   }, [rows]);
 
   function toggleSort(k: SortKey) {
-    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortKey(k); setSortDir(k === "code" || k === "rank" ? "asc" : "desc"); }
+    setSortLevels((levels) => nextSortLevels(levels, k));
+  }
+  /** What a header shows: its place in the sort (1–3) and its direction. With
+   *  no sort chosen the page is in rank order, and Rank says so. */
+  function sortMark(k: SortKey): { level: number; dir: "asc" | "desc" } | null {
+    const i = sortLevels.findIndex((l) => l.key === k);
+    if (i >= 0) return { level: i + 1, dir: sortLevels[i].dir };
+    return sortLevels.length === 0 && k === "rank" ? { level: 0, dir: "asc" } : null;
   }
 
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -741,18 +799,22 @@ export default function Page() {
               <option value="ETF">ETFs only</option>
               <option value="LIC">LICs only</option>
             </select>
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min="0"
-                placeholder="min liquidity"
-                value={minLiquidity}
-                onChange={(e) => setMinLiquidity(e.target.value)}
-                className="w-32 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
-                title="Minimum 3-month average daily traded value, in $thousands"
-              />
-              <span className="text-xs text-gray-500">$k/day</span>
-            </div>
+            <label className="flex items-center gap-1.5 text-sm text-gray-700" title="Minimum 3-month average daily traded value">
+              Min ADT $
+              <select
+                value={minAdt}
+                onChange={(e) => setMinAdt(Number(e.target.value))}
+                className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
+              >
+                <option value={0}>Any</option>
+                <option value={100}>≥ $100k</option>
+                <option value={250}>≥ $250k</option>
+                <option value={500}>≥ $500k</option>
+                <option value={1000}>≥ $1M</option>
+                <option value={2000}>≥ $2M</option>
+                <option value={5000}>≥ $5M</option>
+              </select>
+            </label>
             {fundScores && (
               <label className="flex items-center gap-1.5 text-sm text-gray-700" title="Show only the funds that are in your Stock Doctor list">
                 <input type="checkbox" checked={qavListOnly} onChange={(e) => setQavListOnly(e.target.checked)} />
@@ -760,26 +822,41 @@ export default function Page() {
               </label>
             )}
             <span className="text-xs text-gray-500">{view.length} shown</span>
+            {sortLevels.length > 0 && (
+              <span className="text-xs text-gray-500">
+                Sorted by{" "}
+                {sortLevels.map((l, i) => (
+                  <span key={l.key}>
+                    {i > 0 && ", then "}
+                    <span className="font-medium text-gray-700">{SORT_LABEL[l.key]} {l.dir === "asc" ? "▲" : "▼"}</span>
+                  </span>
+                ))}
+                {" · "}
+                <button type="button" onClick={() => setSortLevels([])} className="text-indigo-600 underline">
+                  clear
+                </button>
+              </span>
+            )}
           </div>
 
           <div className="max-h-[70vh] overflow-auto rounded-lg border border-gray-200 bg-white shadow-sm">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <Th onClick={() => toggleSort("rank")} active={sortKey === "rank"} dir={sortDir}>Rank</Th>
-                  <Th onClick={() => toggleSort("code")} active={sortKey === "code"} dir={sortDir}>Code</Th>
+                  <Th onClick={() => toggleSort("rank")} mark={sortMark("rank")}None>Rank</Th>
+                  <Th onClick={() => toggleSort("code")} mark={sortMark("code")}None>Code</Th>
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">Name</th>
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">3PTL</th>
-                  <Th onClick={() => toggleSort("qual")} active={sortKey === "qual"} dir={sortDir} right>Quality</Th>
-                  <Th onClick={() => toggleSort("price")} active={sortKey === "price"} dir={sortDir} right>Price</Th>
-                  <Th onClick={() => toggleSort("yield")} active={sortKey === "yield"} dir={sortDir} right>Yield %</Th>
-                  <Th onClick={() => toggleSort("mer")} active={sortKey === "mer"} dir={sortDir} right>MER %</Th>
-                  <Th onClick={() => toggleSort("net")} active={sortKey === "net"} dir={sortDir} right>Net %</Th>
-                  <Th onClick={() => toggleSort("r6m")} active={sortKey === "r6m"} dir={sortDir} right>6M %</Th>
-                  <Th onClick={() => toggleSort("r1y")} active={sortKey === "r1y"} dir={sortDir} right>1Y %</Th>
-                  <Th onClick={() => toggleSort("r3y")} active={sortKey === "r3y"} dir={sortDir} right>3Y %</Th>
-                  <Th onClick={() => toggleSort("r5y")} active={sortKey === "r5y"} dir={sortDir} right>5Y %</Th>
-                  <Th onClick={() => toggleSort("liq")} active={sortKey === "liq"} dir={sortDir} right>3M $/day</Th>
+                  <Th onClick={() => toggleSort("qual")} mark={sortMark("qual")} right>Quality</Th>
+                  <Th onClick={() => toggleSort("price")} mark={sortMark("price")} right>Price</Th>
+                  <Th onClick={() => toggleSort("yield")} mark={sortMark("yield")} right>Yield %</Th>
+                  <Th onClick={() => toggleSort("mer")} mark={sortMark("mer")} right>MER %</Th>
+                  <Th onClick={() => toggleSort("net")} mark={sortMark("net")} right>Net %</Th>
+                  <Th onClick={() => toggleSort("r6m")} mark={sortMark("r6m")} right>6M %</Th>
+                  <Th onClick={() => toggleSort("r1y")} mark={sortMark("r1y")} right>1Y %</Th>
+                  <Th onClick={() => toggleSort("r3y")} mark={sortMark("r3y")} right>3Y %</Th>
+                  <Th onClick={() => toggleSort("r5y")} mark={sortMark("r5y")} right>5Y %</Th>
+                  <Th onClick={() => toggleSort("liq")} mark={sortMark("liq")} right>3M $/day</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -903,21 +980,26 @@ export default function Page() {
 }
 
 function Th({
-  children, onClick, active, dir, right,
+  children, onClick, mark, right,
 }: {
   children: ReactNode;
   onClick: () => void;
-  active: boolean;
-  dir: "asc" | "desc";
+  /** Its place in the sort and its direction, or null if it is not sorted by.
+   *  Level 0 is the page's own rank order, shown without a number. */
+  mark: { level: number; dir: "asc" | "desc" } | null;
   right?: boolean;
 }) {
   return (
     <th
       onClick={onClick}
-      className={`sticky top-0 z-10 cursor-pointer select-none bg-gray-50 px-3 py-2 font-semibold text-gray-700 hover:text-indigo-600 ${right ? "text-right" : "text-left"}`}
+      title="Click to sort. Click up to three columns to sort by each in turn; click a sorted column again to reverse it, and once more to take it out."
+      className={`sticky top-0 z-10 cursor-pointer select-none whitespace-nowrap bg-gray-50 px-3 py-2 font-semibold hover:text-indigo-600 ${mark ? "text-indigo-700" : "text-gray-700"} ${right ? "text-right" : "text-left"}`}
     >
       {children}
-      {active ? (dir === "asc" ? " ▲" : " ▼") : ""}
+      {mark ? (mark.dir === "asc" ? " ▲" : " ▼") : ""}
+      {mark && mark.level > 0 && (
+        <sup className="ml-0.5 rounded bg-indigo-100 px-1 text-[10px] font-bold text-indigo-700">{mark.level}</sup>
+      )}
     </th>
   );
 }
