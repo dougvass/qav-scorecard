@@ -2,9 +2,8 @@ import type { Metadata } from "next";
 
 // The ETF page is a client component, which cannot export metadata itself.
 export const metadata: Metadata = {
-  title: "QAV ETF Ranker — ASX ETFs",
-  description:
-    "ASX ETFs ranked by the 3-Point Trendline and net distribution yield, with the QAV score of every fund in the Stock Doctor list beside it",
+  title: "QAV ETF & LIC Ranker",
+  description: "ASX ETFs and listed investment companies ranked by 3PTL trend, net yield, fee and total return.",
 };
 
 export default function EtfLayout({ children }: { children: React.ReactNode }) {

@@ -5,8 +5,11 @@
 // not a business; Stock Doctor leaves most of them without an industry group,
 // which is why they arrive in the export beside the companies too new to have
 // a GICS code. Those new companies must never be taken with them, so a LIC is
-// identified by CODE from this list and by nothing looser (see
-// isListedInvestmentCompany in lib/qav-scoring.ts).
+// identified by CODE from this list and by nothing looser (see setAsideKind in
+// lib/qav-scoring.ts). The same list is part of the ETF & LIC page's universe,
+// where they are ranked with the ETFs: "LICs should go to the ETF page as with
+// funds. We can compare them all in terms of their MER (if any) and return
+// metrics." No fees are recorded here; add a `mer` when one is wanted.
 //
 // SOURCE: Morningstar's Listed Investment Companies screener
 // (morningstar.com.au/investments/ideas/listed-investment-companies), read on

@@ -1170,9 +1170,8 @@ export default function HomePage() {
     for (const r of fundRows) {
       funds[String(r.Code).trim().toUpperCase()] = {
         name: String(r.Name ?? ""),
-        // Only the ETFs and funds go on to the ETF page; a LIC is recorded so
-        // the list is complete, and the ETF page leaves it alone.
-        isFund: setAsideKind(r) === "etf",
+        // Everything set aside is ranked on the ETF & LIC page.
+        isFund: true,
         qav: null, quality: null, pcf: null, count: null, sentiment: null,
         onBuyList: false, hold: false, period: null,
       };
@@ -2195,10 +2194,10 @@ export default function HomePage() {
             <Link
               href="/etf"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors text-gray-600 border-gray-300 hover:bg-gray-50"
-              title="Rank ASX ETFs by 3PTL and net yield — and see the QAV score of every fund in this list beside it"
+              title="Rank ASX ETFs and listed investment companies by 3PTL, net yield, fee and total return"
             >
               <BarChart2 className="w-4 h-4" />
-              ETFs
+              ETFs &amp; LICs
             </Link>
             {/* Phase 2 — opens in new tab so the CSV session is not lost */}
             <Link
@@ -3026,8 +3025,8 @@ export default function HomePage() {
                     <p>
                       <span className="font-medium text-gray-700">{etfs.length} ETFs and funds</span>{" "}
                       — no industry group, and in the{" "}
-                      <a href="/etf" className="text-indigo-600 underline">ETF page</a>&rsquo;s universe
-                      or named ETF or Fund; ranked there.
+                      <a href="/etf" className="text-indigo-600 underline">ETF &amp; LIC page</a>&rsquo;s
+                      ETF list or named ETF or Fund; ranked there.
                       <span className="block mt-1 font-mono text-xs leading-relaxed text-gray-500 break-words">
                         {etfs.join(" · ")}
                       </span>
@@ -3036,7 +3035,7 @@ export default function HomePage() {
                   {lics.length > 0 && (
                     <p>
                       <span className="font-medium text-gray-700">{lics.length} listed investment companies and trusts</span>{" "}
-                      — by code, from the bundled LIC list.
+                      — by code, from the bundled LIC list; ranked on the same page.
                       <span className="block mt-1 font-mono text-xs leading-relaxed text-gray-500 break-words">
                         {lics.join(" · ")}
                       </span>

@@ -291,6 +291,11 @@ export const ETFS: EtfMeta[] = [
   { code: "PGA1", name: "Plato Global Alpha Fund Complex ETF", mer: 0.85 },
   { code: "PIXX", name: "Platinum International Fund (Quoted Managed Hedge Fund) MF", mer: 1.1 },
   { code: "PLUS", name: "VanEck Vectors Australian Corporate Bond Plus", mer: 0.32 },
+  // Not on Market Index's ETF list — it is an exchange-traded product issued by
+  // the Perth Mint, not a fund. Added 2026-11-15 at Doug's request ("PMGOLD
+  // should move to the ETF/LIC ranker as well"). Fee from the Perth Mint's own
+  // fact sheet: 0.15% p.a., taken from the metal entitlement.
+  { code: "PMGOLD", name: "Perth Mint Gold", mer: 0.15 },
   { code: "QAU", name: "BetaShares Gold Bullion ETF - Currency Hedged", mer: 0.59 },
   { code: "QBTC", name: "BetaShares Bitcoin ETF", mer: 1.25 },
   { code: "QETH", name: "BetaShares Ethereum ETF", mer: 1.25 },
