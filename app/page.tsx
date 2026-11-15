@@ -78,6 +78,7 @@ import {
   isEtfOrFund,
   isSetAsideFund,
   setAsideKind,
+  isFundCode,
   DEFAULT_CASH_RATE,
   DEFAULT_BORROWING_RATE,
   DEFAULT_RRR,
@@ -836,7 +837,7 @@ export default function HomePage() {
   const snapshotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showAll, setShowAll] = useState(false);
   /** Which view the table area is showing. "holdings" is the portfolio. */
-  const [view, setView] = useState<"buy" | "all" | "holdings">("buy");
+  const [view, setView] = useState<"buy" | "all" | "holdings" | "record">("buy");
   const [holdings, setHoldings] = useState<StoredHoldings>({ timestamp: null, codes: [] });
   const [holdingsChecking, setHoldingsChecking] = useState(false);
   const [redFlags, setRedFlags] = useState<StoredRedFlags | null>(null);
@@ -3107,6 +3108,18 @@ export default function HomePage() {
                   </span>
                 )}
               </button>
+              {/* How the buy list has done: total return since each stock
+                  joined it, beside the ASX 200 over the same days. */}
+              <button
+                onClick={() => setView("record")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  view === "record" ? "bg-indigo-600 text-white shadow-sm" : "bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
+                }`}
+                title="Total return of every stock since it joined the buy list, against the ASX 200"
+              >
+                <TrendingUp className="w-4 h-4" />
+                Track record
+              </button>
             </div>
 
             <div className="flex flex-wrap gap-3 text-xs text-gray-500">
@@ -3127,6 +3140,8 @@ export default function HomePage() {
                 onCheckMissing={checkHoldings3PTL}
                 checking={holdingsChecking}
               />
+            ) : view === "record" ? (
+              <TrackRecord history={history} stocks={allStocks} isFund={isFundCode} />
             ) : (
             <StockTable
               stocks={displayedStocks}
