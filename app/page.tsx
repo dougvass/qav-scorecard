@@ -75,6 +75,7 @@ import {
   makeBuyList,
   isEtfOrFund,
   isSetAsideFund,
+  setAsideKind,
   DEFAULT_CASH_RATE,
   DEFAULT_BORROWING_RATE,
   DEFAULT_RRR,
@@ -1169,7 +1170,9 @@ export default function HomePage() {
     for (const r of fundRows) {
       funds[String(r.Code).trim().toUpperCase()] = {
         name: String(r.Name ?? ""),
-        isFund: true,
+        // Only the ETFs and funds go on to the ETF page; a LIC is recorded so
+        // the list is complete, and the ETF page leaves it alone.
+        isFund: setAsideKind(r) === "etf",
         qav: null, quality: null, pcf: null, count: null, sentiment: null,
         onBuyList: false, hold: false, period: null,
       };
@@ -1198,11 +1201,12 @@ export default function HomePage() {
   ): number => {
     const parsed = parseStockDoctorText(text);
     if (parsed.length === 0) throw new Error("No stock rows found in CSV.");
-    // ETFs and funds leave the data set HERE, before anything is scored. They
-    // are ranked on the ETF page by total return; on the scorecard they were
-    // only ever hidden, while still costing a 3PTL request each and counting in
-    // the history. What stays is every company — including one too new to have
-    // a GICS code, which is why the export carries the unclassified rows at all.
+    // ETFs, funds and listed investment companies leave the data set HERE,
+    // before anything is scored. The ETFs are ranked on the ETF page by total
+    // return; on the scorecard they were only ever hidden, while still costing
+    // a 3PTL request each and counting in the history. What stays is every
+    // company — including one too new to have a GICS code, which is why the
+    // export carries the unclassified rows at all.
     const rows = parsed.filter((r) => !isSetAsideFund(r));
     const loadedAt = opts?.loadedAt ?? new Date().toISOString();
     const persist = opts?.persist !== false;
@@ -2981,9 +2985,9 @@ export default function HomePage() {
                       type="button"
                       onClick={() => setShowFundCodes((v) => !v)}
                       className="underline decoration-dotted underline-offset-2 hover:text-gray-700"
-                      title="ETFs and funds are taken out before scoring. Click to see which."
+                      title="ETFs, funds and listed investment companies are taken out before scoring. Click to see which."
                     >
-                      {fundRows.length} ETF{fundRows.length === 1 ? "" : "s"} and funds set aside
+                      {fundRows.length} ETFs, funds and LICs set aside
                     </button>
                   </>
                 )}
@@ -3007,20 +3011,40 @@ export default function HomePage() {
               </span>
               <SdBookmarklet compact />
             </div>
-            {showFundCodes && fundRows.length > 0 && (
-              <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
-                <p>
-                  These {fundRows.length} rows of the export are ETFs or funds: no industry group, and
-                  either in the ETF page&rsquo;s universe or named as an ETF or Fund. They are not scored
-                  here and are ranked on the{" "}
-                  <a href="/etf" className="text-indigo-600 underline">ETF page</a>. Every other
-                  unclassified row is scored as a stock.
-                </p>
-                <p className="mt-2 font-mono text-xs leading-relaxed text-gray-500 break-words">
-                  {fundRows.map((r) => String(r.Code)).sort().join(" · ")}
-                </p>
-              </div>
-            )}
+            {showFundCodes && fundRows.length > 0 && (() => {
+              const codes = (kind: "etf" | "lic") =>
+                fundRows.filter((r) => setAsideKind(r) === kind).map((r) => String(r.Code)).sort();
+              const etfs = codes("etf"), lics = codes("lic");
+              return (
+                <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 space-y-2">
+                  <p>
+                    These {fundRows.length} rows of the export are portfolios, not businesses, and are
+                    not scored here. Every other row is scored as a stock, including any company too new
+                    to have an industry group.
+                  </p>
+                  {etfs.length > 0 && (
+                    <p>
+                      <span className="font-medium text-gray-700">{etfs.length} ETFs and funds</span>{" "}
+                      — no industry group, and in the{" "}
+                      <a href="/etf" className="text-indigo-600 underline">ETF page</a>&rsquo;s universe
+                      or named ETF or Fund; ranked there.
+                      <span className="block mt-1 font-mono text-xs leading-relaxed text-gray-500 break-words">
+                        {etfs.join(" · ")}
+                      </span>
+                    </p>
+                  )}
+                  {lics.length > 0 && (
+                    <p>
+                      <span className="font-medium text-gray-700">{lics.length} listed investment companies and trusts</span>{" "}
+                      — by code, from the bundled LIC list.
+                      <span className="block mt-1 font-mono text-xs leading-relaxed text-gray-500 break-words">
+                        {lics.join(" · ")}
+                      </span>
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
 
             <SummaryStats all={statsAll} buyList={statsBuyList} />
 

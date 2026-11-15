@@ -1,0 +1,115 @@
+// ASX listed investment companies and trusts (LICs and LITs) — 91 of them.
+//
+// Doug, 2026-11-15, after the ETFs were pulled from the scorecard: "lets also
+// remove the LICs and WAM stocks/funds." Like an ETF, a LIC is a portfolio and
+// not a business; Stock Doctor leaves most of them without an industry group,
+// which is why they arrive in the export beside the companies too new to have
+// a GICS code. Those new companies must never be taken with them, so a LIC is
+// identified by CODE from this list and by nothing looser (see
+// isListedInvestmentCompany in lib/qav-scoring.ts).
+//
+// SOURCE: Morningstar's Listed Investment Companies screener
+// (morningstar.com.au/investments/ideas/listed-investment-companies), read on
+// 2026-11-15. The ASX's own LIC directory page was a 404 that day and its
+// monthly investment-products report is a spreadsheet download. To refresh,
+// re-read that screener (five pages of 20) and replace the list; a new LIC that
+// is missing here simply shows up on the scorecard as a stock until it is added.
+
+export interface LicMeta {
+  code: string;
+  name: string;
+}
+
+export const LICS: LicMeta[] = [
+  { code: "8IH", name: "8I Holdings Ltd" },
+  { code: "ACQ", name: "Acorn Capital Investment Fund Ltd" },
+  { code: "AFI", name: "Australian Foundation Investment Company" },
+  { code: "AIQ", name: "Alternative Investment Trust" },
+  { code: "AIX", name: "AI Private Opportunities Trust" },
+  { code: "ALI", name: "Argo Global Listed Infrastructure Limited" },
+  { code: "AMH", name: "Amcil" },
+  { code: "ARG", name: "Argo Investments" },
+  { code: "AUI", name: "Australian United Investment Company" },
+  { code: "BEL", name: "Bentley Capital" },
+  { code: "BHD", name: "Benjamin Hornigold Limited" },
+  { code: "BKI", name: "BKI Investment Company" },
+  { code: "BTI", name: "Bailador Technology Investments Ltd" },
+  { code: "CAM", name: "Clime Capital" },
+  { code: "CD1", name: "Cordish Dixon Private Equity Fund I" },
+  { code: "CD2", name: "Cordish Dixon Private Equity Fund II" },
+  { code: "CD3", name: "Cordish Dixon Private Equity Fund III" },
+  { code: "CDM", name: "Cadence Capital" },
+  { code: "CDO", name: "Cadence Opportunities Fund" },
+  { code: "CIN", name: "Carlton Investments" },
+  { code: "DJW", name: "Djerriwarrh Investments" },
+  { code: "DN1", name: "Dominion Income Trust 1" },
+  { code: "ECL", name: "Excelsior Capital Limited" },
+  { code: "ECP", name: "ECP Emerging Growth" },
+  { code: "FGG", name: "Future Generation Global Investment Company Ltd" },
+  { code: "FGX", name: "Future Generation Investment Company Ltd" },
+  { code: "FPC", name: "Fat Prophets Global Contrarian Fund Ltd" },
+  { code: "FSI", name: "Flagship Investments Limited" },
+  { code: "GC1", name: "Glennon Small Companies Ltd" },
+  { code: "GCI", name: "Gryphon Capital Income Trust" },
+  { code: "GFL", name: "Global Masters Fund" },
+  { code: "GLS", name: "L1 Global Long Short Fund Limited" },
+  { code: "GVF", name: "Staude Capital Global Value Fund Limited" },
+  { code: "HCF", name: "H&G High Conviction Ltd" },
+  { code: "HM1", name: "Hearts and Minds Investments Ltd" },
+  { code: "IBC", name: "Ironbark Balanced Income" },
+  { code: "KAT", name: "Katana Capital" },
+  { code: "KIT", name: "Kapstream Investment Trust" },
+  { code: "KKC", name: "KKR Credit Income Fund" },
+  { code: "LF1", name: "La Trobe Private Credit Fund" },
+  { code: "LGF", name: "L1 Gold Fund Limited" },
+  { code: "LRT", name: "Lowell Resources Fund" },
+  { code: "LSF", name: "L1 Long Short Fund" },
+  { code: "LSX", name: "Lion Selection Group Limited" },
+  { code: "MA1", name: "MA Credit Income Trust" },
+  { code: "MEC", name: "Morphic Ethical Equities Fund Ltd" },
+  { code: "MFF", name: "MFF Capital Investments Limited" },
+  { code: "MIR", name: "Mirrabooka Investments" },
+  { code: "MOT", name: "Metrics Income Opportunities Trust" },
+  { code: "MRE", name: "Metrics Real Estate Multi-Strategy Fund" },
+  { code: "MXT", name: "Metrics Master Income Trust" },
+  { code: "NAC", name: "NAOS Ex-50 Opportunities Company Ltd" },
+  { code: "NCC", name: "NAOS Emerging Opportunities Company Ltd" },
+  { code: "NGE", name: "NGE Capital Ltd" },
+  { code: "NSC", name: "NAOS Small Cap Opportunities Company" },
+  { code: "OEQ", name: "Orion Equities" },
+  { code: "OPH", name: "Ophir High Conviction Fund" },
+  { code: "PCI", name: "Perpetual Credit Income Trust" },
+  { code: "PCX", name: "Pengana Global Private Credit Trust" },
+  { code: "PE1", name: "Pengana Private Equity Trust" },
+  { code: "PGF", name: "PM Capital Global Opportunities Fund Limited" },
+  { code: "PIA", name: "Pengana International Equities" },
+  { code: "PIC", name: "Perpetual Equity Investment Company Ltd" },
+  { code: "PL8", name: "Plato Income Maximiser Ltd" },
+  { code: "QRI", name: "Qualitas Real Estate Income Fund" },
+  { code: "REV", name: "Revolution Private Credit Income Trust" },
+  { code: "RF1", name: "Regal Investment Fund" },
+  { code: "RG1", name: "Regal Partners Global Investments Ltd" },
+  { code: "RG8", name: "Regal Asian Investments Limited" },
+  { code: "RYD", name: "Ryder Capital Limited" },
+  { code: "SB2", name: "Salter Brothers Emerging Companies Ltd" },
+  { code: "SEC", name: "Spheria Emerging Companies Ltd" },
+  { code: "SET", name: "Solaris Australian Equity Income Plus" },
+  { code: "SNC", name: "Sandon Capital Investments Ltd" },
+  { code: "TCF", name: "360 Capital Mortgage REIT" },
+  { code: "TEK", name: "Thorney Technologies Ltd" },
+  { code: "TGF", name: "Tribeca Global Natural Resources Limited" },
+  { code: "TOP", name: "Thorney Opportunities Ltd" },
+  { code: "UWC", name: "Underwood Capital Limited" },
+  { code: "WAA", name: "WAM Active Limited" },
+  { code: "WAM", name: "WAM Capital" },
+  { code: "WAR", name: "WAM Strategic Value Ltd" },
+  { code: "WAX", name: "WAM Research Limited" },
+  { code: "WGB", name: "WAM Global Limited" },
+  { code: "WHF", name: "Whitefield Industrials" },
+  { code: "WHI", name: "Whitefield Income Limited" },
+  { code: "WLE", name: "WAM Leaders Ltd" },
+  { code: "WMA", name: "WAM Alternative Assets" },
+  { code: "WMI", name: "WAM Microcap Ltd" },
+  { code: "WMX", name: "WAM Income Maximiser Ltd" },
+  { code: "WQG", name: "WCM Global Growth Limited" },
+];

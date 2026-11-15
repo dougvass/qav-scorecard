@@ -23,8 +23,8 @@ export const FUND_SCORES_STORAGE_KEY = "qav_fund_scores_v1";
 
 export interface FundScore {
   name: string;
-  /** Set aside by the scorecard as a fund. Always true in records written since
-   *  2026-11-15; older ones also held unclassified companies with it false. */
+  /** An ETF or fund, which the ETF page ranks. False for a listed investment
+   *  company: set aside from the scorecard too, but not ranked there. */
   isFund: boolean;
   qav: number | null;
   /** Mean of the criteria that could be scored, as a fraction (0.8 = 80%). */

@@ -7,6 +7,7 @@
 
 import { StockRow, ScoredStock, ScoreColumns } from "./types";
 import { ETFS } from "./etfs";
+import { LICS } from "./lics";
 
 // ─── Defaults (match row 35 of QAV_updated) ────────────────────────────────
 
@@ -77,29 +78,51 @@ export function isEtfOrFund(stock: { Name: string; "Industry Group": string | nu
 }
 
 const ETF_UNIVERSE: Set<string> = new Set(ETFS.map((e) => e.code));
+const LIC_CODES: Set<string> = new Set(LICS.map((l) => l.code));
+
+type Classifiable = { Code: string; Name: string; "Industry Group": string | number | null };
+
+function industryGroup(row: Classifiable): string {
+  const ig = row["Industry Group"];
+  const t = ig == null ? "" : String(ig).trim();
+  return t === "nan" ? "" : t;
+}
 
 /**
- * A row that is a FUND and is pulled out of the data set before anything is
- * scored. Doug, 2026-11-15: "Bond funds like these should be captured not in
- * QAV but in the ETF under total return ... ETFs should be pulled from the data
- * set automatically. I have to export them from SD as some new unclassified
- * stocks still need to be scored when they're new to market. They don't get
- * GICS codes for a while and I could miss them otherwise."
+ * Why a row is pulled out of the data set before anything is scored, or null
+ * if it stays.
  *
- * So the test must never take a new company with it. A row goes only if it has
- * NO industry group and is positively a fund: its code is in the ETF page's own
- * universe, or its name says ETF or Fund. Everything else Stock Doctor leaves
- * unclassified stays and is scored — the listed investment companies (WAM, CAM,
- * FGG ...), the income trusts, PMGOLD, and any company too new to have a GICS
- * code. On the 14 Nov 2026 export that is 68 of the 90 unclassified rows set
- * aside and 22 kept.
+ * Doug, 2026-11-15: "Bond funds like these should be captured not in QAV but in
+ * the ETF under total return ... ETFs should be pulled from the data set
+ * automatically. I have to export them from SD as some new unclassified stocks
+ * still need to be scored when they're new to market. They don't get GICS codes
+ * for a while and I could miss them otherwise." And the same evening: "lets
+ * also remove the LICs and WAM stocks/funds."
+ *
+ * The test must never take a new company with it, so each kind is identified
+ * POSITIVELY:
+ *   "etf"  no industry group, and the code is in the ETF page's own universe or
+ *          the name says ETF or Fund.
+ *   "lic"  the code is in the bundled list of listed investment companies and
+ *          trusts (lib/lics.ts). Stock Doctor leaves most of them unclassified
+ *          and files a few under Financial Services (SNC, TEK, WHI); any OTHER
+ *          industry group means the code now belongs to something else, and
+ *          the row stays.
+ * Everything else Stock Doctor leaves unclassified stays and is scored. On the
+ * 14 Nov 2026 export: 90 unclassified rows, 68 ETFs and funds, 21 LICs (plus
+ * three more with an industry group), and one row left — PMGOLD.
  */
-export function isSetAsideFund(
-  row: { Code: string; Name: string; "Industry Group": string | number | null },
-): boolean {
-  const ig = row["Industry Group"];
-  if (ig && String(ig).trim() !== "" && String(ig) !== "nan") return false;
-  return ETF_UNIVERSE.has(String(row.Code).trim().toUpperCase()) || ETF_FUND_RE.test(String(row.Name));
+export function setAsideKind(row: Classifiable): "etf" | "lic" | null {
+  const group = industryGroup(row);
+  const code = String(row.Code).trim().toUpperCase();
+  if (group === "" && (ETF_UNIVERSE.has(code) || ETF_FUND_RE.test(String(row.Name)))) return "etf";
+  if (LIC_CODES.has(code) && (group === "" || /financ/i.test(group))) return "lic";
+  return null;
+}
+
+/** A row that is a fund or a LIC, not a business — see setAsideKind. */
+export function isSetAsideFund(row: Classifiable): boolean {
+  return setAsideKind(row) !== null;
 }
 
 // ─── Individual scoring functions ──────────────────────────────────────────
