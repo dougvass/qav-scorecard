@@ -154,6 +154,16 @@ export const V3_RULES = {
    *  blocking the buys inside it removed AMC's Mar-24 buy and with it the
    *  Mar-25 sell that moves his H1 to Feb-25. */
   fallingKnife: true,
+  // ── From his review of the third check page, 2026-11-15 (MCY). ──
+  /** A flat-top FALLBACK buy line (H1 and H2 inside 8%) is provisional, exactly
+   *  as a safety net is: once a line that passes the rules can be drawn from
+   *  the TRUE top — unstepped, floor or no floor — and nothing has closed over
+   *  it since its H2, that is the buy line, even if the fallback has since been
+   *  crossed. MCY: fallback Aug-25 5.92 -> Dec-25 5.65 drawn at its Jan-26 sell
+   *  and "crossed" in Apr-26; by Jun-26 the May-26 peak gives Mar-24 6.40 ->
+   *  May-26 5.87, 8.3% apart and clear of Oct-24 6.24 by under 2c. His chart is
+   *  that line: "MCY should be a watch". */
+  fallbackIsProvisional: true,
 };
 
 const EPS = 1e-9;
@@ -577,6 +587,35 @@ function topLine(c: number[], pk: number[], t: number, floor: number, aboveAt?: 
   return null;
 }
 
+/**
+ * The buy line the rules give from the TRUE top: H1 the highest peak the walk
+ * can see at or behind `before` (not stepped along a flat top, not held behind
+ * a floor), H2 the latest later close 8% or more below it with nothing over the
+ * line between. It must be a LIVE line — nothing has closed on or over it since
+ * H2, this month included. One crossed long ago was left behind: CQR's Apr-22
+ * 4.47 -> May-25 3.94, crossed in Aug-25 and traded over for a year, is not a
+ * buy line again because price has fallen back under it.
+ *
+ * `before`: a higher top made SINCE the fallback's H1 belongs to the holding,
+ * not to a buy line (BBL, BCN).
+ */
+function trueTopLine(c: number[], pk: number[], t: number, before: number): [number, number] | null {
+  const avail = pk.filter((i) => i < t && i <= before);
+  if (avail.length === 0) return null;
+  let top = avail[0];
+  for (let i = 0; i < avail.length; i++) if (c[avail[i]] > c[top]) top = avail[i];
+  for (let h2 = Math.min(t, c.length - 1) - 1; h2 > top; h2--) {
+    if (!(c[top] >= c[h2] * (1 + SEP))) continue;
+    const g: number = (c[h2] - c[top]) / (h2 - top);
+    let over = false;
+    for (let k = top + 1; k < h2 && !over; k++) if (c[k] > c[top] + g * (k - top) + EPS) over = true;
+    if (over) continue;
+    for (let k = h2 + 1; k <= t; k++) if (c[k] >= c[top] + g * (k - top)) return null;
+    return [top, h2];
+  }
+  return null;
+}
+
 /** `j` is a peak that month `t` can already see has turned down. */
 function peakBy(c: number[], j: number, t: number): boolean {
   return j > 0 && j < t && c[j] >= c[j - 1] && c[j] > c[j + 1];
@@ -965,6 +1004,15 @@ export function walk(
       if (h2f > 0) buy = [h1f, h2f];
     }
 
+    if (V3_RULES.fallbackIsProvisional && buy != null) {
+      const f0: number = buy[0], f1: number = buy[1];
+      if (c[f0] < c[f1] * (1 + SEP)) {
+        // The standing line is a flat-top fallback.
+        const tt: [number, number] | null = trueTopLine(c, pk, t, f0);
+        if (tt != null && tt[0] < f0) buy = tt;
+      }
+    }
+
     if (state !== "long" && buy != null) {
       const h1: number = buy[0];
       const h2: number = buy[1];
@@ -1102,7 +1150,9 @@ export function classifyV3(
     if (out.state !== "long" || falling || atLow) {
       return {
         sentiment: "Sell", note: "falling knife — no sell line passes the 8% test",
-        sell: null, buy: buyNow, l1: null, l2: null,
+        // l1/l2 are the anchors of the line that FAILS the 8% test, for the
+        // chart; `sell` stays null — there is no sell line.
+        sell: null, buy: buyNow, l1: anchor(out.sell[0]), l2: anchor(out.sell[1]),
         h1: out.buy != null ? anchor(out.buy[0]) : null,
         h2: out.buy != null ? anchor(out.buy[1]) : null,
         events: out.events, net: false, forming: false, knife: true,
