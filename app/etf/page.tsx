@@ -843,8 +843,8 @@ export default function Page() {
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <Th onClick={() => toggleSort("rank")} mark={sortMark("rank")}None>Rank</Th>
-                  <Th onClick={() => toggleSort("code")} mark={sortMark("code")}None>Code</Th>
+                  <Th onClick={() => toggleSort("rank")} mark={sortMark("rank")}>Rank</Th>
+                  <Th onClick={() => toggleSort("code")} mark={sortMark("code")}>Code</Th>
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">Name</th>
                   <th className="sticky top-0 z-10 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-700">3PTL</th>
                   <Th onClick={() => toggleSort("qual")} mark={sortMark("qual")} right>Quality</Th>
