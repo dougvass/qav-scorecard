@@ -164,6 +164,19 @@ export const V3_RULES = {
    *  May-26 5.87, 8.3% apart and clear of Oct-24 6.24 by under 2c. His chart is
    *  that line: "MCY should be a watch". */
   fallbackIsProvisional: true,
+  // ── 2026-11-15, on RHT / KMD / EDV / MTS: "Once a stock makes higher highs
+  //    it is no longer a falling knife and the buy line can apply even without
+  //    a sell line. RHT is a buy. KMD is still a falling knife and hence a
+  //    sell. likewise EDV. MTS ... L2 must be a low and is Sep26, the price has
+  //    then jumped to 3.41 and it sits between the buy and sell. L2 should be a
+  //    low everywhere except in the extreme safety net cases." ──
+  /** In the falling-knife test the 8% line's L2 must be a LOW ("Aug26 is not a
+   *  low", on ORA). Inside the walk L2 is still the latest close that works —
+   *  requiring a low there moves 13 readings, ACL and KLS against his calls. */
+  knifeL2IsLow: true,
+  /** A stock on a net with no such line is still not a falling knife while it
+   *  is making a higher high (see higherHigh). */
+  higherHighEndsKnife: true,
 };
 
 const EPS = 1e-9;
@@ -368,6 +381,8 @@ export function lineUnder(c: number[], endIn: number, at: number, price: number)
     if (l1 !== low && !(c[l1] < c[low] * (1 + SEP))) continue;
     for (let l2 = l1 + 1; l2 < end; l2++) {
       if (c[l2] < c[l1] * (1 + SEP)) continue;
+      if (V3_RULES.knifeL2IsLow &&
+          !(l2 + 1 < c.length && c[l2] <= c[l2 - 1] && c[l2] <= c[l2 + 1])) continue;
       const g: number = (c[l2] - c[l1]) / (l2 - l1);
       if (!(c[l1] + g * (at - l1) < price)) continue;
       let cut = false;
@@ -585,6 +600,35 @@ function topLine(c: number[], pk: number[], t: number, floor: number, aboveAt?: 
     return [top, h2];
   }
   return null;
+}
+
+/**
+ * Has the stock made a HIGHER HIGH since its low? `end` is the bar the price
+ * sits on; the bars before it are complete.
+ *
+ * His four readings fix what counts:
+ *   RHT  peaks Nov-25 0.051, Apr-26 0.048, Jul-26 0.064, and October closed
+ *        0.074, over the last peak.                               "a buy"
+ *   MTS  peaks May-26 3.07 and Jul-26 3.04, October closed 3.21.  "between the
+ *        buy and sell"
+ *   KMD  one peak since the low, May-26 1.65; no month has closed over it
+ *        (November's 2.04 is not a completed month).   "still a falling knife"
+ *   EDV  one peak, Jul-26 3.48; October closed 3.39.              "likewise"
+ * So: a COMPLETED month has closed above the latest confirmed peak since the
+ * low. The month in progress confirms a peak but is not itself a high. (Also
+ * counting "the latest peak is above the one before it" lets back in stocks
+ * that made a higher high months ago and have since fallen most of the way to
+ * the low: GNE, WPR, ITM.)
+ */
+export function higherHigh(c: number[], end: number): boolean {
+  if (end < 3) return false;
+  let lo = 1;
+  for (let i = 1; i < end; i++) if (c[i] <= c[lo]) lo = i;
+  let pkLast = -1;
+  for (let j = lo + 1; j < end; j++) if (peakBy(c, j, end)) pkLast = j;
+  if (pkLast < 0) return false;
+  const last: number = end - 1;
+  return last > pkLast && c[last] > c[pkLast];
 }
 
 /**
@@ -1147,7 +1191,8 @@ export function classifyV3(
     for (let k = lo + 1; k < asOf && !lifted; k++) if (c[k] >= bar) lifted = true;
     const falling: boolean = lo > hi;
     const atLow: boolean = p < bar || !lifted;
-    if (out.state !== "long" || falling || atLow) {
+    const hh: boolean = V3_RULES.higherHighEndsKnife && higherHigh(c, asOf);
+    if (!hh && (out.state !== "long" || falling || atLow)) {
       return {
         sentiment: "Sell", note: "falling knife — no sell line passes the 8% test",
         // l1/l2 are the anchors of the line that FAILS the 8% test, for the
