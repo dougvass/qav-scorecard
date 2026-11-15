@@ -23,7 +23,10 @@ export const DEFAULT_MARKET_HURDLE = 0.1085; // 6% + RBA cash rate 4.85% (AW35)
 // rate takes effect the live fetch still returns the old one — it is correct,
 // just a day behind. This constant is what covers that gap.
 export const DEFAULT_CASH_RATE = 4.85;          // RBA cash rate %
-export const DEFAULT_BORROWING_RATE = 6.5;      // Mortgage rate % — Bible Col Q: "Yield > mortgage rate"
+// 9.9% since 2026-11-15 (Doug: "update the borrowing cost default rate to
+// 9.9%"); it was 6.5%. The rate is not remembered between visits, so this is
+// what every load starts from; the Rates panel still overrides it for a session.
+export const DEFAULT_BORROWING_RATE = 9.9;      // Borrowing cost % — Bible Col Q: "Yield > mortgage rate"
 
 export interface ScoringRates {
   rrr: number;           // IV1 hurdle (e.g. 0.195 or personal mortgage rate)
@@ -166,7 +169,7 @@ function scorePriceToCashflow(row: StockRow): number | null {
 function scoreDivYield(row: StockRow, borrowingRate: number): number {
   // Always scored 0 or 1 (Bible Col Q: "Yield > mortgage rate?" — positive=1, negative=0).
   // No dividend data = fails the test = 0.
-  // Threshold = user's configured mortgage/borrowing rate (default 6.5%).
+  // Threshold = user's configured mortgage/borrowing rate (default 9.9%).
   const y = num(row["Div Yield (%)"]);
   if (y === null) return 0;
   return y > borrowingRate ? 1 : 0;
