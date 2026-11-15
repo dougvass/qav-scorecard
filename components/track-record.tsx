@@ -219,6 +219,8 @@ export function TrackRecord({
         excess: total !== null && b !== null ? Math.round((total - b) * 10) / 10 : null,
         startClose: m?.startClose ?? null,
         endClose: m?.endClose ?? null,
+        // Asked for and nothing came back: a delisted or renamed code, not a new one.
+        noData: !!m && total === null && daysBetween(e.joined, today) > 4,
       };
     });
   }, [entries, measured, bench, today]);
@@ -257,7 +259,8 @@ export function TrackRecord({
       bench: mean(done.map((r) => r.bench as number)),
       excess: mean(done.map((r) => r.excess as number)),
       ahead: done.filter((r) => (r.excess as number) > 0).length,
-      tooNew: rows.length - done.length,
+      tooNew: rows.filter((r) => r.total === null && r.days <= 4).length,
+      noData: rows.filter((r) => r.noData).length,
     };
   }, [rows]);
 
@@ -324,7 +327,12 @@ export function TrackRecord({
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Stocks measured</p>
               <p className="mt-1 text-2xl font-bold text-gray-900">{summary.n}</p>
               <p className="text-xs text-gray-500">
-                {summary.tooNew > 0 ? `${summary.tooNew} more too new to measure` : `of ${rows.length} on the list at some point`}
+                {summary.tooNew + summary.noData === 0
+                  ? `of ${rows.length} on the list at some point`
+                  : [
+                      summary.tooNew > 0 ? `${summary.tooNew} too new to measure` : "",
+                      summary.noData > 0 ? `${summary.noData} with no price history` : "",
+                    ].filter(Boolean).join(" · ")}
               </p>
             </div>
             <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
@@ -397,7 +405,11 @@ export function TrackRecord({
                       {r.current && r.sentimentNow && <span className="text-gray-400"> · {r.sentimentNow}</span>}
                     </td>
                     <td className={`px-3 py-2.5 text-right font-mono text-sm font-semibold ${tone(r.total)}`}>
-                      {r.total === null && r.days <= 4 ? <span className="text-xs font-normal text-gray-400">too new</span> : pct(r.total)}
+                      {r.total === null && r.days <= 4 ? (
+                        <span className="text-xs font-normal text-gray-400">too new</span>
+                      ) : r.noData ? (
+                        <span className="text-xs font-normal text-gray-400" title="No price history under this code — delisted or renamed">no prices</span>
+                      ) : pct(r.total)}
                     </td>
                     <td className={`px-3 py-2.5 text-right font-mono text-sm ${tone(r.bench)}`}>{pct(r.bench)}</td>
                     <td className={`px-3 py-2.5 text-right font-mono text-sm font-semibold ${tone(r.excess)}`}>{pct(r.excess)}</td>
