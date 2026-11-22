@@ -14,10 +14,10 @@
  *
  * NODE runtime: this parses PDFs that run to several megabytes.
  */
-import { getDocumentProxy } from "unpdf";
+import { pdfRows as readPdfRows } from "@/lib/asx-pdf";
 import { laterPeriodReports, isSupportingDocument, sydneyDate, addMonths, FeedItem } from "@/lib/reporting";
 import { extractFigures, asxFinancialsSelfTest, ReportedFigures } from "@/lib/asx-financials";
-import { BASE, HEADERS, Ann, entityXid, announcements } from "@/lib/asx-server";
+import { BASE, Ann, entityXid, announcements } from "@/lib/asx-server";
 import { claudeReaderConfigured, readWithClaude } from "@/lib/asx-reader-claude";
 
 export const runtime = "nodejs";
@@ -35,44 +35,8 @@ const FUNCTION_MS = 56_000;
 /** Claude gets what is left after the PDF, within these bounds. */
 const CLAUDE_MAX_MS = 40_000;
 const CLAUDE_MIN_MS = 8_000;
+const pdfRows = (key: string, deadline: number) => readPdfRows(key, deadline, MAX_PAGES);
 const FIGURES: ("ocf" | "equity" | "eps" | "npat")[] = ["ocf", "equity", "eps", "npat"];
-
-/** Rows of text, one array per page, rebuilt from the positioned fragments. */
-async function pdfRows(key: string, deadline: number): Promise<{ pages: string[][]; numPages: number; read: number }> {
-  const res = await fetch(`${BASE}/file/${key}`, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`PDF HTTP ${res.status}`);
-  const doc = await getDocumentProxy(new Uint8Array(await res.arrayBuffer()));
-  const limit = Math.min(doc.numPages, MAX_PAGES);
-  const pages: string[][] = [];
-  for (let p = 1; p <= limit; p++) {
-    if (Date.now() > deadline) break;
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent();
-    const cells: { s: string; x: number; y: number }[] = [];
-    for (const raw of content.items as { str?: string; transform?: number[] }[]) {
-      const s = (raw.str ?? "").trim();
-      if (!s) continue;
-      cells.push({ s, x: raw.transform?.[4] ?? 0, y: raw.transform?.[5] ?? 0 });
-    }
-    // A printed row is the fragments sharing a baseline. Sort top to bottom,
-    // start a new row when the baseline moves by more than a couple of points.
-    cells.sort((a, b) => b.y - a.y || a.x - b.x);
-    const rows: string[] = [];
-    let current: { s: string; x: number; y: number }[] = [];
-    let baseline = Number.NaN;
-    const flush = () => {
-      if (current.length) rows.push(current.sort((a, b) => a.x - b.x).map((c) => c.s).join(" "));
-      current = [];
-    };
-    for (const c of cells) {
-      if (isNaN(baseline) || Math.abs(c.y - baseline) > 2.2) { flush(); baseline = c.y; }
-      current.push(c);
-    }
-    flush();
-    pages.push(rows);
-  }
-  return { pages, numPages: doc.numPages, read: pages.length };
-}
 
 /** The documents most likely to hold the statements, best first. */
 function rankDocuments(docs: Ann[]): Ann[] {
