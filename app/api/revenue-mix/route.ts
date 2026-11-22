@@ -29,7 +29,7 @@
  * the answer is public ASX material.
  */
 import { BASE, Ann, entityXid, announcements } from "@/lib/asx-server";
-import { pdfRows } from "@/lib/asx-pdf";
+import { pdfRows, pdfCells } from "@/lib/asx-pdf";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -120,6 +120,12 @@ export async function GET(request: Request) {
       ? anns.filter((a) => a.key === named)
       : [deck, annual].filter((a): a is Ann => !!a);   // the deck first: it is short, and the chart is usually there
     if (!docs.length) return Response.json({ code, error: "no annual report or results presentation on the feed" }, { status: 404 });
+
+    // `cells=1` with `key` and `pages`: the positioned fragments of those pages,
+    // for a chart whose figures the rebuilt rows scramble.
+    if (q.get("cells") === "1" && named && wanted.length) {
+      return Response.json({ code, key: named, cells: await pdfCells(named, wanted.slice(0, 4)) });
+    }
 
     const read = [];
     for (const d of docs) {

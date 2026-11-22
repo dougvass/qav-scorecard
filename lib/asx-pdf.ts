@@ -44,3 +44,24 @@ export async function pdfRows(key: string, deadline: number, maxPages = 260): Pr
   return { pages, numPages: doc.numPages, read: pages.length };
 }
 
+
+/**
+ * One page as positioned fragments. A pie chart's figures and labels are laid
+ * out around the circle, so rebuilt rows scramble them: Macmahon's FY26 slide
+ * prints four charts side by side and its rows read "12 10 10 / 18 / 26 6".
+ * With x and y the figures can be put back with the chart they belong to.
+ */
+export async function pdfCells(key: string, pageNumbers: number[]): Promise<Record<number, { s: string; x: number; y: number }[]>> {
+  const res = await fetch(`${BASE}/file/${key}`, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`PDF HTTP ${res.status}`);
+  const doc = await getDocumentProxy(new Uint8Array(await res.arrayBuffer()));
+  const out: Record<number, { s: string; x: number; y: number }[]> = {};
+  for (const n of pageNumbers) {
+    if (n < 1 || n > doc.numPages) continue;
+    const content = await (await doc.getPage(n)).getTextContent();
+    out[n] = (content.items as { str?: string; transform?: number[] }[])
+      .map((raw) => ({ s: (raw.str ?? "").trim(), x: Math.round(raw.transform?.[4] ?? 0), y: Math.round(raw.transform?.[5] ?? 0) }))
+      .filter((c) => c.s);
+  }
+  return out;
+}
