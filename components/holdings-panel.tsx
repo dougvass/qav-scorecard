@@ -129,7 +129,9 @@ export default function HoldingsPanel({
   function saveReviews() {
     // A holding left with nothing after its code has not been reviewed: drop
     // the line rather than record "reviewed, no commodity" by accident.
-    const kept = reviewDraft.split(/\r?\n/).filter((l) => l.split("|").slice(1).join("").trim() !== "");
+    // (Only a bare "CODE |" is dropped; anything else that cannot be read is
+    // handed on so it comes back named as rejected, not silently lost.)
+    const kept = reviewDraft.split(/\r?\n/).filter((l) => !/^\s*[A-Za-z0-9]{2,6}\s*\|[\s|]*$/.test(l));
     const rejected = onSaveExposure(kept.join("\n"));
     setReviewRejected(rejected);
     if (!rejected.length) setReviewing(false);
@@ -563,11 +565,12 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
       });
       const d = (await res.json()) as {
-        sent?: string[]; errors?: string[];
+        sent?: string[]; errors?: string[]; holdings?: number;
         change?: { fresh: { code: string }[]; cleared: string[]; standing: { code: string }[] } | null;
       };
       if (d.errors?.length) setSaid(d.errors.join(" · "));
       else if (action === "test") setSaid(`Test sent by ${(d.sent ?? []).join(" and ")}.`);
+      else if (d.holdings === 0) setSaid("The server copy of your holdings is empty, so there was nothing to check. Use the sync button at the top of the page, then try again.");
       else {
         const fresh = d.change?.fresh.map((v) => v.code) ?? [];
         const cleared = d.change?.cleared ?? [];
