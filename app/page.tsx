@@ -71,6 +71,7 @@ import {
 import { loadExposure, saveExposure } from "@/lib/exposure-storage";
 import {
   COMMODITIES,
+  describeSellDistance,
   COMMODITY_STORAGE_KEY,
   StoredCommodities,
   effectiveCommoditySentiment,
@@ -1553,7 +1554,10 @@ export default function HomePage() {
     try {
       const res = await fetch(COMMODITY_ENDPOINT);
       if (!res.ok) throw new Error(`Commodity API error ${res.status}`);
-      const json = await res.json() as { commodities: Record<string, { sentiment?: string; note?: string; error?: string }> };
+      const json = await res.json() as { commodities: Record<string, {
+        sentiment?: string; note?: string; error?: string;
+        price?: number | null; sell?: number | null; asOf?: string | null;
+      }> };
       const auto: StoredCommodities["auto"] = {};
       for (const [key, entry] of Object.entries(json.commodities)) {
         if (entry.error || !entry.sentiment) continue;
@@ -1563,6 +1567,10 @@ export default function HomePage() {
           // TRENDLINE_SCORES and would have broken the gate silently.
           sentiment: toStoredSentiment(entry.sentiment),
           note: entry.note,
+          // Kept so the chip can say how far the price is from the sell line.
+          price: typeof entry.price === "number" ? entry.price : null,
+          sell: typeof entry.sell === "number" ? entry.sell : null,
+          asOf: entry.asOf ?? null,
         };
       }
       const stored: StoredCommodities = {
@@ -2168,7 +2176,10 @@ export default function HomePage() {
     if (!covered) void calculateTrendlines();
 
     const com = read(COMMODITY_STORAGE_KEY) as StoredCommodities | null;
-    if (!ranToday(com?.timestamp)) {
+    // A run stored before the price and sell line were kept cannot say how far
+    // a commodity is from its line, so it does not count as today's either.
+    const hasLevels = Object.values(com?.auto ?? {}).some((e) => typeof e.price === "number");
+    if (!ranToday(com?.timestamp) || !hasLevels) {
       commodityQuiet.current = true;
       void checkCommodities();
     }
@@ -2439,7 +2450,7 @@ export default function HomePage() {
                       key={c.key}
                       onClick={() => setCommodityStocksFor(open ? null : c.key)}
                       className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${palette} ${open ? "ring-2 ring-amber-400" : ""}`}
-                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (MANUAL override)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${c.proxy ? `\n\n${c.proxy}` : ""}\n\nClick to ${open ? "hide" : "list"} the ${governs} stock${governs === 1 ? "" : "s"} this commodity governs`}
+                      title={`${c.label}: ${eff ?? "not set"}${manual ? " (MANUAL override)" : auto ? " (auto 3PTL)" : ""}${auto?.note ? `\n${auto.note}` : ""}${!manual && describeSellDistance(auto) ? `\n${describeSellDistance(auto)}` : ""}${c.proxy ? `\n\n${c.proxy}` : ""}\n\nClick to ${open ? "hide" : "list"} the ${governs} stock${governs === 1 ? "" : "s"} this commodity governs`}
                     >
                       {c.label}{c.proxy ? "*" : ""} {eff === "Bullish" ? "▲" : eff === "Bearish" ? "▼" : eff === "Watch" ? "◇" : eff === "Josephine" ? "◆" : "—"}
                       {governs > 0 && <span className="ml-1 opacity-50">{governs}</span>}
@@ -2455,6 +2466,10 @@ export default function HomePage() {
                 const codes = stocksGovernedBy(commodityStocksFor, exposure);
                 const byCode = new Map((allStocks ?? []).map((s) => [s.Code, s]));
                 const gating = eff === "Bearish" && !(def?.proxy && commodityData?.manual[commodityStocksFor] === undefined);
+                // The same sentence the chip shows on hover — here as well,
+                // because a phone has no hover.
+                const distance = commodityData?.manual[commodityStocksFor] === undefined
+                  ? describeSellDistance(commodityData?.auto[commodityStocksFor]) : null;
                 return (
                   <div className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2.5">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
@@ -2470,6 +2485,7 @@ export default function HomePage() {
                       </span>
                       <button onClick={() => setCommodityStocksFor(null)} className="ml-auto underline text-amber-700 hover:text-amber-900">close</button>
                     </div>
+                    {distance && <div className="mt-1 text-xs text-amber-800">{distance}</div>}
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {codes.map((code) => {
                         const s = byCode.get(code);

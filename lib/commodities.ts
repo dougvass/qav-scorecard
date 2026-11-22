@@ -107,6 +107,57 @@ export const COMMODITY_STORAGE_KEY = "qav_commodity_v1";
 export interface CommodityAutoEntry {
   sentiment: TrendlineSentiment;
   note?: string;
+  /** The price the reading was made at. For a Pink Sheet commodity this is the
+   *  latest MONTHLY figure, not today's spot — `asOf` says which month. */
+  price?: number | null;
+  /** The 3PTL sell line at that point; null when none can be drawn. */
+  sell?: number | null;
+  /** The month of the last bar, "2026-10". */
+  asOf?: string | null;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** 4105 -> "4,105", 97.7 -> "97.7", 2.858 -> "2.86": commodity prices span four
+ *  orders of magnitude, so the decimals follow the size. */
+export function commodityPrice(n: number): string {
+  const a = Math.abs(n);
+  if (a >= 1000) return Math.round(n).toLocaleString("en-AU");
+  if (a >= 100) return n.toFixed(1);
+  if (a >= 10) return n.toFixed(2);
+  return n.toFixed(3);
+}
+
+/**
+ * How far a commodity is from its 3PTL sell line, as a share of its price.
+ *
+ * Doug, 2026-11-22: "For the commodities, also check how far they are away
+ * from their 3ptl sell as a % of current price point ... x% downside to 3ptl
+ * sell at 3500 (for example)."
+ *
+ * `pct` is (price - sell) / price: positive is the fall it would take to reach
+ * the line, negative is how far under the line it already is. Null when there
+ * is no sell line to measure to (a falling knife) or the run predates these
+ * fields.
+ */
+export function sellLineDistance(entry: CommodityAutoEntry | undefined | null): { pct: number; price: number; sell: number } | null {
+  if (!entry) return null;
+  const { price, sell } = entry;
+  if (typeof price !== "number" || typeof sell !== "number" || !(price > 0) || !(sell > 0)) return null;
+  return { pct: ((price - sell) / price) * 100, price, sell };
+}
+
+/** "34.9% downside to the 3PTL sell line at 2,672 (price 4,105, Oct 26)". */
+export function describeSellDistance(entry: CommodityAutoEntry | undefined | null): string | null {
+  const d = sellLineDistance(entry);
+  if (!d) return null;
+  const m = /^(\d{4})-(\d{2})/.exec(entry?.asOf ?? "");
+  const when = m ? `, ${MONTHS[parseInt(m[2], 10) - 1]} ${m[1].slice(2)}` : "";
+  const basis = `(price ${commodityPrice(d.price)}${when})`;
+  const size = Math.abs(d.pct).toFixed(1);
+  return d.pct >= 0
+    ? `${size}% downside to the 3PTL sell line at ${commodityPrice(d.sell)} ${basis}`
+    : `${size}% below the 3PTL sell line at ${commodityPrice(d.sell)} ${basis}`;
 }
 
 export interface StoredCommodities {
