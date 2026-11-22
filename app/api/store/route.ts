@@ -53,6 +53,7 @@ const ALLOWED_KEYS = new Set([
   "qav_commodity_v1",
   "qav_redflags_v1",
   "qav_asx_financials_v1",
+  "qav_exposure_v1",
 ]);
 
 /** Generous for the largest store (Phase 2 is ~0.5MB) and well under Vercel's

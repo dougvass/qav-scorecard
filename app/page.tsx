@@ -66,8 +66,11 @@ import {
 import HoldingsPanel from "@/components/holdings-panel";
 import { TrackRecord } from "@/components/track-record";
 import {
+  EXPOSURE_STORAGE_KEY, StoredExposure, gateCommodity, stocksGovernedBy, parseReviewLines,
+} from "@/lib/revenue-exposure";
+import { loadExposure, saveExposure } from "@/lib/exposure-storage";
+import {
   COMMODITIES,
-  STOCK_COMMODITY,
   COMMODITY_STORAGE_KEY,
   StoredCommodities,
   effectiveCommoditySentiment,
@@ -445,9 +448,12 @@ function scoreNewUpturn(lastBuyBreach: string | null | undefined, stock: ScoredS
  * A MANUAL setting on a proxy commodity DOES gate, because choosing it means a
  * human read the real chart.
  */
-function enrichWithCommodityGate(stocks: ScoredStock[], commodities: StoredCommodities): ScoredStock[] {
+function enrichWithCommodityGate(stocks: ScoredStock[], commodities: StoredCommodities, exposure: StoredExposure | null): ScoredStock[] {
   return stocks.map((stock) => {
-    const commodityKey = STOCK_COMMODITY[stock.Code];
+    // A stock whose revenue mix has been reviewed is governed by the commodity
+    // that is the majority of its revenue, or by none; the rest fall back to
+    // the sector map. See lib/revenue-exposure.ts.
+    const commodityKey = gateCommodity(stock.Code, exposure);
     if (!commodityKey) return stock;
     const sentiment = effectiveCommoditySentiment(commodities, commodityKey);
     const def = COMMODITIES.find((c) => c.key === commodityKey);
@@ -847,6 +853,7 @@ export default function HomePage() {
   const [view, setView] = useState<"buy" | "all" | "holdings" | "record">("buy");
   const [holdings, setHoldings] = useState<StoredHoldings>({ timestamp: null, codes: [] });
   const [holdingsChecking, setHoldingsChecking] = useState(false);
+  const [exposure, setExposure] = useState<StoredExposure>({ timestamp: null, reviews: {} });
   const [redFlags, setRedFlags] = useState<StoredRedFlags | null>(null);
   const [redFlagChecking, setRedFlagChecking] = useState<{ done: number; total: number } | null>(null);
   /** Where each stock on the reporting-season hold is in its reporting cycle,
@@ -1012,12 +1019,14 @@ export default function HomePage() {
     loadTrendlineFromStorage();
     loadCommoditiesFromStorage();
     setHoldings(loadHoldings());
+    setExposure(loadExposure());
     readRedFlags();
     readReporting();
     readAsxFinancials();
 
     function onStorageChange(e: StorageEvent) {
       if (e.key === HOLDINGS_STORAGE_KEY)  setHoldings(loadHoldings());
+      if (e.key === EXPOSURE_STORAGE_KEY)  setExposure(loadExposure());
       if (e.key === REDFLAG_STORAGE_KEY)   readRedFlags();
       if (e.key === ASX_FINANCIALS_STORAGE_KEY) readAsxFinancials();
       if (e.key === PHASE2_STORAGE_KEY)    loadPhase2FromStorage();
@@ -1173,7 +1182,7 @@ export default function HomePage() {
     if (phase2Data)  scored = enrichWithPhase2(scored, phase2Data);
     if (buybackData)  scored = enrichWithBuybacks(scored, buybackData);
     if (trendlineData) scored = enrichWithTrendlines(scored, trendlineData);   // auto 3PTL
-    if (commodityData) scored = enrichWithCommodityGate(scored, commodityData); // commodity sell → gate
+    if (commodityData) scored = enrichWithCommodityGate(scored, commodityData, exposure); // commodity sell → gate
     if (Object.keys(sentimentOverrides).length > 0)
       scored = enrichWithSentimentOverrides(scored, sentimentOverrides);        // manual wins
     setAllStocks(scored);
@@ -1200,7 +1209,7 @@ export default function HomePage() {
   // dividend score itself (Bible Col Q, yield > borrowing rate) kept the old
   // one until something else happened to trigger a re-score.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawRows, fundRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, sentimentOverrides, asxFinancials]);
+  }, [rawRows, fundRows, cashRate, iv1Rate, borrowingRate, phase2Data, buybackData, trendlineData, commodityData, exposure, sentimentOverrides, asxFinancials]);
 
   /**
    * Load a Stock Doctor CSV from its decoded text, however it arrived — a file
@@ -1295,6 +1304,7 @@ export default function HomePage() {
     if (got(TRENDLINE_STORAGE_KEY)) loadTrendlineFromStorage();
     if (got(COMMODITY_STORAGE_KEY)) loadCommoditiesFromStorage();
     if (got(HOLDINGS_STORAGE_KEY))  setHoldings(loadHoldings());
+    if (got(EXPOSURE_STORAGE_KEY))  setExposure(loadExposure());
     if (got(REDFLAG_STORAGE_KEY))   readRedFlags();
     if (got(ASX_FINANCIALS_STORAGE_KEY)) readAsxFinancials();
     if (got(CSV_STORAGE_KEY))       restoreCsv();
@@ -1697,6 +1707,23 @@ export default function HomePage() {
     setHoldings(saveHoldings(codes));
   }, []);
 
+  /** Replace the revenue reviews from the editor's lines — one stock a line.
+   *  Returns the lines it could not read, so the editor can say so. */
+  const saveExposureLines = useCallback((text: string): string[] => {
+    const { reviews, rejected } = parseReviewLines(text, new Date().toISOString().slice(0, 10));
+    setExposure((prev) => {
+      // A review whose line is unchanged keeps the date it was made.
+      for (const code of Object.keys(reviews)) {
+        const was = prev.reviews[code];
+        if (was && JSON.stringify({ ...was, reviewed: "" }) === JSON.stringify({ ...reviews[code], reviewed: "" })) {
+          reviews[code].reviewed = was.reviewed;
+        }
+      }
+      return saveExposure(reviews);
+    });
+    return rejected;
+  }, []);
+
 
   /**
    * Run 3PTL for a set of held codes and merge the results into the stored
@@ -2025,13 +2052,13 @@ export default function HomePage() {
       // The commodity gate, same as the panel computes it — a holding absent
       // from the CSV has no scored row to carry it, so without this the badge
       // undercounts exactly the holdings the list exists to watch.
-      const ck = STOCK_COMMODITY[code];
+      const ck = gateCommodity(code, exposure);
       if (!ck || !commodityData) return false;
       const def = COMMODITIES.find((c) => c.key === ck);
       const advisory = !!def?.proxy && commodityData.manual[ck] === undefined;
       return effectiveCommoditySentiment(commodityData, ck) === "Bearish" && !advisory;
     }).length;
-  }, [holdings.codes, trendlineData, allStocks, commodityData]);
+  }, [holdings.codes, trendlineData, allStocks, commodityData, exposure]);
 
   /** Set or clear a manual 3PTL sentiment override for one stock. */
   const saveSentimentOverride = useCallback((code: string, value: SentimentOverride | null) => {
@@ -2406,8 +2433,7 @@ export default function HomePage() {
                     eff === "Josephine" ? "bg-yellow-100 text-yellow-800 border-yellow-300" :
                                           "bg-white text-gray-400 border-dashed border-gray-300";
                   const open = commodityStocksFor === c.key;
-                  const governs = Object.keys(STOCK_COMMODITY)
-                    .filter((code) => STOCK_COMMODITY[code] === c.key).length;
+                  const governs = stocksGovernedBy(c.key, exposure).length;
                   return (
                     <button
                       key={c.key}
@@ -2426,9 +2452,7 @@ export default function HomePage() {
               {commodityStocksFor && (() => {
                 const def = COMMODITIES.find((c) => c.key === commodityStocksFor);
                 const eff = effectiveCommoditySentiment(commodityData, commodityStocksFor);
-                const codes = Object.keys(STOCK_COMMODITY)
-                  .filter((code) => STOCK_COMMODITY[code] === commodityStocksFor)
-                  .sort();
+                const codes = stocksGovernedBy(commodityStocksFor, exposure);
                 const byCode = new Map((allStocks ?? []).map((s) => [s.Code, s]));
                 const gating = eff === "Bearish" && !(def?.proxy && commodityData?.manual[commodityStocksFor] === undefined);
                 return (
@@ -3142,6 +3166,9 @@ export default function HomePage() {
                 allStocks={allStocks}
                 trendlineData={trendlineData}
                 commodities={commodityData}
+                exposure={exposure}
+                onSaveExposure={saveExposureLines}
+                signedIn={!!account?.signedIn}
                 onSave={saveHoldingCodes}
                 onAdd={addHoldingCode}
                 onCheckMissing={checkHoldings3PTL}
