@@ -4,7 +4,7 @@
  * than in the repository.
  */
 import { setSynced } from "./server-store";
-import { EXPOSURE_STORAGE_KEY, RevenueReview, StoredExposure } from "./revenue-exposure";
+import { EXPOSURE_STORAGE_KEY, RevenueReview, StoredExposure, normaliseExposure } from "./revenue-exposure";
 
 const EMPTY: StoredExposure = { timestamp: null, reviews: {} };
 
@@ -14,7 +14,7 @@ export function loadExposure(): StoredExposure {
     if (!raw) return EMPTY;
     const parsed = JSON.parse(raw) as Partial<StoredExposure>;
     if (!parsed || typeof parsed.reviews !== "object" || parsed.reviews === null) return EMPTY;
-    return { timestamp: parsed.timestamp ?? null, reviews: parsed.reviews as Record<string, RevenueReview> };
+    return normaliseExposure({ timestamp: parsed.timestamp ?? null, reviews: parsed.reviews as Record<string, RevenueReview> });
   } catch {
     return EMPTY;
   }

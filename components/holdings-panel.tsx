@@ -486,8 +486,8 @@ export default function HoldingsPanel({
               <br />
               Percentages of revenue, as the company reports them. A commodity above {MAJORITY_PCT}% governs the
               holding. A line with a code and a source but no mix records that it was reviewed and no commodity
-              drives it. Labels the site reads: {COMMODITIES.map((c) => c.label).join(", ")} — anything else
-              (Met coal, Civil, Other) is shown and never triggers a sell.
+              drives it. Labels the site reads: {COMMODITIES.map((c) => c.label).join(", ")} (met coal counts
+              as coal) — anything else (Civil, Other) is shown and never triggers a sell.
             </p>
             {reviewRejected.length > 0 && (
               <p className="text-xs text-red-600">Could not read: {reviewRejected.join(" · ")}</p>
@@ -527,7 +527,7 @@ export default function HoldingsPanel({
 interface AlertStatus {
   configured?: boolean;
   signedIn?: boolean;
-  channels?: { email: boolean; sms: boolean };
+  channels?: { email: boolean };
   database?: boolean;
   state?: { lastRun: string | null; lastSent: string | null; lastError: string | null; alerts: Record<string, unknown> };
 }
@@ -539,7 +539,7 @@ function when(iso: string | null | undefined): string {
 }
 
 /**
- * The email / text-message alert: what is switched on, when it last looked,
+ * The email alert: whether it is switched on, when it last looked,
  * and a way to prove it reaches him. The job itself runs on the server each
  * weekday evening (app/api/alerts/cron) from the holdings mirrored there, so
  * this is a status panel, not the thing that does the work.
@@ -569,7 +569,7 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
         change?: { fresh: { code: string }[]; cleared: string[]; standing: { code: string }[] } | null;
       };
       if (d.errors?.length) setSaid(d.errors.join(" · "));
-      else if (action === "test") setSaid(`Test sent by ${(d.sent ?? []).join(" and ")}.`);
+      else if (action === "test") setSaid("Test email sent. Check your inbox, and the spam folder the first time.");
       else if (d.holdings === 0) setSaid("The server copy of your holdings is empty, so there was nothing to check. Use the sync button at the top of the page, then try again.");
       else {
         const fresh = d.change?.fresh.map((v) => v.code) ?? [];
@@ -578,7 +578,7 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
         setSaid(
           fresh.length || cleared.length
             ? [fresh.length ? `New sells: ${fresh.join(", ")}` : "", cleared.length ? `no longer a sell: ${cleared.join(", ")}` : "",
-               d.sent?.length ? `sent by ${d.sent.join(" and ")}` : "nothing sent — no channel is switched on"].filter(Boolean).join(" · ")
+               d.sent?.length ? "emailed to you" : "nothing sent — email is not switched on"].filter(Boolean).join(" · ")
             : `Nothing has changed${standing ? ` (${standing} still a sell)` : ""}, so nothing was sent.`,
         );
       }
@@ -588,13 +588,13 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
   }
 
   const on = status?.channels;
-  const anyChannel = !!(on?.email || on?.sms);
+  const anyChannel = !!on?.email;
   return (
     <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-xs text-gray-600">
       <div className="flex items-start gap-2.5">
         <Bell className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
         <div className="space-y-1.5 min-w-0">
-          <div className="text-sm font-semibold text-gray-800">Sell alerts by email or text</div>
+          <div className="text-sm font-semibold text-gray-800">Sell alerts by email</div>
           {!signedIn ? (
             <p>Sign in with your passcode to use these: the nightly check reads your holdings from the server copy.</p>
           ) : !status ? (
@@ -604,12 +604,11 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
           ) : (
             <>
               <p>
-                Each weekday evening the site re-reads every holding and the commodities, and writes to you when one
+                Each weekday evening the site re-reads every holding and the commodities, and emails you when one
                 becomes a sell — its own sell line, or the commodity that is most of its revenue — or stops being one.
               </p>
               <p>
                 Email: <strong className={on?.email ? "text-emerald-700" : "text-amber-700"}>{on?.email ? "on" : "not set up"}</strong>
-                {" · "}Text message: <strong className={on?.sms ? "text-emerald-700" : "text-gray-500"}>{on?.sms ? "on" : "not set up"}</strong>
                 {" · "}Last check: {when(status.state?.lastRun)}
                 {" · "}Last message: {when(status.state?.lastSent)}
               </p>
@@ -617,13 +616,13 @@ function AlertsBox({ signedIn, holdings }: { signedIn: boolean; holdings: number
               <div className="flex flex-wrap gap-2 pt-0.5">
                 <button onClick={() => void act("run")} disabled={busy !== null}
                         className="px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40"
-                        title="Run the nightly check now. It writes to you only if something has changed.">
+                        title="Run the nightly check now. It emails you only if something has changed.">
                   {busy === "run" ? "Checking…" : "Run the check now"}
                 </button>
                 <button onClick={() => void act("test")} disabled={busy !== null || !anyChannel}
                         className="px-2.5 py-1 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-                        title={anyChannel ? "Send a test message down every channel that is on" : "Nothing to test until a channel is set up"}>
-                  {busy === "test" ? "Sending…" : "Send a test message"}
+                        title={anyChannel ? "Send yourself a test email" : "Nothing to test until email is set up"}>
+                  {busy === "test" ? "Sending…" : "Send a test email"}
                 </button>
               </div>
               {said && <p className="text-gray-800">{said}</p>}

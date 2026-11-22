@@ -14,12 +14,12 @@
  *   the commodity complex
  *       this deployment's own /api/commodities.
  *
- * WHERE IT GOES. Email through Resend, and a text message through Twilio, each
- * switched on by its own environment variables and silent without them:
+ * WHERE IT GOES. Email, through Resend — his choice of "email only" over a
+ * text message as well. Switched on by two environment variables and silent
+ * without them:
  *   RESEND_API_KEY, ALERT_EMAIL_TO          [ALERT_EMAIL_FROM]
- *   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM, ALERT_SMS_TO
- * The keys are created and set in Vercel by the site's owner. Nothing here
- * logs them or returns them.
+ * The key is created and set in Vercel by the site's owner. Nothing here logs
+ * it or returns it.
  *
  * WHAT IT REMEMBERS. One row, namespace "alerts": which holdings were a sell
  * at the last run and why. That is what turns "is a sell" into "has BECOME a
@@ -27,7 +27,7 @@
  */
 import { createPool, VercelPool } from "@vercel/postgres";
 import { COMMODITY_STORAGE_KEY } from "@/lib/commodities";
-import { EXPOSURE_STORAGE_KEY, StoredExposure } from "@/lib/revenue-exposure";
+import { EXPOSURE_STORAGE_KEY, StoredExposure, normaliseExposure } from "@/lib/revenue-exposure";
 import {
   AlertState, EMPTY_STATE, Reading, TrendRead, Verdict, Change,
   evaluateHoldings, diffAlerts, renderMessage, toReading,
@@ -85,14 +85,11 @@ export async function loadState(): Promise<AlertState> {
 
 // ── Channels ─────────────────────────────────────────────────────────────────
 
-export interface Channels { email: boolean; sms: boolean }
+export interface Channels { email: boolean }
 
 export function channels(): Channels {
   const e = process.env;
-  return {
-    email: !!(e.RESEND_API_KEY && e.ALERT_EMAIL_TO),
-    sms: !!(e.TWILIO_ACCOUNT_SID && e.TWILIO_AUTH_TOKEN && e.TWILIO_FROM && e.ALERT_SMS_TO),
-  };
+  return { email: !!(e.RESEND_API_KEY && e.ALERT_EMAIL_TO) };
 }
 
 async function sendEmail(subject: string, text: string, html: string): Promise<string | null> {
@@ -118,39 +115,14 @@ async function sendEmail(subject: string, text: string, html: string): Promise<s
   }
 }
 
-async function sendSms(body: string): Promise<string | null> {
-  const e = process.env;
-  try {
-    const form = new URLSearchParams({ To: String(e.ALERT_SMS_TO), From: String(e.TWILIO_FROM), Body: body });
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${e.TWILIO_ACCOUNT_SID}/Messages.json`, {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + Buffer.from(`${e.TWILIO_ACCOUNT_SID}:${e.TWILIO_AUTH_TOKEN}`).toString("base64"),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: form.toString(),
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (res.ok) return null;
-    const text = await res.text();
-    return `text message refused (HTTP ${res.status}): ${text.slice(0, 160)}`;
-  } catch (err) {
-    return `text message failed: ${err instanceof Error ? err.message : "network"}`;
-  }
-}
-
-/** Send through every channel that is switched on. Returns what went wrong, if anything. */
-export async function deliver(msg: { subject: string; text: string; html: string; sms: string }): Promise<{ sent: string[]; errors: string[] }> {
+/** Send the message, if email is switched on. Returns what went wrong, if anything. */
+export async function deliver(msg: { subject: string; text: string; html: string }): Promise<{ sent: string[]; errors: string[] }> {
   const on = channels();
   const sent: string[] = [];
   const errors: string[] = [];
   if (on.email) {
     const err = await sendEmail(msg.subject, msg.text, msg.html);
     if (err) errors.push(err); else sent.push("email");
-  }
-  if (on.sms) {
-    const err = await sendSms(msg.sms);
-    if (err) errors.push(err); else sent.push("text message");
   }
   return { sent, errors };
 }
@@ -220,7 +192,7 @@ export async function storedInput(): Promise<RunInput> {
   }
   return {
     codes: Array.isArray(holdings?.codes) ? (holdings!.codes as unknown[]).filter((c): c is string => typeof c === "string") : [],
-    exposure: exposure && typeof exposure.reviews === "object" && exposure.reviews ? exposure : null,
+    exposure: exposure && typeof exposure.reviews === "object" && exposure.reviews ? normaliseExposure(exposure) : null,
     manual,
   };
 }

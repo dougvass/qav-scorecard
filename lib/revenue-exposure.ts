@@ -62,10 +62,15 @@ export interface StoredExposure {
 }
 
 /**
- * A label -> tracked commodity. Anchored on purpose: "Met coal" and
- * "Copper/gold" are NOT the commodities we hold a series for (the coal series
- * is Australian thermal coal), so they stay unmapped rather than borrow a
- * reading that is not theirs.
+ * A label -> tracked commodity. Anchored on purpose: "Copper/gold" is not
+ * copper and not gold, so it stays unmapped rather than borrow a reading that
+ * is not its own.
+ *
+ * Coal is the exception, by Doug's ruling (2026-11-22): "met coal counts as
+ * coal". The series the site reads is Australian THERMAL coal, and
+ * metallurgical coal is a different market, but he wants a company's coal
+ * revenue counted as one exposure — so met, metallurgical and coking coal all
+ * read the coal series.
  */
 const LABEL_KEYS: [RegExp, string][] = [
   [/^gold$/i, "GOLD"],
@@ -79,7 +84,7 @@ const LABEL_KEYS: [RegExp, string][] = [
   [/^palladium$/i, "PALLADIUM"],
   [/^uranium$/i, "URANIUM"],
   [/^iron ?ore$/i, "IRONORE"],
-  [/^(thermal )?coal$/i, "COAL"],
+  [/^((thermal|met|metallurgical|coking) )?coal$/i, "COAL"],
   [/^nickel$/i, "NICKEL"],
   [/^lithium$/i, "LITHIUM"],
 ];
@@ -142,6 +147,24 @@ export function formatReviewLines(reviews: Record<string, RevenueReview>): strin
     const r = reviews[code];
     return [code, formatMix(r.slices), r.period, r.source, r.business].join(" | ");
   }).join("\n");
+}
+
+/**
+ * Re-derive every slice's commodity from its label. A stored review carries
+ * the key it was given when it was saved; the mapping is a rule that can
+ * change (coal did, the day it was written), so a review is always read
+ * through today's rule rather than the one in force when it was typed.
+ */
+export function normaliseExposure(exposure: StoredExposure): StoredExposure {
+  const reviews: Record<string, RevenueReview> = {};
+  for (const code of Object.keys(exposure.reviews)) {
+    const r = exposure.reviews[code];
+    reviews[code] = {
+      ...r,
+      slices: (Array.isArray(r.slices) ? r.slices : []).map((s) => ({ ...s, key: keyForLabel(String(s.label ?? "")) })),
+    };
+  }
+  return { timestamp: exposure.timestamp, reviews };
 }
 
 /** Revenue share by tracked commodity, largest first. */

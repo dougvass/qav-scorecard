@@ -6,7 +6,7 @@
  * Doug, 2026-11-22: "need a way to determine the impact of commodity prices or
  * other significant price moves to sell on my stock holdings. It needs to be
  * more than a gate it needs to flag and send me an email notification alert,
- * or even mobile SMS alert."
+ * or even mobile SMS alert." Asked which, he chose: "Email only."
  *
  * A HOLDING IS A SELL WHEN
  *   - it is below its own 3PTL sell line (which includes the falling-knife
@@ -167,7 +167,7 @@ export function diffAlerts(prev: AlertState, verdicts: Verdict[], today: string)
 
 // ── The message ──────────────────────────────────────────────────────────────
 
-export interface Message { subject: string; text: string; html: string; sms: string }
+export interface Message { subject: string; text: string; html: string }
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -219,10 +219,5 @@ export function renderMessage(change: Change, verdicts: Verdict[], siteUrl: stri
     (notReviewed.length ? `Revenue not reviewed, judged on the sector map: ${esc(notReviewed.join(", "))}<br>` : "") +
     `Checked ${esc(asOf)}. ${verdicts.length} holdings watched. <a href="${esc(siteUrl)}">Open the scorecard</a></p></div>`;
 
-  // A text message has room for the codes and the first cause of each.
-  const sms = (fresh.length
-    ? `QAV SELL: ${fresh.map((v) => `${v.code} (${v.reasons[0].replace(/\s*\(.*$/, "")})`).join("; ")}`
-    : `QAV: ${cleared.join(", ")} no longer a sell`).slice(0, 300);
-
-  return { subject, text, html, sms };
+  return { subject, text, html };
 }

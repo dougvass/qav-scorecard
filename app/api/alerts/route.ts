@@ -5,7 +5,7 @@
  *   POST /api/alerts { action: "check" } -> who is a sell right now (sends nothing,
  *                                          remembers nothing)
  *   POST /api/alerts { action: "run" }   -> the same pass the daily job makes
- *   POST /api/alerts { action: "test" }  -> a test message down every channel
+ *   POST /api/alerts { action: "test" }  -> a test email
  *
  * All of it needs the passcode: the answers name his holdings. The daily job
  * itself is /api/alerts/cron. The rule is lib/alerts.ts; where the data comes
@@ -14,7 +14,7 @@
 import { requireSession } from "@/lib/server-auth";
 import { channels, deliver, hasDatabase, loadState, ownOrigin, runAlerts, storedInput, RunInput } from "@/lib/alerts-server";
 import { toReading, Reading } from "@/lib/alerts";
-import { StoredExposure } from "@/lib/revenue-exposure";
+import { StoredExposure, normaliseExposure } from "@/lib/revenue-exposure";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -43,7 +43,7 @@ function bodyInput(b: Record<string, unknown>): RunInput | null {
   for (const k of Object.keys(m)) { const r = toReading(m[k]); if (r) manual[k] = r; }
   return {
     codes: (b.codes as unknown[]).filter((c): c is string => typeof c === "string").slice(0, 60),
-    exposure: (b.exposure ?? null) as StoredExposure | null,
+    exposure: b.exposure && typeof (b.exposure as StoredExposure).reviews === "object" ? normaliseExposure(b.exposure as StoredExposure) : null,
     manual,
   };
 }
@@ -57,15 +57,14 @@ export async function POST(request: Request) {
 
   if (action === "test") {
     const on = channels();
-    if (!on.email && !on.sms) {
-      return Response.json({ ok: false, sent: [], errors: ["No channel is switched on yet."] }, { headers: NO_STORE });
+    if (!on.email) {
+      return Response.json({ ok: false, sent: [], errors: ["Email is not switched on yet."] }, { headers: NO_STORE });
     }
     const when = new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
     const r = await deliver({
       subject: "QAV alerts: test message",
       text: `This is a test from the QAV scorecard, sent ${when} Sydney time. If you can read it, sell alerts will reach you here.`,
       html: `<p style="font:15px/1.5 -apple-system,Segoe UI,sans-serif">This is a test from the QAV scorecard, sent ${when} Sydney time. If you can read it, sell alerts will reach you here.</p>`,
-      sms: "QAV alerts: test message. Sell alerts will reach you here.",
     });
     return Response.json({ ok: r.errors.length === 0, ...r }, { headers: NO_STORE });
   }
