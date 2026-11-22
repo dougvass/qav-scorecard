@@ -47,8 +47,8 @@ export async function pdfRows(key: string, deadline: number, maxPages = 260): Pr
 
 /**
  * One page as positioned fragments. A pie chart's figures and labels are laid
- * out around the circle, so rebuilt rows scramble them: Macmahon's FY26 slide
- * prints four charts side by side and its rows read "12 10 10 / 18 / 26 6".
+ * out around the circle, so rebuilt rows scramble them: a slide with four
+ * charts side by side comes back as rows reading "12 10 10 / 18 / 26 6".
  * With x and y the figures can be put back with the chart they belong to.
  */
 export async function pdfCells(key: string, pageNumbers: number[]): Promise<Record<number, { s: string; x: number; y: number }[]>> {

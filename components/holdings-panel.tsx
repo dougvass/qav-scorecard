@@ -92,7 +92,7 @@ export default function HoldingsPanel({
       const def = commodityKey ? COMMODITIES.find((c) => c.key === commodityKey) : undefined;
       const commoditySentiment = commodityKey && commodities
         ? effectiveCommoditySentiment(commodities, commodityKey) : null;
-      const advisory = !!def?.proxy && commodities?.manual[commodityKey] === undefined;
+      const advisory = !!def?.proxy && (commodityKey === null || commodities?.manual[commodityKey] === undefined);
       const gated = commoditySentiment === "Bearish" && !advisory;
       return {
         code, stock, sentiment, effective, gated,

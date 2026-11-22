@@ -1,12 +1,12 @@
 /**
  * Where a company's revenue comes from, in its own words.
  *
- *   GET /api/revenue-mix?code=PRN            -> the passages, from the latest
+ *   GET /api/revenue-mix?code=NWH            -> the passages, from the latest
  *                                               annual report and results
  *                                               presentation
- *   GET /api/revenue-mix?code=PRN&list=1     -> the documents it would read
- *   GET /api/revenue-mix?code=PRN&key=<doc>  -> read one named document
- *   GET /api/revenue-mix?code=PRN&key=<doc>&pages=24,25 -> those pages, whole
+ *   GET /api/revenue-mix?code=NWH&list=1     -> the documents it would read
+ *   GET /api/revenue-mix?code=NWH&key=<doc>  -> read one named document
+ *   GET /api/revenue-mix?code=NWH&key=<doc>&pages=24,25 -> those pages, whole
  *
  * Doug, 2026-11-22: "each stock held isn't necessarily assigned to a GICS code
  * that reflects their main revenue stream. Can we scrape or review latest
