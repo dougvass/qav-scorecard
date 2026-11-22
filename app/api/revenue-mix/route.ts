@@ -6,6 +6,7 @@
  *                                               presentation
  *   GET /api/revenue-mix?code=PRN&list=1     -> the documents it would read
  *   GET /api/revenue-mix?code=PRN&key=<doc>  -> read one named document
+ *   GET /api/revenue-mix?code=PRN&key=<doc>&pages=24,25 -> those pages, whole
  *
  * Doug, 2026-11-22: "each stock held isn't necessarily assigned to a GICS code
  * that reflects their main revenue stream. Can we scrape or review latest
@@ -114,6 +115,7 @@ export async function GET(request: Request) {
     }
 
     const named = q.get("key");
+    const wanted = (q.get("pages") ?? "").split(",").map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n));
     const docs: Ann[] = named
       ? anns.filter((a) => a.key === named)
       : [deck, annual].filter((a): a is Ann => !!a);   // the deck first: it is short, and the chart is usually there
@@ -125,7 +127,12 @@ export async function GET(request: Request) {
       if (left < 6_000) { read.push({ ...describe(d), skipped: "out of time" }); continue; }
       try {
         const { pages, numPages, read: got } = await pdfRows(d.key, Date.now() + left - 2_000);
-        read.push({ ...describe(d), pages: numPages, pagesRead: got, passages: passages(pages, max) });
+        // `pages=25,28` returns those pages whole. A pie chart prints its labels
+        // and its percentages on separate rows, so the picked rows alone can
+        // leave "33%" with nothing beside it.
+        const whole = wanted.filter((n) => n >= 1 && n <= pages.length)
+          .map((n) => ({ page: n, score: 0, text: pages[n - 1].join("\n").slice(0, 6000) }));
+        read.push({ ...describe(d), pages: numPages, pagesRead: got, passages: whole.length ? whole : passages(pages, max) });
       } catch (e) {
         read.push({ ...describe(d), error: e instanceof Error ? e.message : "could not be read" });
       }
